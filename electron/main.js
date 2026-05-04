@@ -22,22 +22,31 @@ if (!gotLock) {
 // ─── FFmpeg path ─────────────────────────────────────────────────────────────
 function getFfmpegPath() {
   if (app.isPackaged) {
-    // In packaged app, extraResources lands at Resources/ffmpeg-bin/
     const resourcesPath = process.resourcesPath;
     const candidates = [
       path.join(resourcesPath, 'ffmpeg-bin', 'ffmpeg'),
       path.join(resourcesPath, 'ffmpeg-bin', 'ffmpeg.exe'),
     ];
     for (const c of candidates) {
-      if (fs.existsSync(c)) return c;
+      if (fs.existsSync(c)) { log.info('Using packaged ffmpeg:', c); return c; }
     }
   }
   // Development: use ffmpeg-static
   try {
-    return require('ffmpeg-static');
-  } catch {
-    return 'ffmpeg'; // system fallback
+    const staticPath = require('ffmpeg-static');
+    if (staticPath && fs.existsSync(staticPath)) {
+      log.info('Using ffmpeg-static:', staticPath);
+      return staticPath;
+    }
+  } catch (e) {
+    log.warn('ffmpeg-static not available:', e.message);
   }
+  // System fallback
+  const systemPaths = ['/usr/local/bin/ffmpeg', '/opt/homebrew/bin/ffmpeg', '/usr/bin/ffmpeg', 'ffmpeg'];
+  for (const p of systemPaths) {
+    if (p === 'ffmpeg' || fs.existsSync(p)) { log.info('Using system ffmpeg:', p); return p; }
+  }
+  return 'ffmpeg';
 }
 
 // ─── Windows ─────────────────────────────────────────────────────────────────
@@ -152,92 +161,94 @@ ipcMain.handle('ffmpeg:getPath', () => {
   return getFfmpegPath();
 });
 
-// ─── IPC: Convert audio to WAV 16kHz mono ────────────────────────────────────
-ipcMain.handle('ffmpeg:convertToWav', async (_, { inputPath }) => {
-  return new Promise((resolve, reject) => {
+// ─── Helper: run FFmpeg and return {success, outputPath, error, stderr} ───────
+function runFfmpeg(args) {
+  return new Promise(resolve => {
     const ffmpegPath = getFfmpegPath();
-    const outputPath = path.join(TEMP_DIR, `converted_${Date.now()}.wav`);
-
-    const args = [
-      '-y',
-      '-i', inputPath,
-      '-ar', '16000',
-      '-ac', '1',
-      '-c:a', 'pcm_s16le',
-      outputPath,
-    ];
-
-    log.info('FFmpeg convert:', ffmpegPath, args.join(' '));
-    const proc = spawn(ffmpegPath, args);
+    log.info('FFmpeg cmd:', ffmpegPath, args.join(' '));
     let stderr = '';
+    let proc;
+    try {
+      proc = spawn(ffmpegPath, args);
+    } catch (e) {
+      return resolve({ success: false, error: e.message, stderr: '' });
+    }
     proc.stderr.on('data', d => { stderr += d.toString(); });
     proc.on('close', code => {
       if (code === 0) {
-        resolve({ success: true, outputPath });
+        resolve({ success: true, stderr });
       } else {
-        log.error('FFmpeg convert failed:', stderr);
-        reject(new Error(`FFmpeg exited with code ${code}`));
+        log.error(`FFmpeg exit ${code}:`, stderr.slice(-800));
+        // Extract the actual error line from stderr
+        const lines = stderr.split('\n').filter(l => l.includes('Error') || l.includes('error') || l.includes('Invalid') || l.includes('No such'));
+        const errMsg = lines.length > 0 ? lines[lines.length - 1].trim() : `FFmpeg exited with code ${code}`;
+        resolve({ success: false, error: errMsg, stderr: stderr.slice(-800) });
       }
     });
-    proc.on('error', e => reject(e));
+    proc.on('error', e => {
+      log.error('FFmpeg spawn error:', e);
+      resolve({ success: false, error: e.message, stderr });
+    });
   });
+}
+
+// ─── IPC: Convert audio to WAV 16kHz mono ────────────────────────────────────
+ipcMain.handle('ffmpeg:convertToWav', async (_, { inputPath }) => {
+  ensureTempDir();
+  const outputPath = path.join(TEMP_DIR, `converted_${Date.now()}.wav`);
+
+  // Check input exists
+  if (!fs.existsSync(inputPath)) {
+    return { success: false, error: `Input file not found: ${inputPath}` };
+  }
+
+  const args = ['-y', '-i', inputPath, '-vn', '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', outputPath];
+  const result = await runFfmpeg(args);
+
+  if (result.success) return { success: true, outputPath };
+  return { success: false, error: result.error, stderr: result.stderr };
 });
 
 // ─── IPC: Slice audio into chunks using FFmpeg ────────────────────────────────
 ipcMain.handle('ffmpeg:sliceChunks', async (_, { inputPath, cutPoints }) => {
-  const ffmpegPath = getFfmpegPath();
-  const ext = path.extname(inputPath).slice(1) || 'wav';
+  ensureTempDir();
   const chunkPaths = [];
-  const boundaries = [0, ...cutPoints, null]; // null = end of file
+  const boundaries = [0, ...cutPoints, null];
 
   for (let i = 0; i < boundaries.length - 1; i++) {
     const startSec = boundaries[i];
     const endSec = boundaries[i + 1];
     const outPath = path.join(TEMP_DIR, `chunk_${String(i).padStart(4, '0')}.wav`);
 
-    await new Promise((resolve, reject) => {
-      const args = ['-y'];
-      if (startSec > 0) args.push('-ss', String(startSec));
-      args.push('-i', inputPath);
-      if (endSec !== null) args.push('-t', String(endSec - startSec));
-      args.push('-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', outPath);
+    const args = ['-y'];
+    if (startSec > 0) args.push('-ss', String(startSec));
+    args.push('-i', inputPath, '-vn');
+    if (endSec !== null) args.push('-t', String(endSec - startSec));
+    args.push('-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', outPath);
 
-      const proc = spawn(ffmpegPath, args);
-      let stderr = '';
-      proc.stderr.on('data', d => { stderr += d.toString(); });
-      proc.on('close', code => {
-        if (code === 0) resolve();
-        else reject(new Error(`FFmpeg slice failed: ${stderr.slice(-200)}`));
-      });
-      proc.on('error', reject);
-    });
-
+    const result = await runFfmpeg(args);
+    if (!result.success) {
+      log.warn(`Chunk ${i} failed, skipping:`, result.error);
+      continue;
+    }
     chunkPaths.push(outPath);
   }
 
-  return { success: true, chunkPaths };
+  return { success: chunkPaths.length > 0, chunkPaths };
 });
 
 // ─── IPC: Get audio duration ─────────────────────────────────────────────────
 ipcMain.handle('ffmpeg:getDuration', async (_, { inputPath }) => {
-  return new Promise((resolve, reject) => {
-    const ffmpegPath = getFfmpegPath();
-    const args = ['-i', inputPath, '-f', 'null', '-'];
-    let stderr = '';
-    const proc = spawn(ffmpegPath, args);
-    proc.stderr.on('data', d => { stderr += d.toString(); });
-    proc.on('close', () => {
-      // Parse "Duration: HH:MM:SS.ms"
-      const m = stderr.match(/Duration:\s*(\d+):(\d+):(\d+\.?\d*)/);
-      if (m) {
-        const sec = parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseFloat(m[3]);
-        resolve({ success: true, durationSec: sec });
-      } else {
-        resolve({ success: false, durationSec: 0 });
-      }
-    });
-    proc.on('error', reject);
-  });
+  const args = ['-i', inputPath, '-f', 'null', '-'];
+  const result = await runFfmpeg(args);
+  // FFmpeg writes duration to stderr even on "error" (exit 1 for null output)
+  const stderr = result.stderr || '';
+  const m = stderr.match(/Duration:\s*(\d+):(\d+):(\d+\.?\d*)/);
+  if (m) {
+    const sec = parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseFloat(m[3]);
+    return { success: true, durationSec: sec };
+  }
+  return { success: false, durationSec: 0 };
 });
 
 // ─── IPC: Read file as buffer (for Whisper) ───────────────────────────────────

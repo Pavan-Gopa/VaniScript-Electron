@@ -121,8 +121,8 @@ export default function App() {
   // ─── Start engine ─────────────────────────────────────────────────────────
   const handleStartEngine = async (cfg: SessionConfig) => {
     const apiKey = cfg.provider === 'openai' ? settings.openaiKey : settings.geminiKey;
-    if (!apiKey) {
-      alert(`Please add your ${cfg.provider === 'gemini' ? 'Gemini' : 'OpenAI'} API key in Settings first.`);
+    if (!apiKey?.trim()) {
+      alert(`Please add your ${cfg.provider === 'gemini' ? 'Gemini' : 'OpenAI'} API key in Settings (⚙ button, top-right) first.`);
       return;
     }
 
@@ -131,13 +131,20 @@ export default function App() {
     setProcMsg('Converting audio format…');
 
     try {
-      // 1. Convert to WAV 16kHz mono
+      // 1. Convert to WAV 16kHz mono (with graceful fallback)
       let wavPath = sourceFile;
+      let conversionFailed = false;
       if (window.electronAPI) {
-        setProcMsg('Converting audio to WAV…');
+        setProcMsg('Converting audio to WAV 16kHz…');
         const res = await window.electronAPI.ffmpegConvertToWav({ inputPath: sourceFile });
-        if (!res.success) throw new Error('FFmpeg conversion failed — check audio file format');
-        wavPath = res.outputPath;
+        if (res.success) {
+          wavPath = res.outputPath;
+        } else {
+          // Fallback: use original file directly — Gemini accepts most formats
+          conversionFailed = true;
+          console.warn('FFmpeg conversion failed, using original file:', res.error);
+          setProcMsg('Using original audio format…');
+        }
       }
       setProcProgress(25);
 
