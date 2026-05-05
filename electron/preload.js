@@ -17,6 +17,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ffmpegSliceChunks: (opts) => ipcRenderer.invoke('ffmpeg:sliceChunks', opts),
   ffmpegGetDuration: (opts) => ipcRenderer.invoke('ffmpeg:getDuration', opts),
 
+  // ─── Local ASR ────────────────────────────────────────────────────────────
+  localInstallAsrModel: (opts) => ipcRenderer.invoke('local-asr:installModel', opts),
+  localRemoveAsrModel: (opts) => ipcRenderer.invoke('local-asr:removeModel', opts),
+  localTranscribeChunk: (opts) => ipcRenderer.invoke('local-asr:transcribeChunk', opts),
+
   // ─── App info ─────────────────────────────────────────────────────────────
   getVersion: () => ipcRenderer.invoke('app:getVersion'),
   getPlatform: () => ipcRenderer.invoke('app:getPlatform'),

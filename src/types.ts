@@ -3,8 +3,16 @@ export type OutputFormat = 'TXT' | 'SRT' | 'VTT' | 'Markdown';
 export type Theme = 'dark' | 'light';
 export type FontSize = 'sm' | 'md' | 'lg' | 'xl';
 export type SliceMode = 'silence' | 'fixed';
-export type TranscriptionProvider = 'gemini' | 'openai' | 'whisper-local';
-export type TranslationProvider = 'gemini' | 'openai' | 'anthropic' | 'ollama' | 'none';
+export type TranscriptionProvider = string;
+export type TranslationProvider = string;
+
+export interface LocalModelState {
+  status: 'not_downloaded' | 'downloading' | 'downloaded' | 'failed';
+  progress?: number;
+  label: string;
+  path?: string | null;
+  error?: string;
+}
 
 export interface AppSettings {
   // API
@@ -25,6 +33,9 @@ export interface AppSettings {
   // Translation
   translationProvider: TranslationProvider;
   defaultTargetLang: string;
+  // Local models
+  localAsrModels: Record<string, LocalModelState>;
+  localTranslationModels: Record<string, LocalModelState>;
 }
 
 export interface AudioMetadata {
@@ -32,6 +43,13 @@ export interface AudioMetadata {
   location: string;
   lecturer: string;
   participants: string;
+}
+
+export interface LanguageResult {
+  TXT?: string;
+  SRT?: string;
+  VTT?: string;
+  Markdown?: string;
 }
 
 export interface ChunkData {
@@ -42,6 +60,9 @@ export interface ChunkData {
   endSec: number;
   original: string;
   translated: string;
+  originalFormats?: LanguageResult;
+  translatedFormats?: LanguageResult;
+  unrecognizedFragments?: string[];
   status: 'pending' | 'processing' | 'done' | 'error';
   approved: boolean;
 }
@@ -80,9 +101,16 @@ declare global {
       writeFile: (opts: { filePath: string; content: string }) => Promise<{ success: boolean; error?: string }>;
       readFileBuffer: (opts: { filePath: string }) => Promise<any>;
       ffmpegGetPath: () => Promise<string>;
-      ffmpegConvertToWav: (opts: { inputPath: string }) => Promise<{ success: boolean; outputPath: string }>;
-      ffmpegSliceChunks: (opts: { inputPath: string; cutPoints: number[] }) => Promise<{ success: boolean; chunkPaths: string[] }>;
+      ffmpegConvertToWav: (opts: { inputPath: string }) => Promise<{ success: boolean; outputPath: string; error?: string; stderr?: string }>;
+      ffmpegSliceChunks: (opts: { inputPath: string; cutPoints: number[] }) => Promise<{ success: boolean; chunkPaths: string[]; error?: string }>;
       ffmpegGetDuration: (opts: { inputPath: string }) => Promise<{ success: boolean; durationSec: number }>;
+      localInstallAsrModel: (opts: { modelId: string }) => Promise<{ ok: boolean; id: string; path?: string | null; error?: string }>;
+      localRemoveAsrModel: (opts: { modelId: string }) => Promise<{ ok: boolean; id: string; error?: string }>;
+      localTranscribeChunk: (opts: {
+        modelId: string;
+        chunkPath: string;
+        options?: { language?: string; forceCpu?: boolean; threads?: number };
+      }) => Promise<{ text: string; segments?: Array<{ t0?: number; t1?: number; text?: string }>; engine?: string; durationMs?: number }>;
       getVersion: () => Promise<string>;
       getPlatform: () => Promise<string>;
       getUserDataPath: () => Promise<string>;

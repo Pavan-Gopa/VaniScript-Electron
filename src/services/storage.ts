@@ -14,9 +14,20 @@ export const DEFAULT_SETTINGS: AppSettings = {
   silenceThreshDb: -16,
   minSilenceMs: 400,
   defaultSourceLang: 'auto',
-  transcriptionProvider: 'gemini',
-  translationProvider: 'gemini',
+  transcriptionProvider: 'gemini-cloud',
+  translationProvider: 'gemini-cloud',
   defaultTargetLang: 'Russian',
+  localAsrModels: {
+    'parakeet-english': { status: 'not_downloaded', label: 'Parakeet English' },
+    'whisper-medium-en': { status: 'not_downloaded', label: 'Whisper Medium English' },
+    'whisper-large-v3': { status: 'not_downloaded', label: 'Whisper Large v3' },
+  },
+  localTranslationModels: {
+    'qwen-3.5-2b-4bit': { status: 'not_downloaded', label: 'Qwen 3.5 2B 4-bit' },
+    'qwen-3.5-4b-instruct-4bit': { status: 'not_downloaded', label: 'Qwen 3.5 4B Instruct 4-bit' },
+    'gemma-4-2b-4bit': { status: 'not_downloaded', label: 'Gemma 4 2B 4-bit' },
+    'gemma-4-4b-4bit': { status: 'not_downloaded', label: 'Gemma 4 4B 4-bit' },
+  },
 };
 
 export function loadSettings(): AppSettings {
