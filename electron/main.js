@@ -88,16 +88,22 @@ function createWindow() {
 }
 
 // ─── Temp directory ───────────────────────────────────────────────────────────
-const TEMP_DIR = path.join(app.getPath('temp'), 'vaniscript');
-
-function ensureTempDir() {
-  if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
+// Lazy getter — evaluated only after app is ready to ensure correct temp path
+function getTempDir() {
+  const dir = path.join(app.getPath('temp'), 'vaniscript');
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+    log.info('Created temp dir:', dir);
+  }
+  return dir;
 }
 
 function cleanupTempDir() {
   try {
-    if (fs.existsSync(TEMP_DIR)) {
-      fs.rmSync(TEMP_DIR, { recursive: true, force: true });
+    const dir = path.join(app.getPath('temp'), 'vaniscript');
+    if (fs.existsSync(dir)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      log.info('Cleaned up temp dir:', dir);
     }
   } catch (e) {
     log.warn('Failed to cleanup temp dir:', e);
@@ -106,7 +112,7 @@ function cleanupTempDir() {
 
 // ─── App lifecycle ────────────────────────────────────────────────────────────
 app.whenReady().then(() => {
-  ensureTempDir();
+  getTempDir(); // create on startup
   createWindow();
 
   app.on('activate', () => {
@@ -194,8 +200,7 @@ function runFfmpeg(args) {
 
 // ─── IPC: Convert audio to WAV 16kHz mono ────────────────────────────────────
 ipcMain.handle('ffmpeg:convertToWav', async (_, { inputPath }) => {
-  ensureTempDir();
-  const outputPath = path.join(TEMP_DIR, `converted_${Date.now()}.wav`);
+  const outputPath = path.join(getTempDir(), `converted_${Date.now()}.wav`);
 
   // Check input exists
   if (!fs.existsSync(inputPath)) {
@@ -211,14 +216,14 @@ ipcMain.handle('ffmpeg:convertToWav', async (_, { inputPath }) => {
 
 // ─── IPC: Slice audio into chunks using FFmpeg ────────────────────────────────
 ipcMain.handle('ffmpeg:sliceChunks', async (_, { inputPath, cutPoints }) => {
-  ensureTempDir();
+  const tempDir = getTempDir();
   const chunkPaths = [];
   const boundaries = [0, ...cutPoints, null];
 
   for (let i = 0; i < boundaries.length - 1; i++) {
     const startSec = boundaries[i];
     const endSec = boundaries[i + 1];
-    const outPath = path.join(TEMP_DIR, `chunk_${String(i).padStart(4, '0')}.wav`);
+    const outPath = path.join(tempDir, `chunk_${String(i).padStart(4, '0')}.wav`);
 
     const args = ['-y'];
     if (startSec > 0) args.push('-ss', String(startSec));
