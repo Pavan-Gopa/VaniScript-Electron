@@ -70,6 +70,7 @@ export default function App() {
         targetLang: cfg.targetLang === 'same' ? '' : cfg.targetLang,
         speakerHint: cfg.lecturer,
         formats: cfg.formats,
+        geminiModel: cfg.geminiModel,
       };
 
       let original = '', translated = '';

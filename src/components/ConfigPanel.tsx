@@ -16,6 +16,7 @@ export interface SessionConfig {
   targetLang: string;
   formats: string[];
   provider: 'gemini' | 'openai';
+  geminiModel: string;
 }
 
 const LANGS = [
@@ -27,6 +28,13 @@ const LANGS = [
 ];
 
 const FORMATS = ['SRT', 'VTT', 'TXT', 'Markdown'];
+
+const GEMINI_MODELS = [
+  { value: 'gemini-2.5-flash-preview-04-17', label: 'Gemini 2.5 Flash (Apr 2025) — Best' },
+  { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash — Fast' },
+  { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash — Stable' },
+  { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro — High quality' },
+];
 
 function extractDate(name: string) {
   const m = name.match(/\b(\d{4}[-._]\d{2}[-._]\d{2}|\d{8})\b/);
@@ -46,6 +54,7 @@ export function ConfigPanel({ fileName, onStart, onCancel }: ConfigPanelProps) {
     targetLang: 'same',
     formats: ['TXT'],
     provider: 'gemini',
+    geminiModel: 'gemini-2.5-flash-preview-04-17',
   });
 
   const toggleFormat = (f: string) =>
@@ -116,6 +125,24 @@ export function ConfigPanel({ fileName, onStart, onCancel }: ConfigPanelProps) {
                 ))}
               </div>
             </div>
+          </div>
+
+          <div className="field-row" style={{ marginTop: 4 }}>
+            <div className="field">
+              <label>Provider</label>
+              <select value={cfg.provider} onChange={e => upd({ provider: e.target.value as 'gemini' | 'openai' })}>
+                <option value="gemini">Google Gemini</option>
+                <option value="openai">OpenAI Whisper</option>
+              </select>
+            </div>
+            {cfg.provider === 'gemini' && (
+              <div className="field">
+                <label>Gemini Model</label>
+                <select value={cfg.geminiModel} onChange={e => upd({ geminiModel: e.target.value })}>
+                  {GEMINI_MODELS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+                </select>
+              </div>
+            )}
           </div>
         </div>
 

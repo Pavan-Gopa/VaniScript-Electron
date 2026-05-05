@@ -6,6 +6,7 @@ export interface TranscriptionConfig {
   targetLang: string;
   speakerHint: string;
   formats: string[];
+  geminiModel?: string; // optional: override model
 }
 
 const VAISHNAVA_SYSTEM = `You are a verbatim transcription engine optimized for Gaudiya Vaishnava philosophical lectures.
@@ -49,11 +50,37 @@ UNRECOGNIZED: (list any unclear words)
 `;
 
   onProgress?.('Uploading to Gemini...');
-  const stream = await ai.models.generateContentStream({
-    model: 'gemini-2.5-flash-preview-05-20',
-    contents: { parts: [{ inlineData: { data: audioBase64, mimeType } }, { text: prompt }] },
-    config: { systemInstruction: VAISHNAVA_SYSTEM, temperature: 0.05 },
-  });
+
+  // Models to try in order — user-selected first, then fallbacks
+  const GEMINI_MODELS = [
+    config.geminiModel ?? 'gemini-2.5-flash-preview-04-17',
+    'gemini-2.0-flash',
+    'gemini-1.5-flash',
+  ].filter((v, i, a) => a.indexOf(v) === i); // deduplicate
+
+  let stream: AsyncIterable<any> | null = null;
+  let lastError: Error | null = null;
+
+  for (const modelName of GEMINI_MODELS) {
+    try {
+      onProgress?.(`Trying ${modelName}...`);
+      stream = await ai.models.generateContentStream({
+        model: modelName,
+        contents: { parts: [{ inlineData: { data: audioBase64, mimeType } }, { text: prompt }] },
+        config: { systemInstruction: VAISHNAVA_SYSTEM, temperature: 0.05 },
+      });
+      break; // success
+    } catch (err: any) {
+      const msg = err?.message ?? String(err);
+      if (msg.includes('404') || msg.includes('NOT_FOUND') || msg.includes('not found') || msg.includes('not supported')) {
+        lastError = err;
+        continue; // try next model
+      }
+      throw err; // auth errors, quota, etc — re-throw immediately
+    }
+  }
+
+  if (!stream) throw lastError ?? new Error('No Gemini model available. Check your API key and try again.');
 
   let full = '';
   for await (const chunk of stream) {
