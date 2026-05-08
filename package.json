@@ -15,7 +15,8 @@
     "build:win": "npm run vite-build && electron-builder --win",
     "build:linux": "npm run vite-build && electron-builder --linux",
     "pack": "npm run vite-build && electron-builder --dir",
-    "rebuild": "electron-rebuild"
+    "rebuild": "electron-rebuild",
+    "install:llamacpp-runtime": "node scripts/install-llamacpp-runtime.mjs"
   },
   "build": {
     "appId": "com.gaudiya.vaniscript",
@@ -55,6 +56,13 @@
       {
         "from": "node_modules/ffmpeg-static/",
         "to": "ffmpeg-bin",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "vendor/llamacpp/",
+        "to": "llamacpp",
         "filter": [
           "**/*"
         ]

@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const https = require('https');
+const DOWNLOAD_IDLE_TIMEOUT_MS = 30000;
 
 let whisper = null;
 let MODEL_BASE_DIR = path.join(os.homedir(), '.vaniscript', 'Models', 'asr');
@@ -31,7 +32,15 @@ function normalizeResult(res, { useGpu }) {
   let segments = [];
   if (Array.isArray(res?.segments)) segments = res.segments;
   else if (Array.isArray(res?.transcription)) {
-    segments = res.transcription.map(([t0, t1, text]) => ({ t0, t1, text }));
+    segments = res.transcription
+      .map((entry) => {
+        if (Array.isArray(entry)) {
+          const [t0, t1, text] = entry;
+          return { t0, t1, text };
+        }
+        return { text: String(entry || '') };
+      })
+      .filter((segment) => String(segment.text || '').trim());
   }
 
   const stitched = segments.map((s) => s?.text || '').join(' ').trim();
@@ -40,6 +49,7 @@ function normalizeResult(res, { useGpu }) {
   let engine = 'cpu';
   if (rawEngine.includes('metal')) engine = 'metal';
   else if (rawEngine.includes('vulkan')) engine = 'vulkan';
+  else if (rawEngine.includes('cpu')) engine = 'cpu';
   else if (useGpu) engine = process.platform === 'darwin' ? 'metal' : 'vulkan';
   return { text, segments, engine };
 }
@@ -57,42 +67,86 @@ function downloadFileWithProgress(url, dest, onProgress) {
   ensureDir(path.dirname(dest));
   return new Promise((resolve, reject) => {
     const tmp = `${dest}.part`;
-    const out = fs.createWriteStream(tmp);
-    let received = 0;
+    let existingBytes = fs.existsSync(tmp) ? fs.statSync(tmp).size : 0;
+    let out = fs.createWriteStream(tmp, { flags: existingBytes > 0 ? 'a' : 'w' });
+    let received = existingBytes;
     let total = 0;
+    let settled = false;
+
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      try { out.close(); } catch {}
+      reject(error);
+    };
+
+    const reopenOutput = (flags) => {
+      try { out.close(); } catch {}
+      out = fs.createWriteStream(tmp, { flags });
+    };
+
+    const parseContentRangeTotal = (value) => {
+      const match = String(value || '').match(/\/(\d+)$/);
+      return match ? Number(match[1]) : 0;
+    };
 
     const handle = (targetUrl) => {
-      const req = https.get(targetUrl, (res) => {
+      const headers = existingBytes > 0 ? { Range: `bytes=${existingBytes}-` } : undefined;
+      const req = https.get(targetUrl, { headers }, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           res.destroy();
           return handle(res.headers.location);
         }
-        if (res.statusCode !== 200) {
+        if (res.statusCode === 416 && existingBytes > 0) {
           res.resume();
-          return reject(new Error(`HTTP ${res.statusCode} for ${targetUrl}`));
+          settled = true;
+          try {
+            fs.renameSync(tmp, dest);
+            resolve(dest);
+          } catch (error) {
+            fail(error);
+          }
+          return;
         }
-        total = Number(res.headers['content-length'] || 0);
+        if (existingBytes > 0 && res.statusCode === 200) {
+          existingBytes = 0;
+          received = 0;
+          reopenOutput('w');
+        }
+        if (res.statusCode !== 200 && res.statusCode !== 206) {
+          res.resume();
+          return fail(new Error(`HTTP ${res.statusCode} for ${targetUrl}`));
+        }
+        const contentLength = Number(res.headers['content-length'] || 0);
+        total = res.statusCode === 206
+          ? parseContentRangeTotal(res.headers['content-range']) || existingBytes + contentLength
+          : contentLength;
+        if (onProgress) onProgress(received, total);
         res.on('data', (chunk) => {
           received += chunk.length;
           if (onProgress) onProgress(received, total);
         });
+        res.setTimeout(DOWNLOAD_IDLE_TIMEOUT_MS, () => {
+          res.destroy(new Error(`Download stalled for ${DOWNLOAD_IDLE_TIMEOUT_MS / 1000}s: ${path.basename(dest)}`));
+        });
+        res.on('error', fail);
         res.pipe(out);
         out.on('finish', () => {
           out.close(() => {
             try {
+              settled = true;
               fs.renameSync(tmp, dest);
               resolve(dest);
             } catch (error) {
-              reject(error);
+              fail(error);
             }
           });
         });
       });
-      req.on('error', (error) => {
-        try { out.close(); } catch {}
-        try { fs.unlinkSync(tmp); } catch {}
-        reject(error);
+      req.setTimeout(DOWNLOAD_IDLE_TIMEOUT_MS, () => {
+        req.destroy(new Error(`Download connection timed out after ${DOWNLOAD_IDLE_TIMEOUT_MS / 1000}s: ${path.basename(dest)}`));
       });
+      req.on('error', fail);
     };
 
     handle(url);
@@ -123,25 +177,55 @@ async function transcribeChunk({ id, modelId, chunkPath, options }) {
   if (!fs.existsSync(modelPath)) throw new Error(`Model not installed: ${modelId}`);
   if (!chunkPath || !fs.existsSync(chunkPath)) throw new Error(`Chunk file not found: ${chunkPath}`);
 
+  const useGpu = true;
+  if (options?.forceCpu) {
+    process.send?.({
+      type: 'log',
+      level: 'warn',
+      message: 'Ignoring forceCpu for Whisper ASR. VaniScript requires GPU/Metal for local Whisper models.',
+      args: [],
+    });
+  }
+
   const base = {
     fname_inp: chunkPath,
     model: modelPath,
     language: options?.language || info.lang || 'auto',
     task: 'transcribe',
     translate: false,
-    use_gpu: options?.forceCpu ? false : true,
-    threads: options?.threads || Math.max(1, os.cpus().length || 1),
+    no_timestamps: false,
+    no_prints: true,
+    use_gpu: useGpu,
+    n_threads: options?.threads || Math.max(1, os.cpus().length || 1),
   };
 
   const start = Date.now();
   const raw = await whisper.transcribe(base);
   const normalized = normalizeResult(raw, { useGpu: base.use_gpu });
+  if (process.platform === 'darwin' && normalized.engine !== 'metal') {
+    throw new Error(`Whisper ASR returned ${normalized.engine || 'unknown'} backend. Metal GPU execution is required.`);
+  }
   normalized.durationMs = Date.now() - start;
   process.send?.({ type: 'transcription_result', id, result: normalized });
 }
 
 function loadAddon() {
-  whisper = require('@kutalia/whisper-node-addon');
+  const attempts = [
+    () => require('@kutalia/whisper-node-addon'),
+    () => require(path.join(__dirname, '..', '..', 'node_modules', '@kutalia', 'whisper-node-addon')),
+  ];
+  const errors = [];
+
+  for (const attempt of attempts) {
+    try {
+      whisper = attempt();
+      return;
+    } catch (error) {
+      errors.push(error?.message || String(error));
+    }
+  }
+
+  throw new Error(`Failed to load @kutalia/whisper-node-addon. ${errors.join(' | ')}`);
 }
 
 try {

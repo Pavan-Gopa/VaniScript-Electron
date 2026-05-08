@@ -1,4 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
+import { formatGeminiError, isRetryableGeminiError } from '../lib/gemini-errors';
+import { parseTaggedTranscriptionResult } from '../lib/tagged-result';
+import { AudioMetadata, LanguageResult } from '../types';
 
 
 export interface TranscriptionConfig {
@@ -7,7 +10,16 @@ export interface TranscriptionConfig {
   speakerHint: string;
   formats: string[];
   geminiModel?: string; // optional: override model
+  metadata?: AudioMetadata;
+  includeMetadata?: boolean;
 }
+
+export const SUPPORTED_GEMINI_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-2.5-pro',
+  'gemini-2.5-flash-lite',
+  'gemini-2.0-flash',
+] as const;
 
 const VAISHNAVA_SYSTEM = `You are a verbatim transcription engine optimized for Gaudiya Vaishnava philosophical lectures.
 
@@ -29,73 +41,127 @@ export async function transcribeChunkGemini(
   config: TranscriptionConfig,
   apiKey: string,
   onProgress?: (msg: string) => void
-): Promise<{ original: string; translated: string }> {
+): Promise<{ original: string; translated: string; originalFormats: LanguageResult; translatedFormats?: LanguageResult; unrecognizedFragments: string[] }> {
   const ai = new GoogleGenAI({ apiKey });
   const isTranslation = config.targetLang && config.targetLang !== 'same' && config.targetLang !== config.sourceLang;
+  const maxAttemptsPerModel = 3;
+  const requestedFormats = config.formats.join(', ');
+  const metadataBlock = config.includeMetadata && config.metadata ? `
+DOCUMENT METADATA TO INCLUDE AT THE TOP OF TXT AND MARKDOWN FORMATS:
+Date: ${config.metadata.date || 'Unknown'}
+Location: ${config.metadata.location || 'Unknown'}
+Lecturer: ${config.metadata.lecturer || 'Unknown'}
+Interviewer / Participants: ${config.metadata.participants || 'None'}
+(Output these clearly at the start of your TXT and Markdown blocks)
+` : '';
 
   const prompt = `
 TASK:
-1. Transcribe the audio verbatim in its original language.
-${isTranslation ? `2. Translate the full transcript to ${config.targetLang}.` : ''}
-Speaker hint: "${config.speakerHint || 'Unknown'}"
+1. Transcribe the audio in its original language.
+${isTranslation ? `2. Translate the transcript to ${config.targetLang}.` : ''}
+SPEAKER IDENTIFICATION HINT: Based on metadata, the primary speaker may be "${config.speakerHint || 'Unknown'}".
 
-OUTPUT FORMAT — wrap each section exactly like this:
-[ORIGINAL]
-(transcription here)
-[/ORIGINAL]
-${isTranslation ? `[TRANSLATED]\n(translation here)\n[/TRANSLATED]` : ''}
+${metadataBlock}
 
-At the end, add:
-UNRECOGNIZED: (list any unclear words)
+REQUESTED FORMATS: ${requestedFormats}
+
+CRITICAL: YOU MUST WRAP EACH SECTION IN CLEAR TAGS.
+Example:
+[ORIGINAL_TXT]
+(content here)
+[/ORIGINAL_TXT]
+${isTranslation ? `\n[TRANSLATED_TXT]\n(content here)\n[/TRANSLATED_TXT]\n` : ''}
+Do this for ALL formats requested: ${requestedFormats}.
+Use tags like [ORIGINAL_SRT], [ORIGINAL_VTT], [ORIGINAL_MARKDOWN], [TRANSLATED_SRT], etc.
+
+REMAINING REQUIREMENTS:
+- TXT: clean reading text with metadata at the top when provided. Preserve paragraph structure.
+- SRT/VTT: split into real subtitle cues, not one large block. Keep cue lengths readable.
+- Markdown: no timestamps in prose body unless absolutely necessary. Use real headings/subheadings and readable article structure for book/editorial work.
+- SPEAKER TAGS: If there is only one speaker, do not repeat their name before every paragraph.
+- At the absolute end, provide: "UNRECOGNIZED FRAGMENTS LIST" with a list of all {unrecognized} fragments.
 `;
 
   onProgress?.('Uploading to Gemini...');
 
   // Models to try in order — user-selected first, then fallbacks
   const GEMINI_MODELS = [
-    config.geminiModel ?? 'gemini-2.5-flash-preview-04-17',
-    'gemini-2.0-flash',
-    'gemini-1.5-flash',
+    config.geminiModel ?? SUPPORTED_GEMINI_MODELS[0],
+    ...SUPPORTED_GEMINI_MODELS,
   ].filter((v, i, a) => a.indexOf(v) === i); // deduplicate
 
   let stream: AsyncIterable<any> | null = null;
   let lastError: Error | null = null;
 
   for (const modelName of GEMINI_MODELS) {
-    try {
-      onProgress?.(`Trying ${modelName}...`);
-      stream = await ai.models.generateContentStream({
-        model: modelName,
-        contents: { parts: [{ inlineData: { data: audioBase64, mimeType } }, { text: prompt }] },
-        config: { systemInstruction: VAISHNAVA_SYSTEM, temperature: 0.05 },
-      });
-      break; // success
-    } catch (err: any) {
-      const msg = err?.message ?? String(err);
-      if (msg.includes('404') || msg.includes('NOT_FOUND') || msg.includes('not found') || msg.includes('not supported')) {
+    for (let attempt = 1; attempt <= maxAttemptsPerModel; attempt++) {
+      try {
+        onProgress?.(attempt === 1 ? `Trying ${modelName}...` : `Retrying ${modelName} (${attempt}/${maxAttemptsPerModel})...`);
+        stream = await ai.models.generateContentStream({
+          model: modelName,
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                { inlineData: { data: audioBase64, mimeType } },
+                { text: prompt },
+              ],
+            },
+          ],
+          config: { systemInstruction: VAISHNAVA_SYSTEM, temperature: 0.05 },
+        });
+        break;
+      } catch (err: any) {
+        const msg = err?.message ?? String(err);
         lastError = err;
-        continue; // try next model
+
+        if (msg.includes('404') || msg.includes('NOT_FOUND') || msg.includes('not found') || msg.includes('not supported')) {
+          break;
+        }
+
+        if (!isRetryableGeminiError(msg)) {
+          throw new Error(formatGeminiError(err));
+        }
+
+        if (attempt < maxAttemptsPerModel) {
+          const delayMs = 1200 * attempt;
+          onProgress?.(`Gemini is busy. Waiting ${Math.ceil(delayMs / 1000)}s before retry...`);
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
       }
-      throw err; // auth errors, quota, etc — re-throw immediately
+
+      if (stream) break;
     }
+
+    if (stream) break;
   }
 
-  if (!stream) throw lastError ?? new Error('No Gemini model available. Check your API key and try again.');
+  if (!stream) {
+    throw new Error(formatGeminiError(lastError ?? 'No Gemini model available. Check your API key and try again.'));
+  }
 
   let full = '';
-  for await (const chunk of stream) {
-    full += chunk.text ?? '';
-    if (!full.includes('[ORIGINAL]')) onProgress?.('Transcribing...');
-    else if (isTranslation && !full.includes('[TRANSLATED]')) onProgress?.('Translating...');
-    else onProgress?.('Finalizing...');
+  try {
+    for await (const chunk of stream) {
+      full += chunk.text ?? '';
+      if (!full.includes('[ORIGINAL_')) onProgress?.('Transcribing...');
+      else if (isTranslation && !full.includes('[TRANSLATED_')) onProgress?.('Translating...');
+      else onProgress?.('Finalizing...');
+    }
+  } catch (err) {
+    throw new Error(formatGeminiError(err));
   }
 
-  const origMatch = full.match(/\[ORIGINAL\]([\s\S]*?)\[\/ORIGINAL\]/i);
-  const transMatch = full.match(/\[TRANSLATED\]([\s\S]*?)\[\/TRANSLATED\]/i);
+  const parsed = parseTaggedTranscriptionResult(full);
+  const original = parsed.original.TXT ?? Object.values(parsed.original).find(Boolean) ?? full.trim();
+  const translated = parsed.translated?.TXT ?? Object.values(parsed.translated ?? {}).find(Boolean) ?? '';
 
   return {
-    original: origMatch?.[1]?.trim() ?? full.trim(),
-    translated: transMatch?.[1]?.trim() ?? '',
+    original,
+    translated,
+    originalFormats: parsed.original,
+    translatedFormats: parsed.translated,
+    unrecognizedFragments: parsed.unrecognizedFragments,
   };
 }
 
@@ -104,7 +170,7 @@ export async function transcribeChunkOpenAI(
   config: TranscriptionConfig,
   apiKey: string,
   onProgress?: (msg: string) => void
-): Promise<{ original: string; translated: string }> {
+): Promise<{ original: string; translated: string; originalFormats: LanguageResult; translatedFormats?: LanguageResult; unrecognizedFragments: string[] }> {
   onProgress?.('Uploading to OpenAI Whisper...');
   const form = new FormData();
   form.append('file', audioBlob, 'chunk.wav');
@@ -139,7 +205,24 @@ export async function transcribeChunkOpenAI(
     translated = j.choices?.[0]?.message?.content?.trim() ?? '';
   }
 
-  return { original, translated };
+  const metadataPrefix = config.includeMetadata && config.metadata
+    ? `Date: ${config.metadata.date || 'Unknown'}\nLocation: ${config.metadata.location || 'Unknown'}\nLecturer: ${config.metadata.lecturer || 'Unknown'}\nInterviewer / Participants: ${config.metadata.participants || 'None'}\n\n`
+    : '';
+
+  const originalFormats: LanguageResult = {
+    TXT: `${metadataPrefix}${original}`.trim(),
+    SRT: original,
+    VTT: original,
+    Markdown: original,
+  };
+  const translatedFormats: LanguageResult | undefined = translated ? {
+    TXT: `${metadataPrefix}${translated}`.trim(),
+    SRT: translated,
+    VTT: translated,
+    Markdown: translated,
+  } : undefined;
+
+  return { original, translated, originalFormats, translatedFormats, unrecognizedFragments: [] };
 }
 
 export function fileToBase64(file: File | Blob): Promise<string> {

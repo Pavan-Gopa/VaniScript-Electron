@@ -11,7 +11,7 @@ test('provider registry exposes cloud entries only when keys exist and disables 
       'parakeet-english': { status: 'downloaded', label: 'Parakeet English' },
     },
     localTranslationModels: {
-      'gemma-4b-it-4bit': { status: 'downloaded', label: 'Gemma 4B IT 4-bit' },
+      'gemma-4-4b-it-q4_k_m': { status: 'downloaded', label: 'Gemma 4 4B IT Q4_K_M' },
     },
   } as any;
 
@@ -21,9 +21,9 @@ test('provider registry exposes cloud entries only when keys exist and disables 
 
   assert.equal(transcription.some((p) => p.id === 'gemini-cloud'), true);
   assert.equal(transcription.some((p) => p.id === 'gpt-cloud'), false);
-  assert.equal(transcription.some((p) => p.id === 'claude-cloud'), true);
+  assert.equal(transcription.some((p) => p.id === 'claude-cloud'), false);
   assert.equal(transcription.some((p) => p.id === 'parakeet-english'), true);
   assert.equal(translationDisabled.enabled, false);
   assert.equal(translationEnabled.enabled, true);
-  assert.equal(translationEnabled.providers.some((p) => p.id === 'gemma-4b-it-4bit'), true);
+  assert.equal(translationEnabled.providers.some((p) => p.id === 'gemma-4-4b-it-q4_k_m'), true);
 });

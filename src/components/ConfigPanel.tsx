@@ -1,9 +1,12 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Settings as Gear } from 'lucide-react';
 import { Logo } from './Logo';
+import { AppSettings, TranscriptionProvider, TranslationProvider } from '../types';
+import { getAvailableTranscriptionProviders, getAvailableTranslationProviders, ProviderOption } from '../lib/provider-registry';
 
 interface ConfigPanelProps {
   fileName: string;
+  settings: AppSettings;
   onStart: (cfg: SessionConfig) => void;
   onCancel: () => void;
 }
@@ -15,8 +18,8 @@ export interface SessionConfig {
   participants: string;
   targetLang: string;
   formats: string[];
-  provider: 'gemini' | 'openai';
-  geminiModel: string;
+  transcriptionProvider: TranscriptionProvider;
+  translationProvider: TranslationProvider;
 }
 
 const LANGS = [
@@ -25,15 +28,6 @@ const LANGS = [
   { value: 'English', label: 'English' },
   { value: 'Hindi', label: 'Hindi' },
   { value: 'Spanish', label: 'Spanish' },
-];
-
-const FORMATS = ['SRT', 'VTT', 'TXT', 'Markdown'];
-
-const GEMINI_MODELS = [
-  { value: 'gemini-2.5-flash-preview-04-17', label: 'Gemini 2.5 Flash (Apr 2025) — Best' },
-  { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash — Fast' },
-  { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash — Stable' },
-  { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro — High quality' },
 ];
 
 function extractDate(name: string) {
@@ -45,7 +39,42 @@ function extractLecturer(name: string) {
   return m?.[0]?.trim() ?? '';
 }
 
-export function ConfigPanel({ fileName, onStart, onCancel }: ConfigPanelProps) {
+function resolvePreferredProvider(preferredId: string, options: ProviderOption[]): string {
+  if (preferredId && options.some((option) => option.id === preferredId)) {
+    return preferredId;
+  }
+  return options[0]?.id ?? '';
+}
+
+function renderProviderOptions(options: ProviderOption[]) {
+  const cloud = options.filter((option) => option.group === 'cloud');
+  const local = options.filter((option) => option.group === 'local');
+
+  return (
+    <>
+      {cloud.length > 0 && (
+        <optgroup label="Cloud">
+          {cloud.map((option) => (
+            <option key={option.id} value={option.id}>{option.label}</option>
+          ))}
+        </optgroup>
+      )}
+      {local.length > 0 && (
+        <optgroup label="Local">
+          {local.map((option) => (
+            <option key={option.id} value={option.id}>{option.label}</option>
+          ))}
+        </optgroup>
+      )}
+    </>
+  );
+}
+
+export function ConfigPanel({ fileName, settings, onStart, onCancel }: ConfigPanelProps) {
+  const transcriptionProviders = useMemo(
+    () => getAvailableTranscriptionProviders(settings),
+    [settings]
+  );
   const [cfg, setCfg] = useState<SessionConfig>({
     date: extractDate(fileName),
     location: '',
@@ -53,17 +82,42 @@ export function ConfigPanel({ fileName, onStart, onCancel }: ConfigPanelProps) {
     participants: '',
     targetLang: 'same',
     formats: ['TXT'],
-    provider: 'gemini',
-    geminiModel: 'gemini-2.5-flash-preview-04-17',
+    transcriptionProvider: resolvePreferredProvider(settings.transcriptionProvider, transcriptionProviders),
+    translationProvider: '',
   });
-
-  const toggleFormat = (f: string) =>
-    setCfg(p => ({
-      ...p,
-      formats: p.formats.includes(f) ? p.formats.filter(x => x !== f) : [...p.formats, f],
-    }));
+  const translationAvailability = useMemo(
+    () => getAvailableTranslationProviders(settings, cfg.targetLang),
+    [settings, cfg.targetLang]
+  );
 
   const upd = (patch: Partial<SessionConfig>) => setCfg(p => ({ ...p, ...patch }));
+
+  useEffect(() => {
+    const nextProvider = resolvePreferredProvider(cfg.transcriptionProvider, transcriptionProviders);
+    if (nextProvider !== cfg.transcriptionProvider) {
+      upd({ transcriptionProvider: nextProvider });
+    }
+  }, [cfg.transcriptionProvider, transcriptionProviders]);
+
+  useEffect(() => {
+    if (!translationAvailability.enabled) {
+      if (cfg.translationProvider !== '') upd({ translationProvider: '' });
+      return;
+    }
+
+    const nextProvider = resolvePreferredProvider(
+      cfg.translationProvider || settings.translationProvider,
+      translationAvailability.providers
+    );
+    if (nextProvider !== cfg.translationProvider) {
+      upd({ translationProvider: nextProvider });
+    }
+  }, [
+    cfg.translationProvider,
+    settings.translationProvider,
+    translationAvailability.enabled,
+    translationAvailability.providers,
+  ]);
 
   return (
     <div className="main-screen">
@@ -106,43 +160,42 @@ export function ConfigPanel({ fileName, onStart, onCancel }: ConfigPanelProps) {
             </div>
           </div>
 
-          <div className="field-row" style={{ marginTop: 4 }}>
+          <div className="field-row field-row-full" style={{ marginTop: 4 }}>
             <div className="field">
               <label>Target Language</label>
               <select value={cfg.targetLang} onChange={e => upd({ targetLang: e.target.value })}>
                 {LANGS.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}
               </select>
             </div>
-            <div className="field">
-              <label>Output Formats</label>
-              <div className="format-btns">
-                {FORMATS.map(f => (
-                  <button
-                    key={f}
-                    className={`format-btn ${cfg.formats.includes(f) ? 'active' : ''}`}
-                    onClick={() => toggleFormat(f)}
-                  >{f}</button>
-                ))}
-              </div>
-            </div>
           </div>
 
           <div className="field-row" style={{ marginTop: 4 }}>
             <div className="field">
-              <label>Provider</label>
-              <select value={cfg.provider} onChange={e => upd({ provider: e.target.value as 'gemini' | 'openai' })}>
-                <option value="gemini">Google Gemini</option>
-                <option value="openai">OpenAI Whisper</option>
+              <label>Transcription Model</label>
+              <select
+                value={cfg.transcriptionProvider}
+                onChange={e => upd({ transcriptionProvider: e.target.value })}
+                disabled={transcriptionProviders.length === 0}
+              >
+                {transcriptionProviders.length > 0 ? renderProviderOptions(transcriptionProviders) : <option value="">No models available</option>}
               </select>
             </div>
-            {cfg.provider === 'gemini' && (
-              <div className="field">
-                <label>Gemini Model</label>
-                <select value={cfg.geminiModel} onChange={e => upd({ geminiModel: e.target.value })}>
-                  {GEMINI_MODELS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
-                </select>
-              </div>
-            )}
+            <div className="field">
+              <label>Translation Model</label>
+              <select
+                value={cfg.translationProvider}
+                onChange={e => upd({ translationProvider: e.target.value })}
+                disabled={!translationAvailability.enabled || translationAvailability.providers.length === 0}
+              >
+                {!translationAvailability.enabled ? (
+                  <option value="">Disabled while target language is Same</option>
+                ) : translationAvailability.providers.length > 0 ? (
+                  renderProviderOptions(translationAvailability.providers)
+                ) : (
+                  <option value="">No translation models available</option>
+                )}
+              </select>
+            </div>
           </div>
         </div>
 
@@ -150,6 +203,7 @@ export function ConfigPanel({ fileName, onStart, onCancel }: ConfigPanelProps) {
           <button className="btn-cancel" onClick={onCancel}>Cancel</button>
           <button
             className="btn-start"
+            disabled={!cfg.transcriptionProvider || (translationAvailability.enabled && !cfg.translationProvider)}
             onClick={() => onStart(cfg)}
           >
             Initialize Engine

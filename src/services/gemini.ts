@@ -1,5 +1,18 @@
 import { GoogleGenAI } from "@google/genai";
-import { TranscriptionConfig } from "../types";
+
+interface GeminiMetadata {
+  date?: string;
+  location?: string;
+  lecturer?: string;
+  translator?: string;
+}
+
+interface TranscriptionConfig {
+  targetLanguage?: string;
+  formats: string[];
+  speakerHint?: string;
+  metadata?: GeminiMetadata;
+}
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
@@ -46,7 +59,7 @@ export async function transcribeAudio(
   config: TranscriptionConfig,
   onProgress?: (message: string) => void
 ) {
-  const modelName = "gemini-3-flash-preview";
+  const modelName = "gemini-2.5-flash";
   
   const isTranslation = config.targetLanguage && config.targetLanguage !== 'same';
   const requestedFormats = config.formats.join(', ');
@@ -154,7 +167,7 @@ export async function reprocessFragment(
   mode: 'original' | 'translated',
   config: TranscriptionConfig
 ) {
-  const modelName = "gemini-3-flash-preview";
+  const modelName = "gemini-2.5-flash";
   
   const prompt = `
     TASK: I have a specific highlighted segment of text from this audio that needs to be corrected by re-evaluating the audio.
@@ -187,7 +200,7 @@ export async function reprocessFragment(
       },
     });
 
-    return response.text.trim();
+    return (response.text ?? '').trim();
   } catch (error) {
     console.error("Reprocess error:", error);
     throw error;

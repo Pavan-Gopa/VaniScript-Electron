@@ -2,7 +2,7 @@ import { AppSettings, LocalModelState } from '../types';
 
 export type ProviderGroup = 'cloud' | 'local';
 export type ProviderKind = 'transcription' | 'translation';
-export type ProviderKeyRequirement = 'gemini' | 'openai' | 'anthropic';
+export type ProviderKeyRequirement = 'gemini' | 'openai';
 
 export interface ProviderOption {
   id: string;
@@ -35,10 +35,6 @@ export function getAvailableTranscriptionProviders(settings: AppSettings): Provi
   if (settings.openaiKey.trim()) {
     cloud.push({ id: 'gpt-cloud', label: 'GPT Cloud', group: 'cloud', kind: 'transcription', requiresKey: 'openai' });
   }
-  if (settings.anthropicKey.trim()) {
-    cloud.push({ id: 'claude-cloud', label: 'Claude Cloud', group: 'cloud', kind: 'transcription', requiresKey: 'anthropic' });
-  }
-
   return [...cloud, ...downloadedLocalModels(settings.localAsrModels, 'transcription')];
 }
 
@@ -58,10 +54,6 @@ export function getAvailableTranslationProviders(settings: AppSettings, targetLa
   if (settings.openaiKey.trim()) {
     cloud.push({ id: 'gpt-cloud', label: 'GPT Cloud', group: 'cloud', kind: 'translation', requiresKey: 'openai' });
   }
-  if (settings.anthropicKey.trim()) {
-    cloud.push({ id: 'claude-cloud', label: 'Claude Cloud', group: 'cloud', kind: 'translation', requiresKey: 'anthropic' });
-  }
-
   return {
     enabled: true,
     providers: [...cloud, ...downloadedLocalModels(settings.localTranslationModels, 'translation')],

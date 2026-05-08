@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
-import rehypeRaw from 'rehype-raw';
 import { OutputFormat } from '../types';
 import { Loader2, Edit3, Sparkles } from 'lucide-react';
+import { activeWordIndex as getActiveWordIndex, parseKaraokeLines } from '../lib/karaoke';
+import { replaceSelectedText } from '../lib/text-revision';
 
 interface TextPanelProps {
   content: string;
@@ -12,6 +13,12 @@ interface TextPanelProps {
   onScroll: React.UIEventHandler<HTMLDivElement>;
   onUpdateContent: (newContent: string) => void;
   onAiReprocess: (oldText: string) => Promise<string>;
+  onPolishTranslation?: (oldText: string) => Promise<string>;
+  onAddToGlossary?: (selectedText: string, lang: 'original' | 'translated') => void;
+  karaokeEnabled?: boolean;
+  karaokeTimeSec?: number;
+  karaokeStartSec?: number;
+  karaokeEndSec?: number;
 }
 
 export function TextPanel({ 
@@ -21,71 +28,218 @@ export function TextPanel({
   scrollRef, 
   onScroll, 
   onUpdateContent, 
-  onAiReprocess 
+  onAiReprocess,
+  onPolishTranslation,
+  onAddToGlossary,
+  karaokeEnabled = false,
+  karaokeTimeSec = 0,
+  karaokeStartSec = 0,
+  karaokeEndSec = 0,
 }: TextPanelProps) {
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
   const [selectedText, setSelectedText] = useState<string>('');
+  const [selectedContextText, setSelectedContextText] = useState<string>('');
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState('');
   const [isProcessingAI, setIsProcessingAI] = useState(false);
+  const [undoStack, setUndoStack] = useState<string[]>([]);
+  const internalScrollRef = useRef<HTMLDivElement | null>(null);
+  const editTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const getSelectionInfo = useCallback((): { text: string; contextText: string } | null => {
+    const selection = window.getSelection();
+    const text = selection?.toString().trim() ?? '';
+    if (!selection || !text || !internalScrollRef.current) return null;
+    const anchorNode = selection.anchorNode;
+    const focusNode = selection.focusNode;
+    if (
+      (anchorNode && !internalScrollRef.current.contains(anchorNode)) ||
+      (focusNode && !internalScrollRef.current.contains(focusNode))
+    ) {
+      return null;
+    }
+    const contextElement = (selection.anchorNode?.parentElement ?? null)?.closest?.('.karaoke-line, .karaoke-plain-line');
+    return {
+      text,
+      contextText: contextElement?.textContent?.replace(/^(?:\s*\[[^\]]+\]\s*)+/, '').trim() ?? '',
+    };
+  }, []);
+
+  const karaokeLines = useMemo(
+    () => parseKaraokeLines(content, karaokeStartSec, karaokeEndSec),
+    [content, karaokeStartSec, karaokeEndSec]
+  );
+
+  const activeLineIndex = useMemo(() => {
+    if (!karaokeEnabled) return -1;
+    return karaokeLines.findIndex((line) => (
+      line.kind === 'timed' && karaokeTimeSec >= line.startSec && karaokeTimeSec < line.endSec
+    ));
+  }, [karaokeEnabled, karaokeLines, karaokeTimeSec]);
+
+  useEffect(() => {
+    if (!karaokeEnabled || activeLineIndex < 0 || !internalScrollRef.current) return;
+    const active = internalScrollRef.current.querySelector<HTMLElement>(`[data-karaoke-index="${activeLineIndex}"]`);
+    active?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, [activeLineIndex, karaokeEnabled]);
+
+  useEffect(() => {
+    if (!isEditing) return;
+    window.setTimeout(() => {
+      editTextareaRef.current?.focus();
+      editTextareaRef.current?.select();
+    }, 0);
+  }, [isEditing]);
 
   // Parse text format into stylized spans for matched fragments
   const renderHighlightedText = (text: string) => {
     const parts = text.split(/(\{.*?\})/g);
     return parts.map((part, i) => {
       if (part.startsWith('{') && part.endsWith('}')) {
-        return <span key={i} className="bg-amber-500/20 text-orange-400 px-1 rounded font-bold">{part}</span>;
+        return <span key={i} className="text-fragment-highlight">{part}</span>;
       }
       return part;
     });
   };
 
-  // Substitute {fragments} with span tags for Markdown rendering
-  const processMarkdownFragments = (text: string) => {
-    return text.replace(/(\{.*?\})/g, '<span class="bg-amber-500/20 text-orange-400 px-1 rounded font-bold">$1</span>');
+  const renderKaraokeText = () => {
+    return karaokeLines.map((line, lineIndex) => {
+      if (line.kind === 'plain') {
+        return <div key={lineIndex} className="karaoke-plain-line">{renderHighlightedText(line.text)}</div>;
+      }
+
+      const isActiveLine = lineIndex === activeLineIndex;
+      const lineState = karaokeEnabled && activeLineIndex >= 0
+        ? lineIndex < activeLineIndex
+          ? 'past'
+          : lineIndex > activeLineIndex
+            ? 'future'
+            : 'active'
+        : '';
+      const activeWord = isActiveLine
+        ? getActiveWordIndex(line.words, line.startSec, line.endSec, karaokeTimeSec)
+        : -1;
+      let wordIndex = -1;
+
+      return (
+        <div
+          key={lineIndex}
+          data-karaoke-index={lineIndex}
+          className={`karaoke-line ${lineState}`}
+        >
+          <span className="karaoke-timestamp">[{line.timestamp}]</span>
+          <span className="karaoke-text">
+            {line.text.split(/(\s+)/).map((token, tokenIndex) => {
+              if (/^\s+$/.test(token)) return token;
+              wordIndex += 1;
+              return (
+                <span
+                  key={tokenIndex}
+                  className={wordIndex === activeWord ? 'karaoke-word active' : 'karaoke-word'}
+                >
+                  {renderHighlightedText(token)}
+                </span>
+              );
+            })}
+          </span>
+        </div>
+      );
+    });
   };
 
   const handleContextMenu = (e: React.MouseEvent) => {
     if (isEditing || isProcessingAI) return;
     
-    const selection = window.getSelection();
-    const text = selection?.toString().trim();
-    if (text && text.length > 0) {
+    const selectionInfo = getSelectionInfo();
+    if (selectionInfo) {
       e.preventDefault();
-      setSelectedText(text);
+      setSelectedText(selectionInfo.text);
+      setSelectedContextText(selectionInfo.contextText);
       setMenuPos({ x: e.clientX, y: e.clientY });
     } else {
       setMenuPos(null);
       setSelectedText('');
+      setSelectedContextText('');
     }
   };
 
-  const startEdit = () => {
-    setEditValue(selectedText);
+  const startEdit = (selectionInfo?: { text: string; contextText: string } | null) => {
+    const nextText = selectionInfo?.text ?? selectedText;
+    if (!nextText.trim()) return;
+    if (selectionInfo) {
+      setSelectedText(selectionInfo.text);
+      setSelectedContextText(selectionInfo.contextText);
+    }
+    setEditValue(nextText);
     setIsEditing(true);
     setMenuPos(null);
   };
 
+  const applyContentUpdate = (nextContent: string) => {
+    if (nextContent === content) return;
+    setUndoStack((stack) => [...stack.slice(-24), content]);
+    onUpdateContent(nextContent);
+  };
+
   const saveEdit = () => {
-    const newContent = content.replace(selectedText, editValue);
-    if (newContent !== content) {
-      onUpdateContent(newContent);
+    const result = replaceSelectedText(content, {
+      selectedText,
+      replacementText: editValue,
+      contextText: selectedContextText,
+    });
+    if (result.changed) {
+      applyContentUpdate(result.text);
+    } else {
+      alert('Could not apply the edit. Try selecting a slightly larger phrase.');
     }
     setIsEditing(false);
   };
 
-  const handleAiReprocess = async () => {
+  const handleAiReprocess = async (selectionInfo?: { text: string; contextText: string } | null) => {
+    const textToProcess = selectionInfo?.text ?? selectedText;
+    const contextToUse = selectionInfo?.contextText ?? selectedContextText;
+    if (!textToProcess.trim()) return;
     setMenuPos(null);
     setIsProcessingAI(true);
     try {
-      const newText = await onAiReprocess(selectedText);
+      const newText = await onAiReprocess(textToProcess);
       if (newText) {
-        const newContent = content.replace(selectedText, newText);
-        onUpdateContent(newContent);
+        const result = replaceSelectedText(content, {
+          selectedText: textToProcess,
+          replacementText: newText,
+          contextText: contextToUse,
+        });
+        if (result.changed) applyContentUpdate(result.text);
       }
     } catch (err) {
       console.error(err);
       alert("AI Reprocessing failed.");
+    } finally {
+      setIsProcessingAI(false);
+    }
+  };
+
+  const handlePolishTranslation = async (selectionInfo?: { text: string; contextText: string } | null) => {
+    if (!onPolishTranslation) return;
+    const textToProcess = selectionInfo?.text ?? selectedText;
+    const contextToUse = selectionInfo?.contextText ?? selectedContextText;
+    if (!textToProcess.trim()) return;
+    setMenuPos(null);
+    setIsProcessingAI(true);
+    try {
+      const newText = await onPolishTranslation(textToProcess);
+      if (newText) {
+        const result = replaceSelectedText(content, {
+          selectedText: textToProcess,
+          replacementText: newText,
+          contextText: contextToUse,
+        });
+        if (result.changed) applyContentUpdate(result.text);
+      }
+    } catch (err) {
+      console.error(err);
+      const message = err instanceof Error ? err.message : String(err || 'Unknown error');
+      alert(`Translation polish failed.\n\n${message}`);
     } finally {
       setIsProcessingAI(false);
     }
@@ -100,26 +254,81 @@ export function TextPanel({
     return () => window.removeEventListener('mousedown', clickHandler);
   }, [menuPos]);
 
+  useEffect(() => {
+    const keyHandler = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (event.key === 'Escape' && (menuPos || isEditing)) {
+        event.preventDefault();
+        setMenuPos(null);
+        setIsEditing(false);
+        return;
+      }
+      if (target?.closest?.('textarea, input, select, [contenteditable="true"]')) return;
+      const selectionInfo = getSelectionInfo();
+      if (selectionInfo && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        const key = event.key.toLowerCase();
+        if (event.key === 'Tab') {
+          event.preventDefault();
+          startEdit(selectionInfo);
+          return;
+        }
+        if (key === 'g' && onAddToGlossary) {
+          event.preventDefault();
+          setMenuPos(null);
+          onAddToGlossary(selectionInfo.text, lang);
+          return;
+        }
+        if (key === 'a') {
+          event.preventDefault();
+          void handleAiReprocess(selectionInfo);
+          return;
+        }
+        if (key === 'p' && lang === 'translated' && onPolishTranslation) {
+          event.preventDefault();
+          void handlePolishTranslation(selectionInfo);
+          return;
+        }
+      }
+      if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.key.toLowerCase() !== 'z') return;
+      setUndoStack((stack) => {
+        const previous = stack[stack.length - 1];
+        if (!previous) return stack;
+        event.preventDefault();
+        onUpdateContent(previous);
+        return stack.slice(0, -1);
+      });
+    };
+    window.addEventListener('keydown', keyHandler);
+    return () => window.removeEventListener('keydown', keyHandler);
+  }, [getSelectionInfo, handleAiReprocess, handlePolishTranslation, isEditing, lang, menuPos, onAddToGlossary, onPolishTranslation, onUpdateContent]);
+
   return (
-    <div className="relative h-full w-full flex flex-col min-h-0 bg-slate-900 border border-slate-800 rounded-2xl shadow-inner overflow-hidden isolate">
+    <div className="text-panel">
       <div 
-        ref={scrollRef as any}
+        ref={(node) => {
+          internalScrollRef.current = node;
+          (scrollRef as React.MutableRefObject<HTMLDivElement | null>).current = node;
+        }}
         onScroll={onScroll}
         onContextMenu={handleContextMenu}
-        className="flex-1 overflow-y-auto p-6 font-mono text-sm leading-relaxed whitespace-pre-wrap selection:bg-amber-500/30"
+        className="text-panel-scroll"
       >
         {isProcessingAI && (
-          <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/60 backdrop-blur-sm">
-            <div className="flex bg-slate-900 border border-amber-500/50 p-4 rounded-xl items-center gap-3 shadow-xl">
-               <Loader2 className="w-5 h-5 text-amber-500 animate-spin" />
-               <span className="text-amber-500 text-sm font-bold">✨ AI is re-processing segment...</span>
+          <div className="text-panel-overlay">
+            <div className="text-panel-processing">
+               <Loader2 size={18} className="spin" />
+               <span>AI is revising segment...</span>
             </div>
           </div>
         )}
 
         {format === 'Markdown' ? (
-          <div className="prose prose-invert prose-amber max-w-none">
-            <ReactMarkdown rehypePlugins={[rehypeRaw]}>{processMarkdownFragments(content)}</ReactMarkdown>
+          <div className="text-panel-markdown">
+            <ReactMarkdown>{content}</ReactMarkdown>
+          </div>
+        ) : karaokeEnabled ? (
+          <div className="text-panel-karaoke">
+            {renderKaraokeText()}
           </div>
         ) : (
           renderHighlightedText(content)
@@ -128,32 +337,55 @@ export function TextPanel({
 
       {menuPos && !isEditing && (
         <div 
-          className="fixed z-50 bg-slate-800 border border-slate-600 shadow-2xl rounded-lg p-1.5 flex flex-col w-48"
+          className="text-panel-menu"
           style={{ top: Math.min(menuPos.y + 10, window.innerHeight - 100), left: Math.min(menuPos.x + 10, window.innerWidth - 200) }}
           onMouseDown={(e) => e.stopPropagation()}
         >
-          <button onClick={startEdit} className="text-left px-3 py-2 hover:bg-slate-700 rounded text-sm text-slate-200 transition-colors flex items-center gap-2">
-            <Edit3 className="w-4 h-4"/> Inline Edit
+          <button onClick={() => startEdit()}>
+            <Edit3 size={14}/> Inline Edit
           </button>
-          <div className="h-px bg-slate-700 my-1 mx-2" />
-          <button onClick={handleAiReprocess} className="text-left px-3 py-2 hover:bg-slate-700 rounded text-sm text-amber-500 transition-colors flex items-center gap-2">
-            <Sparkles className="w-4 h-4" /> AI Re-process
+          <div className="text-panel-menu-separator" />
+          <button onClick={() => handleAiReprocess()} className="accent">
+            <Sparkles size={14} /> Audio-Aware Review
           </button>
+          {lang === 'translated' && onPolishTranslation && (
+            <button onClick={() => handlePolishTranslation()} className="accent">
+              <Sparkles size={14} /> Polish Translation
+            </button>
+          )}
+          {onAddToGlossary && (
+            <>
+              <div className="text-panel-menu-separator" />
+              <button onClick={() => {
+                setMenuPos(null);
+                onAddToGlossary(selectedText, lang);
+              }}>
+                <Sparkles size={14} /> Add to Glossary
+              </button>
+            </>
+          )}
         </div>
       )}
 
       {isEditing && (
-        <div className="absolute inset-0 z-40 bg-slate-950/90 backdrop-blur-sm flex items-center justify-center p-6" onMouseDown={(e)=>e.stopPropagation()}>
-          <div className="bg-slate-900 border border-slate-700 p-5 rounded-2xl w-full max-w-lg shadow-2xl">
-            <h4 className="text-sm font-bold text-slate-300 mb-3 flex items-center gap-2"><Edit3 className="w-4 h-4"/> Edit Text Snippet</h4>
+        <div className="text-panel-edit-overlay" onMouseDown={(e)=>e.stopPropagation()}>
+          <div className="text-panel-edit-box">
+            <h4><Edit3 size={14}/> Edit Text Snippet</h4>
             <textarea 
+              ref={editTextareaRef}
               value={editValue}
               onChange={(e) => setEditValue(e.target.value)}
-              className="w-full h-40 bg-slate-950 border border-slate-700 rounded-xl p-4 text-sm text-slate-300 focus:border-amber-500 outline-none resize-none mb-4 shadow-inner"
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  setIsEditing(false);
+                }
+              }}
+              className="text-panel-edit-textarea"
             />
-            <div className="flex justify-end gap-3">
-              <button onClick={() => setIsEditing(false)} className="px-5 py-2.5 rounded-xl text-sm font-bold text-slate-400 hover:bg-slate-800 transition-colors">Cancel</button>
-              <button onClick={saveEdit} className="px-5 py-2.5 rounded-xl text-sm bg-amber-500 text-slate-950 font-bold hover:bg-amber-400 transition-colors shadow-lg shadow-amber-500/20">Save Revision</button>
+            <div className="text-panel-edit-actions">
+              <button onClick={() => setIsEditing(false)} className="btn-ghost-sm">Cancel</button>
+              <button onClick={saveEdit} className="btn-save">Save Revision</button>
             </div>
           </div>
         </div>
