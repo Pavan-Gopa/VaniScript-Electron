@@ -2172,9 +2172,9 @@ html, body, #root {
   height: 100%;
   aspect-ratio: 9 / 16;
   transform: translate(-50%, -50%);
-  border: var(--frame-guide-border-width, 2px) solid var(--frame-guide-color, rgba(255,170,25,0.85));
+  border: var(--frame-guide-border-width, 2px) solid var(--frame-guide-border-color, rgba(255,170,25,0.85));
   box-shadow:
-    0 0 var(--frame-guide-blur, 0px) var(--frame-guide-blur, 0px) var(--frame-guide-color, rgba(255,170,25,0.5)),
+    inset 0 0 var(--frame-guide-blur, 0px) calc(var(--frame-guide-blur, 0px) * 0.5) var(--frame-guide-border-color, rgba(255,170,25,0.5)),
     0 0 0 9999px rgba(0,0,0, var(--frame-guide-opacity, 0.75));
   overflow: hidden;
   pointer-events: none;

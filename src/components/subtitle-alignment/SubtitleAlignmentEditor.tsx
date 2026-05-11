@@ -144,10 +144,6 @@ export function SubtitleAlignmentEditor({
   const [frameZoom, setFrameZoom] = useState(settings.zoom);
   const [framePanX, setFramePanX] = useState(0);
   const [framePanY, setFramePanY] = useState(0);
-  const [frameGuideColor, setFrameGuideColor] = useState('#ffaa19');
-  const [frameGuideOpacity, setFrameGuideOpacity] = useState(0.75);
-  const [frameGuideBorderWidth, setFrameGuideBorderWidth] = useState(2);
-  const [frameGuideBlur, setFrameGuideBlur] = useState(0);
   const [frameKeyframes, setFrameKeyframes] = useState<FrameKeyframe[]>([]);
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [timelineZoom, setTimelineZoom] = useState(1);
@@ -821,10 +817,17 @@ export function SubtitleAlignmentEditor({
               onTimeUpdate={handleTimeUpdate}
             />
             <div className="alignment-frame-guide" ref={frameGuideRef} style={{
-              '--frame-guide-color': frameGuideColor,
-              '--frame-guide-opacity': frameGuideOpacity,
-              '--frame-guide-border-width': `${frameGuideBorderWidth}px`,
-              '--frame-guide-blur': `${frameGuideBlur}px`,
+              '--frame-guide-opacity': bgSettings.frameGuideOpacity ?? 0.75,
+              '--frame-guide-border-width': `${bgSettings.frameGuideBorderWidth ?? 2}px`,
+              '--frame-guide-blur': `${bgSettings.frameGuideBlur ?? 0}px`,
+              '--frame-guide-border-color': (() => {
+                const c = (bgSettings.frameGuideColor ?? '#ffaa19').replace('#', '');
+                const r = parseInt(c.slice(0, 2), 16);
+                const g = parseInt(c.slice(2, 4), 16);
+                const b = parseInt(c.slice(4, 6), 16);
+                const a = bgSettings.frameGuideBorderOpacity ?? 1;
+                return `rgba(${r},${g},${b},${a})`;
+              })(),
             } as React.CSSProperties}>
             {previewCaption && (
               <div
@@ -1116,23 +1119,38 @@ export function SubtitleAlignmentEditor({
               <p>Adjust the frame, then press Add point. Transitions between points are smooth.</p>
               <label>
                 <span>Guide</span>
-                <input type="color" value={frameGuideColor} onChange={(event) => setFrameGuideColor(event.currentTarget.value)} />
-                <b>{frameGuideColor}</b>
+                <input type="color"
+                  value={bgSettings.frameGuideColor ?? '#ffaa19'}
+                  onChange={(e) => setBgSettings((prev) => ({ ...prev, frameGuideColor: e.currentTarget.value }))} />
+                <b>{bgSettings.frameGuideColor ?? '#ffaa19'}</b>
               </label>
               <label>
                 <span>Dim</span>
-                <input type="range" min={0} max={1} step={0.05} value={frameGuideOpacity} onChange={(e) => setFrameGuideOpacity(Number(e.currentTarget.value))} />
-                <b>{Math.round(frameGuideOpacity * 100)}%</b>
+                <input type="range" min={0} max={1} step={0.05}
+                  value={bgSettings.frameGuideOpacity ?? 0.75}
+                  onChange={(e) => setBgSettings((prev) => ({ ...prev, frameGuideOpacity: Number(e.currentTarget.value) }))} />
+                <b>{Math.round((bgSettings.frameGuideOpacity ?? 0.75) * 100)}%</b>
               </label>
               <label>
                 <span>Border</span>
-                <input type="range" min={0} max={8} step={0.5} value={frameGuideBorderWidth} onChange={(e) => setFrameGuideBorderWidth(Number(e.currentTarget.value))} />
-                <b>{frameGuideBorderWidth}px</b>
+                <input type="range" min={0} max={12} step={0.5}
+                  value={bgSettings.frameGuideBorderWidth ?? 2}
+                  onChange={(e) => setBgSettings((prev) => ({ ...prev, frameGuideBorderWidth: Number(e.currentTarget.value) }))} />
+                <b>{bgSettings.frameGuideBorderWidth ?? 2}px</b>
+              </label>
+              <label>
+                <span>Opacity</span>
+                <input type="range" min={0} max={1} step={0.05}
+                  value={bgSettings.frameGuideBorderOpacity ?? 1}
+                  onChange={(e) => setBgSettings((prev) => ({ ...prev, frameGuideBorderOpacity: Number(e.currentTarget.value) }))} />
+                <b>{Math.round((bgSettings.frameGuideBorderOpacity ?? 1) * 100)}%</b>
               </label>
               <label>
                 <span>Glow</span>
-                <input type="range" min={0} max={20} step={1} value={frameGuideBlur} onChange={(e) => setFrameGuideBlur(Number(e.currentTarget.value))} />
-                <b>{frameGuideBlur}px</b>
+                <input type="range" min={0} max={30} step={1}
+                  value={bgSettings.frameGuideBlur ?? 0}
+                  onChange={(e) => setBgSettings((prev) => ({ ...prev, frameGuideBlur: Number(e.currentTarget.value) }))} />
+                <b>{bgSettings.frameGuideBlur ?? 0}px</b>
               </label>
               <label>
                 <span>Zoom</span>
