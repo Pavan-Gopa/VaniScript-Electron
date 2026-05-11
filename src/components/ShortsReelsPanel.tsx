@@ -671,6 +671,8 @@ export function ShortsReelsPanel({
           initialCues={getPlanCues(editorPlan, displayLanguage)}
           initialSegments={displayLanguage === 'source' ? editorPlan.sourceAlignment : editorPlan.targetAlignment}
           initialFrameKeyframes={displayLanguage === 'source' ? editorPlan.sourceFrameKeyframes : editorPlan.targetFrameKeyframes}
+          initialCuts={editorPlan.timelineCuts}
+          initialTrim={editorPlan.timelineTrim}
           settings={settings}
           subtitleMaxCharsPerLine={subtitleMaxCharsPerLine}
           subtitleMaxLines={subtitleMaxLines}
@@ -696,6 +698,12 @@ export function ShortsReelsPanel({
             if (editorIndex !== null) {
               onSavePlanFrameKeyframes(editorIndex, displayLanguage, keyframes);
             }
+          }}
+          onSaveCuts={(cuts) => {
+            if (editorIndex !== null) onUpdatePlan(editorIndex, { timelineCuts: cuts });
+          }}
+          onSaveTrim={(trim) => {
+            if (editorIndex !== null) onUpdatePlan(editorIndex, { timelineTrim: trim });
           }}
           syncEnabled={editorIndex !== null ? plans[editorIndex]?.syncEnabled : false}
           hasLinkedPartner={editorIndex !== null ? !!plans[editorIndex]?.linkedClipGroupId : false}
