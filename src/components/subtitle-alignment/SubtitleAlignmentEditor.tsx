@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { BackgroundSettings, defaultBackgroundSettings } from '../../lib/shorts-render';
 import { Download, Pause, Play, Save, Scissors, SplitSquareHorizontal, Trash2, Link2, Unlink2, Undo2, Redo2, Languages, Repeat, RotateCcw, CheckCheck, X } from 'lucide-react';
 import { formatPlaybackClock } from '../../lib/karaoke';
 import {
@@ -161,6 +162,9 @@ export function SubtitleAlignmentEditor({
   const [trimDragState, setTrimDragState] = useState<{ edge: 'start' | 'end'; pointerX: number; original: number } | null>(null);
   const [looping, setLooping] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false); // green ✓ feedback after save
+  const [bgSettings, setBgSettings] = useState<BackgroundSettings>(defaultBackgroundSettings());
+  const [inspectorTab, setInspectorTab] = useState<'frame' | 'background'>('frame');
+  const blurVideoRef = useRef<HTMLVideoElement>(null);
   const undoStackRef = useRef(new UndoRedoStack());
   const [undoTick, setUndoTick] = useState(0); // force re-render on undo/redo
   // ── Refs for playback (avoid stale closures in RAF/timeupdate) ──
@@ -506,6 +510,7 @@ export function SubtitleAlignmentEditor({
     const safe = Math.min(Math.max(0, nextLocalSec), clipDurationSec);
     if (videoRef.current) videoRef.current.currentTime = clipStartSec + safe;
     if (audioRef.current) audioRef.current.currentTime = clipStartSec + safe;
+    if (blurVideoRef.current) blurVideoRef.current.currentTime = clipStartSec + safe;
     setCurrentSec(safe);
   }
 
@@ -547,10 +552,12 @@ export function SubtitleAlignmentEditor({
       }
       video.currentTime = clipStartSec + startAt;
       await video.play();
+      blurVideoRef.current?.play().catch(() => undefined);
       setPlaying(true);
     } else {
       video.pause();
       audio?.pause();
+      blurVideoRef.current?.pause();
       setPlaying(false);
     }
   }
@@ -758,7 +765,33 @@ export function SubtitleAlignmentEditor({
         <div className={`alignment-workspace ${inspectorOpen ? '' : 'inspector-closed'}`}>
           <div className="alignment-left">
         <div className="alignment-main">
-          <div className="alignment-preview" style={{ backgroundColor: frameBackgroundColor }}>
+          <div className="alignment-preview" style={{ backgroundColor: bgSettings.solidEnabled ? bgSettings.solidColor : frameBackgroundColor }}>
+            {/* Blur background video layer */}
+            {bgSettings.blurEnabled && (
+              <video
+                ref={blurVideoRef}
+                src={videoSrc}
+                muted
+                playsInline
+                className="alignment-blur-bg"
+                style={{
+                  filter: `blur(${bgSettings.blurStrength}px)`,
+                  transform: `scale(${bgSettings.blurScale})`,
+                }}
+              />
+            )}
+            {/* Gradient overlay */}
+            {bgSettings.gradientEnabled && (
+              <div
+                className="alignment-gradient-overlay"
+                style={{
+                  background: bgSettings.gradientType === 'radial'
+                    ? `radial-gradient(ellipse at center, ${bgSettings.gradientColorA}, ${bgSettings.gradientColorB})`
+                    : `linear-gradient(${bgSettings.gradientAngle}deg, ${bgSettings.gradientColorA}, ${bgSettings.gradientColorB})`,
+                  opacity: bgSettings.gradientOpacity,
+                }}
+              />
+            )}
             <video
               ref={videoRef}
               src={videoSrc}
@@ -766,6 +799,12 @@ export function SubtitleAlignmentEditor({
               playsInline
               style={{
                 transform: `translate(${framePanX}%, ${framePanY}%) scale(${frameZoom})`,
+                ...(bgSettings.featherEnabled ? {
+                  WebkitMaskImage: `linear-gradient(to bottom, transparent 0px, black ${bgSettings.featherTop}px, black calc(100% - ${bgSettings.featherBottom}px), transparent 100%), linear-gradient(to right, transparent 0px, black ${bgSettings.featherLeft}px, black calc(100% - ${bgSettings.featherRight}px), transparent 100%)`,
+                  WebkitMaskComposite: 'destination-in' as any,
+                  maskImage: `linear-gradient(to bottom, transparent 0px, black ${bgSettings.featherTop}px, black calc(100% - ${bgSettings.featherBottom}px), transparent 100%), linear-gradient(to right, transparent 0px, black ${bgSettings.featherLeft}px, black calc(100% - ${bgSettings.featherRight}px), transparent 100%)`,
+                  maskComposite: 'intersect' as any,
+                } : {}),
               }}
               onLoadedMetadata={() => syncMedia(currentSec)}
               onTimeUpdate={handleTimeUpdate}
@@ -1049,6 +1088,13 @@ export function SubtitleAlignmentEditor({
 
           {inspectorOpen && (
           <div className="alignment-side">
+            {/* Tab bar */}
+            <div className="alignment-inspector-tabs">
+              <button type="button" className={inspectorTab === 'frame' ? 'active' : ''} onClick={() => setInspectorTab('frame')}>Frame</button>
+              <button type="button" className={inspectorTab === 'background' ? 'active' : ''} onClick={() => setInspectorTab('background')}>Background</button>
+            </div>
+
+            {inspectorTab === 'frame' && (
             <div className="alignment-frame-panel">
               <h4>Frame animation</h4>
               <p>Adjust the frame, then press Add point. Transitions between points are smooth.</p>
@@ -1124,6 +1170,124 @@ export function SubtitleAlignmentEditor({
                 ))}
               </div>
             </div>
+            )}
+
+            {inspectorTab === 'background' && (
+            <div className="alignment-frame-panel alignment-bg-panel">
+              <h4>Background settings</h4>
+              <p>Layer multiple background effects. Toggle each mode independently.</p>
+
+              {/* ── Solid Color ── */}
+              <div className="bg-section">
+                <label className="bg-toggle">
+                  <input type="checkbox" checked={bgSettings.solidEnabled} onChange={(e) => setBgSettings(prev => ({ ...prev, solidEnabled: e.target.checked }))} />
+                  <span className="bg-toggle-label">Solid color</span>
+                </label>
+                {bgSettings.solidEnabled && (
+                  <label>
+                    <span>Color</span>
+                    <input type="color" value={bgSettings.solidColor} onChange={(e) => setBgSettings(prev => ({ ...prev, solidColor: e.target.value }))} />
+                    <b>{bgSettings.solidColor}</b>
+                  </label>
+                )}
+              </div>
+
+              {/* ── Blur Background ── */}
+              <div className="bg-section">
+                <label className="bg-toggle">
+                  <input type="checkbox" checked={bgSettings.blurEnabled} onChange={(e) => setBgSettings(prev => ({ ...prev, blurEnabled: e.target.checked }))} />
+                  <span className="bg-toggle-label">Blur background</span>
+                </label>
+                {bgSettings.blurEnabled && (
+                  <>
+                    <label>
+                      <span>Blur</span>
+                      <input type="range" min={1} max={80} step={1} value={bgSettings.blurStrength} onChange={(e) => setBgSettings(prev => ({ ...prev, blurStrength: Number(e.target.value) }))} />
+                      <b>{bgSettings.blurStrength}px</b>
+                    </label>
+                    <label>
+                      <span>Scale</span>
+                      <input type="range" min={1} max={2} step={0.05} value={bgSettings.blurScale} onChange={(e) => setBgSettings(prev => ({ ...prev, blurScale: Number(e.target.value) }))} />
+                      <b>{bgSettings.blurScale.toFixed(2)}x</b>
+                    </label>
+                  </>
+                )}
+              </div>
+
+              {/* ── Gradient ── */}
+              <div className="bg-section">
+                <label className="bg-toggle">
+                  <input type="checkbox" checked={bgSettings.gradientEnabled} onChange={(e) => setBgSettings(prev => ({ ...prev, gradientEnabled: e.target.checked }))} />
+                  <span className="bg-toggle-label">Gradient overlay</span>
+                </label>
+                {bgSettings.gradientEnabled && (
+                  <>
+                    <label className="bg-type-row">
+                      <span>Type</span>
+                      <select value={bgSettings.gradientType} onChange={(e) => setBgSettings(prev => ({ ...prev, gradientType: e.target.value as 'linear' | 'radial' }))}>
+                        <option value="linear">Linear</option>
+                        <option value="radial">Radial</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>Color A</span>
+                      <input type="color" value={bgSettings.gradientColorA} onChange={(e) => setBgSettings(prev => ({ ...prev, gradientColorA: e.target.value }))} />
+                      <b>{bgSettings.gradientColorA}</b>
+                    </label>
+                    <label>
+                      <span>Color B</span>
+                      <input type="color" value={bgSettings.gradientColorB} onChange={(e) => setBgSettings(prev => ({ ...prev, gradientColorB: e.target.value }))} />
+                      <b>{bgSettings.gradientColorB}</b>
+                    </label>
+                    {bgSettings.gradientType === 'linear' && (
+                      <label>
+                        <span>Angle</span>
+                        <input type="range" min={0} max={360} step={1} value={bgSettings.gradientAngle} onChange={(e) => setBgSettings(prev => ({ ...prev, gradientAngle: Number(e.target.value) }))} />
+                        <b>{bgSettings.gradientAngle}°</b>
+                      </label>
+                    )}
+                    <label>
+                      <span>Opacity</span>
+                      <input type="range" min={0} max={1} step={0.05} value={bgSettings.gradientOpacity} onChange={(e) => setBgSettings(prev => ({ ...prev, gradientOpacity: Number(e.target.value) }))} />
+                      <b>{(bgSettings.gradientOpacity * 100).toFixed(0)}%</b>
+                    </label>
+                  </>
+                )}
+              </div>
+
+              {/* ── Edge Feather ── */}
+              <div className="bg-section">
+                <label className="bg-toggle">
+                  <input type="checkbox" checked={bgSettings.featherEnabled} onChange={(e) => setBgSettings(prev => ({ ...prev, featherEnabled: e.target.checked }))} />
+                  <span className="bg-toggle-label">Edge feather</span>
+                </label>
+                {bgSettings.featherEnabled && (
+                  <>
+                    <label>
+                      <span>Top</span>
+                      <input type="range" min={0} max={100} step={1} value={bgSettings.featherTop} onChange={(e) => setBgSettings(prev => ({ ...prev, featherTop: Number(e.target.value) }))} />
+                      <b>{bgSettings.featherTop}px</b>
+                    </label>
+                    <label>
+                      <span>Bottom</span>
+                      <input type="range" min={0} max={100} step={1} value={bgSettings.featherBottom} onChange={(e) => setBgSettings(prev => ({ ...prev, featherBottom: Number(e.target.value) }))} />
+                      <b>{bgSettings.featherBottom}px</b>
+                    </label>
+                    <label>
+                      <span>Left</span>
+                      <input type="range" min={0} max={100} step={1} value={bgSettings.featherLeft} onChange={(e) => setBgSettings(prev => ({ ...prev, featherLeft: Number(e.target.value) }))} />
+                      <b>{bgSettings.featherLeft}px</b>
+                    </label>
+                    <label>
+                      <span>Right</span>
+                      <input type="range" min={0} max={100} step={1} value={bgSettings.featherRight} onChange={(e) => setBgSettings(prev => ({ ...prev, featherRight: Number(e.target.value) }))} />
+                      <b>{bgSettings.featherRight}px</b>
+                    </label>
+                  </>
+                )}
+              </div>
+            </div>
+            )}
           </div>
           )}
         </div>

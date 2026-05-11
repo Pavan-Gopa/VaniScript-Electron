@@ -1,5 +1,51 @@
 import type { FrameKeyframe } from './subtitle-alignment';
 
+// ── Background system types ──────────────────────────────────────────────────
+
+export type BackgroundSettings = {
+  // Mode 1: Solid color (existing)
+  solidEnabled: boolean;
+  solidColor: string;
+  // Mode 2: Blurred duplicate
+  blurEnabled: boolean;
+  blurStrength: number;   // 0–100 (maps to CSS blur px / ffmpeg boxblur)
+  blurScale: number;      // 1.0–2.0 (how much to scale the duplicate)
+  // Mode 3: Gradient overlay
+  gradientEnabled: boolean;
+  gradientType: 'linear' | 'radial';
+  gradientColorA: string;
+  gradientColorB: string;
+  gradientAngle: number;  // 0–360 degrees (for linear)
+  gradientOpacity: number; // 0–1
+  // Mode 4: Edge feathering
+  featherEnabled: boolean;
+  featherTop: number;     // 0–100 px
+  featherBottom: number;
+  featherLeft: number;
+  featherRight: number;
+};
+
+export function defaultBackgroundSettings(): BackgroundSettings {
+  return {
+    solidEnabled: true,
+    solidColor: '#000000',
+    blurEnabled: false,
+    blurStrength: 30,
+    blurScale: 1.3,
+    gradientEnabled: false,
+    gradientType: 'linear',
+    gradientColorA: '#000000',
+    gradientColorB: '#1a1a2e',
+    gradientAngle: 180,
+    gradientOpacity: 0.6,
+    featherEnabled: false,
+    featherTop: 20,
+    featherBottom: 20,
+    featherLeft: 10,
+    featherRight: 10,
+  };
+}
+
 export type VerticalVideoFilterOptions = {
   outputWidth: number;
   outputHeight: number;
@@ -8,6 +54,7 @@ export type VerticalVideoFilterOptions = {
   cropY: number;
   backgroundColor?: string;
   frameKeyframes?: FrameKeyframe[];
+  backgroundSettings?: BackgroundSettings;
 };
 
 export type ShortsVideoFormat = 'mp4' | 'mov';
@@ -229,15 +276,55 @@ export function buildVerticalVideoFilterGraph(opts: VerticalVideoFilterOptions):
   const panX = escapeFilterExpression(keyframeExpression(opts.frameKeyframes, 'x', fallbackX));
   const panY = escapeFilterExpression(keyframeExpression(opts.frameKeyframes, 'y', fallbackY));
   const outputRatio = (opts.outputWidth / opts.outputHeight).toFixed(8);
-  const bg = ffmpegColor(opts.frameKeyframes?.[0]?.backgroundColor || opts.backgroundColor);
-  const overlayX = `(${opts.outputWidth}-w)/2+(${opts.outputWidth}*(${panX})/100)`;
-  const overlayY = `(${opts.outputHeight}-h)/2+(${opts.outputHeight}*(${panY})/100)`;
+  const bgS = opts.backgroundSettings;
+  const solidColor = ffmpegColor(bgS?.solidColor || opts.frameKeyframes?.[0]?.backgroundColor || opts.backgroundColor);
+  const W = opts.outputWidth;
+  const H = opts.outputHeight;
+  const overlayX = `(${W}-w)/2+(${W}*(${panX})/100)`;
+  const overlayY = `(${H}-h)/2+(${H}*(${panY})/100)`;
+  const filters: string[] = [];
 
-  return [
-    `[0:v]setpts=PTS-STARTPTS,scale=w='if(gt(a\\,${outputRatio})\\,-2\\,${opts.outputWidth}*(${zoom}))':h='if(gt(a\\,${outputRatio})\\,${opts.outputHeight}*(${zoom})\\,-2)':eval=frame[shortfg]`,
-    `color=c=${bg}:s=${opts.outputWidth}x${opts.outputHeight}:d=21600[shortbg]`,
-    `[shortbg][shortfg]overlay=x='${overlayX}':y='${overlayY}':eval=frame:shortest=1,setsar=1,format=yuv420p[vbase]`,
-  ].join(';');
+  // Foreground: scale source video with zoom/pan
+  filters.push(
+    `[0:v]setpts=PTS-STARTPTS,scale=w='if(gt(a\\,${outputRatio})\\,-2\\,${W}*(${zoom}))':h='if(gt(a\\,${outputRatio})\\,${H}*(${zoom})\\,-2)':eval=frame[shortfg]`
+  );
+
+  // Background layer
+  if (bgS?.blurEnabled) {
+    const blurR = Math.max(1, Math.round((bgS.blurStrength ?? 30) * 0.8));
+    const blurSc = Math.min(2.0, Math.max(1.0, bgS.blurScale ?? 1.3));
+    filters.push(
+      `[0:v]setpts=PTS-STARTPTS,scale=${Math.round(W * blurSc)}:${Math.round(H * blurSc)},crop=${W}:${H},boxblur=${blurR}:${blurR}[blurbg]`
+    );
+    if (bgS.solidEnabled) {
+      filters.push(`color=c=${solidColor}:s=${W}x${H}:d=21600[solidbg]`);
+      filters.push(`[solidbg][blurbg]overlay=0:0:shortest=1[bgbase]`);
+    } else {
+      filters.push(`[blurbg]copy[bgbase]`);
+    }
+  } else {
+    filters.push(`color=c=${solidColor}:s=${W}x${H}:d=21600[bgbase]`);
+  }
+
+  // Gradient overlay
+  if (bgS?.gradientEnabled) {
+    const gA = ffmpegColor(bgS.gradientColorA || '#000000');
+    const gAlpha = Math.min(1, Math.max(0, bgS.gradientOpacity ?? 0.6));
+    const alphaHex = Math.round(gAlpha * 255).toString(16).padStart(2, '0');
+    filters.push(
+      `color=c=${gA}${alphaHex}:s=${W}x${H}:d=21600,format=yuva420p,geq=lum='lum(X\\,Y)':a='255*Y/${H}'[gradlayer]`
+    );
+    filters.push(`[bgbase][gradlayer]overlay=0:0:shortest=1[bgwgrad]`);
+    filters.push(
+      `[bgwgrad][shortfg]overlay=x='${overlayX}':y='${overlayY}':eval=frame:shortest=1,setsar=1,format=yuv420p[vbase]`
+    );
+  } else {
+    filters.push(
+      `[bgbase][shortfg]overlay=x='${overlayX}':y='${overlayY}':eval=frame:shortest=1,setsar=1,format=yuv420p[vbase]`
+    );
+  }
+
+  return filters.join(';');
 }
 
 export function verticalResolutionForPreset(
