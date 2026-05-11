@@ -193,9 +193,9 @@ export function SubtitleAlignmentEditor({
       x: framePanX,
       y: framePanY,
       zoom: frameZoom,
-      backgroundColor: frameGuideColor,
+      backgroundColor: bgSettings.frameGuideColor ?? '#ffaa19',
     }];
-  }, [frameGuideColor, frameKeyframes, framePanX, framePanY, frameZoom]);
+  }, [bgSettings.frameGuideColor, frameKeyframes, framePanX, framePanY, frameZoom]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -1178,7 +1178,7 @@ export function SubtitleAlignmentEditor({
                       x: framePanX,
                       y: framePanY,
                       zoom: frameZoom,
-                      backgroundColor: frameGuideColor,
+                      backgroundColor: bgSettings.frameGuideColor ?? '#ffaa19',
                     };
                     setFrameKeyframes((prev) => [
                       ...prev.filter((point) => Math.abs(point.time - currentSec) > 0.15),
@@ -1208,7 +1208,7 @@ export function SubtitleAlignmentEditor({
                         setFrameZoom(point.zoom);
                         setFramePanX(point.x);
                         setFramePanY(point.y);
-                        setFrameGuideColor(point.backgroundColor || frameGuideColor);
+                        setBgSettings((prev) => ({ ...prev, frameGuideColor: point.backgroundColor || prev.frameGuideColor || '#ffaa19' }));
                       }}
                     >
                       {index + 1}. {formatPlaybackClock(point.time)}
