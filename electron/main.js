@@ -11,6 +11,9 @@ const {
   removeTranslationModel,
   resolveInstalledModelPath,
 } = require('./llamacpp-model-store');
+const {
+  renderShortClipWithHyperFrames,
+} = require('./hyperframes-renderer');
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
 log.initialize();
@@ -171,7 +174,8 @@ function copyProjectAsset(projectId, sourcePath, folder, fallbackName) {
 function normalizeProjectSessionAssets(projectId, session) {
   if (!session) return session;
   const next = { ...session };
-  next.sourceFile = copyProjectAsset(projectId, session.sourceFile, 'audio', 'source');
+  next.sourceFile = copyProjectAsset(projectId, session.sourceFile, session.sourceMediaKind === 'video' ? 'video' : 'audio', 'source');
+  next.originalVideoPath = copyProjectAsset(projectId, session.originalVideoPath, 'video', 'source-video');
   next.wavPath = copyProjectAsset(projectId, session.wavPath, 'audio', 'working');
   next.chunks = Array.isArray(session.chunks)
     ? session.chunks.map((chunk, index) => ({
@@ -254,6 +258,7 @@ function collectProjectAssets(project) {
     });
   };
   add('sourceFile', project.session?.sourceFile);
+  add('originalVideoPath', project.session?.originalVideoPath);
   add('wavPath', project.session?.wavPath);
   (project.session?.chunks || []).forEach((chunk, index) => add(`chunk:${index}`, chunk.filePath));
   return assets;
@@ -294,6 +299,7 @@ function importProjectBundle(filePath) {
     ...(project.session || {}),
     projectId: id,
     sourceFile: assetMap.get('sourceFile') || project.session?.sourceFile || '',
+    originalVideoPath: assetMap.get('originalVideoPath') || project.session?.originalVideoPath || '',
     wavPath: assetMap.get('wavPath') || project.session?.wavPath || '',
     chunks: (project.session?.chunks || []).map((chunk, index) => ({
       ...chunk,
@@ -831,6 +837,13 @@ ipcMain.handle('dialog:saveFile', async (_, { defaultName, filters }) => {
   return result.canceled ? null : result.filePath;
 });
 
+ipcMain.handle('dialog:openDirectory', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  return result.canceled ? null : result.filePaths[0];
+});
+
 // ─── IPC: Save file content ───────────────────────────────────────────────────
 ipcMain.handle('fs:writeFile', async (_, { filePath, content }) => {
   try {
@@ -844,6 +857,30 @@ ipcMain.handle('fs:writeFile', async (_, { filePath, content }) => {
 ipcMain.handle('fs:readTextFile', async (_, { filePath }) => {
   try {
     return { success: true, content: fs.readFileSync(filePath, 'utf8') };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+ipcMain.handle('fs:writeTempTextFile', async (_, { fileName, content }) => {
+  try {
+    const tempDir = getTempDir();
+    fs.mkdirSync(tempDir, { recursive: true });
+    const safeFileName = safeName(path.basename(fileName || `vaniscript_${Date.now()}.txt`), 'temp.txt');
+    const filePath = path.join(tempDir, safeFileName);
+    fs.writeFileSync(filePath, String(content || ''), 'utf8');
+    return { success: true, filePath };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+ipcMain.handle('fs:createTempPath', async (_, { fileName }) => {
+  try {
+    const tempDir = getTempDir();
+    fs.mkdirSync(tempDir, { recursive: true });
+    const safeFileName = safeName(path.basename(fileName || `vaniscript_${Date.now()}.tmp`), 'temp.tmp');
+    return { success: true, filePath: path.join(tempDir, `${Date.now()}_${safeFileName}`) };
   } catch (e) {
     return { success: false, error: e.message };
   }
@@ -885,6 +922,21 @@ function runFfmpeg(args) {
   });
 }
 
+function escapeFfmpegFilterPath(filePath) {
+  return String(filePath || '')
+    .replace(/\\/g, '\\\\')
+    .replace(/:/g, '\\:')
+    .replace(/'/g, "\\'");
+}
+
+function assSubtitleFilter(filePath) {
+  return `ass=filename='${escapeFfmpegFilterPath(filePath)}'`;
+}
+
+function assSubtitleFilterGraph(filePath) {
+  return `ass=filename=${escapeFfmpegFilterPath(filePath).replace(/ /g, '\\ ')}`;
+}
+
 // ─── IPC: Convert audio to WAV 16kHz mono ────────────────────────────────────
 ipcMain.handle('ffmpeg:convertToWav', async (_, { inputPath }) => {
   try {
@@ -904,6 +956,31 @@ ipcMain.handle('ffmpeg:convertToWav', async (_, { inputPath }) => {
     return { success: false, error: result.error, stderr: result.stderr };
   } catch (e) {
     log.error('ffmpeg:convertToWav handler failed:', e);
+    return { success: false, error: e?.message ?? String(e) };
+  }
+});
+
+ipcMain.handle('ffmpeg:extractAudioForTranscription', async (_, { inputPath }) => {
+  try {
+    const tempDir = getTempDir();
+    fs.mkdirSync(tempDir, { recursive: true });
+    const outputPath = path.join(tempDir, `video_audio_${Date.now()}.wav`);
+    if (!fs.existsSync(inputPath)) {
+      return { success: false, error: `Input file not found: ${inputPath}` };
+    }
+    const result = await runFfmpeg([
+      '-y',
+      '-i', inputPath,
+      '-vn',
+      '-ar', '16000',
+      '-ac', '1',
+      '-c:a', 'pcm_s16le',
+      outputPath,
+    ]);
+    if (result.success) return { success: true, outputPath };
+    return { success: false, error: result.error, stderr: result.stderr };
+  } catch (e) {
+    log.error('ffmpeg:extractAudioForTranscription handler failed:', e);
     return { success: false, error: e?.message ?? String(e) };
   }
 });
@@ -954,6 +1031,228 @@ ipcMain.handle('ffmpeg:getDuration', async (_, { inputPath }) => {
     return { success: true, durationSec: sec };
   }
   return { success: false, durationSec: 0 };
+});
+
+ipcMain.handle('ffmpeg:getVideoInfo', async (_, { inputPath }) => {
+  const stderr = await new Promise((resolve) => {
+    const ffmpegPath = getFfmpegPath();
+    log.info('FFmpeg probe cmd:', ffmpegPath, '-hide_banner -i', inputPath);
+    let collected = '';
+    let proc;
+    try {
+      proc = spawn(ffmpegPath, ['-hide_banner', '-i', inputPath], { stdio: ['ignore', 'ignore', 'pipe'] });
+    } catch (e) {
+      return resolve('');
+    }
+    proc.stderr.on('data', d => { collected += d.toString(); });
+    proc.on('close', () => resolve(collected));
+    proc.on('error', () => resolve(collected));
+  });
+  const videoMatch = stderr.match(/Video:\s.*?,\s*(\d{2,5})x(\d{2,5})[\s,\[]/);
+  const durationMatch = stderr.match(/Duration:\s*(\d+):(\d+):(\d+\.?\d*)/);
+  const fpsMatch = stderr.match(/,\s*([0-9]+(?:\.[0-9]+)?)\s*fps[, ]/);
+  if (!videoMatch) return { success: false, error: 'Could not read video dimensions.' };
+  const durationSec = durationMatch
+    ? (parseInt(durationMatch[1], 10) * 3600) + (parseInt(durationMatch[2], 10) * 60) + parseFloat(durationMatch[3])
+    : 0;
+  const fps = fpsMatch ? Number(fpsMatch[1]) : undefined;
+  return {
+    success: true,
+    width: Number(videoMatch[1]),
+    height: Number(videoMatch[2]),
+    durationSec,
+    fps,
+  };
+});
+
+ipcMain.handle('ffmpeg:extractWaveformPeaks', async (_, {
+  inputPath,
+  startSec = 0,
+  durationSec = 0,
+  peakCount = 180,
+}) => {
+  try {
+    if (!inputPath || !fs.existsSync(inputPath)) {
+      return { success: false, error: `Input file not found: ${inputPath}` };
+    }
+
+    const ffmpegPath = getFfmpegPath();
+    const safeDuration = Math.max(0.1, Number(durationSec) || 0.1);
+    const safePeakCount = Math.min(600, Math.max(40, Number(peakCount) || 180));
+    const args = [
+      '-v', 'error',
+      '-ss', String(Math.max(0, Number(startSec) || 0)),
+      '-t', String(safeDuration),
+      '-i', inputPath,
+      '-vn',
+      '-ac', '1',
+      '-ar', '8000',
+      '-f', 'f32le',
+      'pipe:1',
+    ];
+
+    log.info('FFmpeg waveform cmd:', ffmpegPath, args.join(' '));
+    const result = await new Promise(resolve => {
+      let stderr = '';
+      const chunks = [];
+      let proc;
+      try {
+        proc = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      } catch (e) {
+        resolve({ success: false, error: e.message, stderr: '' });
+        return;
+      }
+      proc.stdout.on('data', d => chunks.push(Buffer.from(d)));
+      proc.stderr.on('data', d => { stderr += d.toString(); });
+      proc.on('error', e => resolve({ success: false, error: e.message, stderr }));
+      proc.on('close', code => {
+        if (code !== 0) {
+          resolve({ success: false, error: `FFmpeg exited with code ${code}`, stderr: stderr.slice(-800) });
+          return;
+        }
+        resolve({ success: true, buffer: Buffer.concat(chunks), stderr });
+      });
+    });
+
+    if (!result.success) return result;
+    const sampleCount = Math.floor(result.buffer.byteLength / 4);
+    if (sampleCount === 0) return { success: false, error: 'No waveform samples returned.' };
+
+    const view = new DataView(result.buffer.buffer, result.buffer.byteOffset, sampleCount * 4);
+    const bucketSize = Math.max(1, Math.floor(sampleCount / safePeakCount));
+    const peaks = [];
+    for (let i = 0; i < safePeakCount; i++) {
+      const start = i * bucketSize;
+      const end = i === safePeakCount - 1 ? sampleCount : Math.min(sampleCount, start + bucketSize);
+      let peak = 0;
+      for (let j = start; j < end; j++) peak = Math.max(peak, Math.abs(view.getFloat32(j * 4, true) || 0));
+      peaks.push(Math.min(1, peak));
+    }
+    const maxPeak = Math.max(0.0001, ...peaks);
+    return { success: true, peaks: peaks.map(peak => peak / maxPeak) };
+  } catch (e) {
+    log.error('ffmpeg:extractWaveformPeaks failed:', e);
+    return { success: false, error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('ffmpeg:renderShortPreviewFrame', async (_, {
+  inputVideoPath,
+  outputPath,
+  atSec,
+  videoFilter,
+  videoFilterGraph,
+  assSubtitlePath,
+}) => {
+  try {
+    const args = videoFilterGraph ? [
+      '-y',
+      '-ss', String(atSec),
+      '-i', inputVideoPath,
+      '-frames:v', '1',
+      '-filter_complex', `${videoFilterGraph};[vbase]${assSubtitleFilterGraph(assSubtitlePath)}[vout]`,
+      '-map', '[vout]',
+      '-update', '1',
+      outputPath,
+    ] : [
+      '-y',
+      '-ss', String(atSec),
+      '-i', inputVideoPath,
+      '-frames:v', '1',
+      '-vf', `setpts=PTS-STARTPTS,${videoFilter},${assSubtitleFilter(assSubtitlePath)}`,
+      '-af', 'asetpts=PTS-STARTPTS',
+      '-update', '1',
+      outputPath,
+    ];
+    const result = await runFfmpeg(args);
+    return result.success ? { success: true, outputPath } : result;
+  } catch (e) {
+    log.error('ffmpeg:renderShortPreviewFrame failed:', e);
+    return { success: false, error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('ffmpeg:exportShortClip', async (_, {
+  inputVideoPath,
+  outputPath,
+  startSec,
+  durationSec,
+  videoFilter,
+  videoFilterGraph,
+  assSubtitlePath,
+  crf,
+  format,
+}) => {
+  try {
+    const args = videoFilterGraph ? [
+      '-y',
+      '-ss', String(startSec),
+      '-i', inputVideoPath,
+      '-t', String(durationSec),
+      '-filter_complex', `${videoFilterGraph};[vbase]${assSubtitleFilterGraph(assSubtitlePath)}[vout]`,
+      '-map', '[vout]',
+      '-map', '0:a?',
+      '-af', 'asetpts=PTS-STARTPTS',
+      '-c:v', 'libx264',
+      '-preset', 'veryfast',
+      '-crf', String(crf ?? 18),
+      '-c:a', 'aac',
+      '-b:a', '160k',
+      '-movflags', '+faststart',
+      format === 'mov' ? '-f' : null,
+      format === 'mov' ? 'mov' : null,
+      outputPath,
+    ] : [
+      '-y',
+      '-ss', String(startSec),
+      '-i', inputVideoPath,
+      '-t', String(durationSec),
+      '-vf', `setpts=PTS-STARTPTS,${videoFilter},${assSubtitleFilter(assSubtitlePath)}`,
+      '-af', 'asetpts=PTS-STARTPTS',
+      '-c:v', 'libx264',
+      '-preset', 'veryfast',
+      '-crf', String(crf ?? 18),
+      '-c:a', 'aac',
+      '-b:a', '160k',
+      '-movflags', '+faststart',
+      format === 'mov' ? '-f' : null,
+      format === 'mov' ? 'mov' : null,
+      outputPath,
+    ];
+    const result = await runFfmpeg(args.filter(Boolean));
+    return result.success ? { success: true, outputPath } : result;
+  } catch (e) {
+    log.error('ffmpeg:exportShortClip failed:', e);
+    return { success: false, error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('hyperframes:exportShortClip', async (_, {
+  project,
+  inputVideoPath,
+  outputPath,
+  format,
+  qualityPreset,
+}) => {
+  try {
+    if (!project || !outputPath || !inputVideoPath) {
+      return { success: false, error: 'Missing HyperFrames render project, output path, or input video path.' };
+    }
+    const ffmpegPath = getFfmpegPath();
+    return await renderShortClipWithHyperFrames({
+      app,
+      project,
+      inputVideoPath,
+      outputPath,
+      format,
+      qualityPreset,
+      ffmpegPath,
+      log,
+    });
+  } catch (e) {
+    log.error('hyperframes:exportShortClip failed:', e);
+    return { success: false, error: e.message || String(e) };
+  }
 });
 
 // ─── IPC: Read file as buffer (for Whisper) ───────────────────────────────────

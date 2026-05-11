@@ -30,13 +30,65 @@ const LANGS = [
   { value: 'Spanish', label: 'Spanish' },
 ];
 
-function extractDate(name: string) {
-  const m = name.match(/\b(\d{4}[-._]\d{2}[-._]\d{2}|\d{8})\b/);
-  return m?.[0] ?? '';
+function filenameStem(name: string): string {
+  return name
+    .replace(/\.[^/.]+$/, '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
+
+function extractDate(name: string) {
+  const stem = filenameStem(name);
+  const full = stem.match(/\b(\d{4}[-. ]\d{1,2}[-. ]\d{1,2}|\d{1,2}[-. ]\d{1,2}[-. ]\d{4}|\d{8})\b/);
+  if (full) return full[0].replace(/\s+/g, '-');
+  const year = stem.match(/\b(19\d{2}|20\d{2})\b/);
+  return year?.[0] ?? '';
+}
+
 function extractLecturer(name: string) {
-  const m = name.match(/\b((?:[A-Z][a-z]+\s*){1,4}(?:Swami|Maharaja|Das|Goswami|Thakur|Prabhu))\b/i);
+  const stem = filenameStem(name);
+  const upper = stem.toUpperCase();
+  const abbreviations: Array<[RegExp, string]> = [
+    [/\bKKS\b/, 'HH Kadamba Kanana Swami'],
+    [/\bKK\b/, 'HH Kadamba Kanana Swami'],
+    [/\bIDS\b/, 'HH Indradyumna Swami'],
+    [/\bJPS\b/, 'HH Jayapataka Swami'],
+    [/\bRNS\b/, 'HH Radhanath Swami'],
+    [/\bSNS\b/, 'HH Sacinandana Swami'],
+  ];
+  const abbreviation = abbreviations.find(([pattern]) => pattern.test(upper));
+  if (abbreviation) return abbreviation[1];
+
+  const m = stem.match(/\b((?:HH|His Holiness|HG|H\.H\.)?\s*(?:[A-Z][a-zāīūṛṣṅñṭḍṇĀĪŪṚṢṄÑṬḌṆ]+\s*){1,5}(?:Swami|Maharaja|Mahārāja|Das|Dasa|Goswami|Gosvami|Thakur|Ṭhākura|Prabhu|Mataji|Devi Dasi))\b/i);
   return m?.[0]?.trim() ?? '';
+}
+
+function extractLocation(name: string) {
+  const stem = filenameStem(name);
+  const locations = [
+    'Mayapur',
+    'Māyāpur',
+    'Vrindavan',
+    'Vṛndāvana',
+    'Govardhan',
+    'Radha Kunda',
+    'Radhakund',
+    'Nabadwip',
+    'Navadvipa',
+    'Jagannath Puri',
+    'Puri',
+    'Mumbai',
+    'Delhi',
+    'Kolkata',
+    'London',
+    'New York',
+    'Los Angeles',
+    'Australia',
+    'India',
+  ];
+  const found = locations.find((location) => new RegExp(`\\b${location.replace(/\s+/g, '\\s+')}\\b`, 'i').test(stem));
+  return found ?? '';
 }
 
 function resolvePreferredProvider(preferredId: string, options: ProviderOption[]): string {
@@ -77,7 +129,7 @@ export function ConfigPanel({ fileName, settings, onStart, onCancel }: ConfigPan
   );
   const [cfg, setCfg] = useState<SessionConfig>({
     date: extractDate(fileName),
-    location: '',
+    location: extractLocation(fileName),
     lecturer: extractLecturer(fileName),
     participants: '',
     targetLang: 'same',
@@ -188,7 +240,7 @@ export function ConfigPanel({ fileName, settings, onStart, onCancel }: ConfigPan
                 disabled={!translationAvailability.enabled || translationAvailability.providers.length === 0}
               >
                 {!translationAvailability.enabled ? (
-                  <option value="">Disabled while target language is Same</option>
+                  <option value="">Disabled for Same</option>
                 ) : translationAvailability.providers.length > 0 ? (
                   renderProviderOptions(translationAvailability.providers)
                 ) : (

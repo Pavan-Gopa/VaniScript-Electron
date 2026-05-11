@@ -22,6 +22,27 @@ test('parseKaraokeLines reads absolute timestamps and derives line ends', () => 
   assert.equal(lines[1].endSec, 660);
 });
 
+test('parseKaraokeLines splits dense caption scripts without blank lines', () => {
+  const lines = parseKaraokeLines(
+    '[04:56] The spiritual city,\n[04:59] is the spiritual character\n[05:03] of His residence.',
+    296,
+    310
+  );
+
+  assert.equal(lines.length, 3);
+  assert.equal(lines[0].kind, 'timed');
+  assert.equal(lines[1].kind, 'timed');
+  assert.equal(lines[2].kind, 'timed');
+  if (lines[0].kind !== 'timed' || lines[1].kind !== 'timed' || lines[2].kind !== 'timed') {
+    throw new Error('Expected timed karaoke lines');
+  }
+  assert.equal(lines[0].text, 'The spiritual city,');
+  assert.equal(lines[0].endSec, 299);
+  assert.equal(lines[1].text, 'is the spiritual character');
+  assert.equal(lines[1].endSec, 303);
+  assert.equal(lines[2].text, 'of His residence.');
+});
+
 test('parseKaraokeLines offsets relative API timestamps inside later chunks', () => {
   const lines = parseKaraokeLines('[00:00] First line\n\n[00:08] Second line', 595, 660);
 

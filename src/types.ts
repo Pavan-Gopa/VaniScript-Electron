@@ -133,14 +133,51 @@ declare global {
       openFile: () => Promise<string | null>;
       openGenericFile: (opts?: { filters?: any[] }) => Promise<string | null>;
       saveFile: (opts: { defaultName: string; filters?: any[] }) => Promise<string | null>;
+      openDirectory: () => Promise<string | null>;
       writeFile: (opts: { filePath: string; content: string }) => Promise<{ success: boolean; error?: string }>;
+      writeTempTextFile: (opts: { fileName: string; content: string }) => Promise<{ success: boolean; filePath?: string; error?: string }>;
+      createTempPath: (opts: { fileName: string }) => Promise<{ success: boolean; filePath?: string; error?: string }>;
       readTextFile: (opts: { filePath: string }) => Promise<{ success: boolean; content?: string; error?: string }>;
       readFileBuffer: (opts: { filePath: string }) => Promise<any>;
       pathToFileUrl: (opts: { filePath: string }) => Promise<{ success: boolean; url?: string; error?: string }>;
       ffmpegGetPath: () => Promise<string>;
       ffmpegConvertToWav: (opts: { inputPath: string }) => Promise<{ success: boolean; outputPath: string; error?: string; stderr?: string }>;
+      ffmpegExtractAudioForTranscription: (opts: { inputPath: string }) => Promise<{ success: boolean; outputPath: string; error?: string; stderr?: string }>;
       ffmpegSliceChunks: (opts: { inputPath: string; cutPoints: number[] }) => Promise<{ success: boolean; chunkPaths: string[]; error?: string }>;
       ffmpegGetDuration: (opts: { inputPath: string }) => Promise<{ success: boolean; durationSec: number }>;
+      ffmpegGetVideoInfo: (opts: { inputPath: string }) => Promise<{ success: boolean; width?: number; height?: number; durationSec?: number; fps?: number; error?: string }>;
+      ffmpegExtractWaveformPeaks: (opts: {
+        inputPath: string;
+        startSec: number;
+        durationSec: number;
+        peakCount?: number;
+      }) => Promise<{ success: boolean; peaks?: number[]; error?: string; stderr?: string }>;
+      ffmpegRenderShortPreviewFrame: (opts: {
+        inputVideoPath: string;
+        outputPath: string;
+        atSec: number;
+        videoFilter: string;
+        videoFilterGraph?: string;
+        assSubtitlePath: string;
+      }) => Promise<{ success: boolean; outputPath?: string; error?: string; stderr?: string }>;
+      ffmpegExportShortClip: (opts: {
+        inputVideoPath: string;
+        outputPath: string;
+        startSec: number;
+        durationSec: number;
+        videoFilter: string;
+        videoFilterGraph?: string;
+        assSubtitlePath: string;
+        crf?: number;
+        format?: 'mp4' | 'mov';
+      }) => Promise<{ success: boolean; outputPath?: string; error?: string; stderr?: string }>;
+      hyperframesExportShortClip: (opts: {
+        project: any;
+        inputVideoPath: string;
+        outputPath: string;
+        format?: 'mp4' | 'mov';
+        qualityPreset?: 'compact' | 'balanced' | 'high';
+      }) => Promise<{ success: boolean; outputPath?: string; error?: string; stderr?: string }>;
       localInstallAsrModel: (opts: { modelId: string }) => Promise<{ ok: boolean; id: string; path?: string | null; error?: string }>;
       localRemoveAsrModel: (opts: { modelId: string }) => Promise<{ ok: boolean; id: string; error?: string }>;
       localTranscribeChunk: (opts: {

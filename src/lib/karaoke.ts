@@ -46,6 +46,34 @@ function shouldOffsetRelativeTimestamps(startSeconds: number[], fallbackStartSec
   return allTimestampsBeforeChunk && timestampsFitInsideChunk;
 }
 
+function splitKaraokeBlocks(content: string): string[] {
+  const normalized = content.replace(/\r\n/g, '\n').trim();
+  if (!normalized) return [];
+
+  const marker = /(^|\n)\s*\[((?:(?:\d+:)?\d{2}:\d{2}(?:[.,]\d{1,3})?))\]\s*/g;
+  const matches = [...normalized.matchAll(marker)];
+  if (matches.length <= 1) {
+    return normalized
+      .split(/\n{2,}/)
+      .map((block) => block.trim())
+      .filter(Boolean);
+  }
+
+  const blocks: string[] = [];
+  const firstIndex = matches[0].index ?? 0;
+  const leading = normalized.slice(0, firstIndex).trim();
+  if (leading) blocks.push(leading);
+
+  matches.forEach((match, index) => {
+    const start = (match.index ?? 0) + match[1].length;
+    const nextStart = index + 1 < matches.length ? (matches[index + 1].index ?? normalized.length) : normalized.length;
+    const block = normalized.slice(start, nextStart).trim();
+    if (block) blocks.push(block);
+  });
+
+  return blocks;
+}
+
 export function normalizeRelativeTimestamps(content: string, fallbackStartSec: number, fallbackEndSec: number): string {
   const markers = [...content.matchAll(/\[([^\]]+)\]/g)]
     .map((match) => ({ raw: match[1], seconds: parseTimestampToSeconds(match[1]) }))
@@ -63,11 +91,7 @@ export function normalizeRelativeTimestamps(content: string, fallbackStartSec: n
 }
 
 export function parseKaraokeLines(content: string, fallbackStartSec: number, fallbackEndSec: number): KaraokeLine[] {
-  const blocks = content
-    .replace(/\r\n/g, '\n')
-    .split(/\n{2,}/)
-    .map((block) => block.trim())
-    .filter(Boolean);
+  const blocks = splitKaraokeBlocks(content);
 
   const parsed: KaraokeLine[] = blocks.map((block) => {
     const match = block.match(/^\[([^\]]+)\]\s*([\s\S]*)$/);

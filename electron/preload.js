@@ -7,9 +7,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openFile: () => ipcRenderer.invoke('dialog:openFile'),
   openGenericFile: (opts) => ipcRenderer.invoke('dialog:openGenericFile', opts),
   saveFile: (opts) => ipcRenderer.invoke('dialog:saveFile', opts),
+  openDirectory: () => ipcRenderer.invoke('dialog:openDirectory'),
 
   // ─── File system ──────────────────────────────────────────────────────────
   writeFile: (opts) => ipcRenderer.invoke('fs:writeFile', opts),
+  writeTempTextFile: (opts) => ipcRenderer.invoke('fs:writeTempTextFile', opts),
+  createTempPath: (opts) => ipcRenderer.invoke('fs:createTempPath', opts),
   readTextFile: (opts) => ipcRenderer.invoke('fs:readTextFile', opts),
   readFileBuffer: (opts) => ipcRenderer.invoke('fs:readFileBuffer', opts),
   pathToFileUrl: (opts) => ipcRenderer.invoke('fs:pathToFileUrl', opts),
@@ -17,8 +20,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // ─── FFmpeg ────────────────────────────────────────────────────────────────
   ffmpegGetPath: () => ipcRenderer.invoke('ffmpeg:getPath'),
   ffmpegConvertToWav: (opts) => ipcRenderer.invoke('ffmpeg:convertToWav', opts),
+  ffmpegExtractAudioForTranscription: (opts) => ipcRenderer.invoke('ffmpeg:extractAudioForTranscription', opts),
   ffmpegSliceChunks: (opts) => ipcRenderer.invoke('ffmpeg:sliceChunks', opts),
   ffmpegGetDuration: (opts) => ipcRenderer.invoke('ffmpeg:getDuration', opts),
+  ffmpegGetVideoInfo: (opts) => ipcRenderer.invoke('ffmpeg:getVideoInfo', opts),
+  ffmpegExtractWaveformPeaks: (opts) => ipcRenderer.invoke('ffmpeg:extractWaveformPeaks', opts),
+  ffmpegRenderShortPreviewFrame: (opts) => ipcRenderer.invoke('ffmpeg:renderShortPreviewFrame', opts),
+  ffmpegExportShortClip: (opts) => ipcRenderer.invoke('ffmpeg:exportShortClip', opts),
+  hyperframesExportShortClip: (opts) => ipcRenderer.invoke('hyperframes:exportShortClip', opts),
 
   // ─── Local ASR ────────────────────────────────────────────────────────────
   localInstallAsrModel: (opts) => ipcRenderer.invoke('local-asr:installModel', opts),

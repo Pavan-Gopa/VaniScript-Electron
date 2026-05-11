@@ -1,0 +1,203 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=2160, height=3840, initial-scale=1" />
+    <meta data-composition-id="vaniscript-short" data-width="2160" data-height="3840" />
+    <title>Bench 4K Source Proxy</title>
+    <script src="./assets/gsap.min.js"></script>
+    <style>
+      :root {
+        --canvas-width: 2160px;
+        --canvas-height: 3840px;
+        --stage-width: 6826.666666666666px;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        width: var(--canvas-width);
+        height: var(--canvas-height);
+        overflow: hidden;
+        background: transparent;
+        font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      .clip {
+        visibility: hidden;
+      }
+      #stage {
+        position: relative;
+        width: var(--canvas-width);
+        height: var(--canvas-height);
+        overflow: hidden;
+        background: #000000;
+      }
+      #background {
+        position: absolute;
+        inset: 0;
+        background: #000000;
+      }
+      #video-stage {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: var(--stage-width);
+        height: 100%;
+        transform: translate(-50%, -50%);
+        overflow: visible;
+      }
+      #source-video {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        transform-origin: center center;
+      }
+      #subtitle-layer {
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
+        max-width: 100%;
+        box-sizing: border-box;
+        text-align: center;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        pointer-events: none;
+        display: none;
+      }
+      #subtitle-text {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="stage">
+      <div id="background"></div>
+      <div id="video-stage">
+        <video
+          id="source-video"
+          class="clip"
+          data-start="0"
+          data-duration="5"
+          data-track-index="0"
+          data-media-start="0"
+          muted
+          playsinline
+          preload="auto"
+          src="./assets/source.mp4"
+        ></video>
+        <audio
+          id="source-audio"
+          data-start="0"
+          data-duration="5"
+          data-track-index="1"
+          data-media-start="0"
+          data-volume="1"
+          preload="auto"
+          src="./assets/source.mp4"
+        ></audio>
+      </div>
+      <div id="subtitle-layer">
+        <span id="subtitle-text"></span>
+      </div>
+    </div>
+    <script>
+      const project = {"id":"bench-4k-source-proxy","title":"Bench 4K Source Proxy","inputVideoSrc":"file:///Users/pavan/Documents/VaniScript%20Projects/vs-1778240256926-nur5te/video/Kadamba%20Kanana%20Service%20at%20SP%20Samadhi_Final.mov","sourceWidth":3840,"sourceHeight":2160,"width":2160,"height":3840,"fps":30,"clipStartSec":0,"clipEndSec":5,"durationSec":5,"subtitles":[{"id":"c1","startSec":0.1,"endSec":2.1,"text":"THE MASTER PLAN OF THE CITY, OF"},{"id":"c2","startSec":2.1,"endSec":4.8,"text":"MAYAPUR,"}],"captionStyle":{"fontFamily":"Cuprum","fontSize":96,"bold":true,"textTransform":"uppercase","textColor":"#FFFFFF","boxColor":"#FF8C00","boxOpacity":0.5,"boxWidth":86,"boxHeight":1,"edgeBlur":0,"letterSpacing":0,"lineSpacing":1,"edgeSoftness":0.25,"outline":0,"shadow":4},"subtitleBottomMargin":560,"frameKeyframes":[{"id":"f0","time":0,"x":0,"y":0,"zoom":1.12,"backgroundColor":"#CA9E3F"}]};
+      const stage = document.getElementById('stage');
+      const background = document.getElementById('background');
+      const video = document.getElementById('source-video');
+      const subtitleLayer = document.getElementById('subtitle-layer');
+      const subtitleText = document.getElementById('subtitle-text');
+
+      const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+      const smoothstep = (value) => {
+        const t = clamp(value, 0, 1);
+        return t * t * (3 - (2 * t));
+      };
+      const hexToRgba = (hex, opacity) => {
+        const clean = String(hex || '#000000').replace('#', '').padEnd(6, '0').slice(0, 6);
+        const r = parseInt(clean.slice(0, 2), 16);
+        const g = parseInt(clean.slice(2, 4), 16);
+        const b = parseInt(clean.slice(4, 6), 16);
+        return 'rgba(' + r + ', ' + g + ', ' + b + ', ' + clamp(opacity, 0, 1) + ')';
+      };
+      const titleCase = (text) => text.toLowerCase().replace(/(^|\s)\S/g, (match) => match.toUpperCase());
+      const transformText = (text, mode) => {
+        if (mode === 'uppercase') return text.toUpperCase();
+        if (mode === 'title') return titleCase(text);
+        return text;
+      };
+      const activeCue = (timeSec) => project.subtitles.find((cue) => timeSec >= cue.startSec && timeSec < cue.endSec) || null;
+      const interpolateFrameState = (timeSec) => {
+        const keyframes = project.frameKeyframes || [];
+        if (keyframes.length === 0) return { x: 0, y: 0, zoom: 1, backgroundColor: '#000000' };
+        if (keyframes.length === 1 || timeSec <= keyframes[0].time) return keyframes[0];
+        const last = keyframes[keyframes.length - 1];
+        if (timeSec >= last.time) return last;
+        const nextIndex = keyframes.findIndex((point) => point.time >= timeSec);
+        const from = keyframes[Math.max(0, nextIndex - 1)];
+        const to = keyframes[nextIndex];
+        const progress = smoothstep((timeSec - from.time) / Math.max(0.001, to.time - from.time));
+        return {
+          x: from.x + ((to.x - from.x) * progress),
+          y: from.y + ((to.y - from.y) * progress),
+          zoom: from.zoom + ((to.zoom - from.zoom) * progress),
+          backgroundColor: from.backgroundColor || to.backgroundColor || '#000000',
+        };
+      };
+
+      function renderAt(timeSec) {
+        const frame = interpolateFrameState(timeSec);
+        const style = project.captionStyle;
+        const scale = project.height / 1920;
+        const fontSize = style.fontSize * scale;
+        const paddingX = fontSize * 0.42;
+        const paddingY = fontSize * 0.26 * style.boxHeight;
+        const blurPx = Math.max(0, style.edgeBlur) * scale;
+        const radiusPx = (4 + (Math.max(0, Math.min(1, style.edgeSoftness)) * 18)) * scale;
+        const bottomPx = project.subtitleBottomMargin * scale;
+        const textShadowDepth = Math.max(0, style.shadow) * scale;
+        const textStroke = Math.max(0, style.outline) * scale;
+
+        background.style.background = frame.backgroundColor || '#000000';
+        stage.style.background = frame.backgroundColor || '#000000';
+        video.style.transform = 'translate(' + frame.x + '%, ' + frame.y + '%) scale(' + frame.zoom + ')';
+
+        const cue = activeCue(timeSec);
+        if (!cue) {
+          subtitleLayer.style.display = 'none';
+        } else {
+          subtitleLayer.style.display = 'block';
+          subtitleLayer.style.bottom = bottomPx + 'px';
+          subtitleLayer.style.width = Math.max(10, Math.min(100, style.boxWidth)) + '%';
+          subtitleLayer.style.padding = paddingY + 'px ' + paddingX + 'px';
+          subtitleLayer.style.borderRadius = radiusPx + 'px';
+          subtitleLayer.style.backgroundColor = hexToRgba(style.boxColor, style.boxOpacity);
+          subtitleLayer.style.boxShadow = blurPx > 0 ? ('0 0 ' + blurPx + 'px ' + hexToRgba(style.boxColor, style.boxOpacity)) : 'none';
+          subtitleLayer.style.color = style.textColor;
+          subtitleLayer.style.fontFamily = style.fontFamily;
+          subtitleLayer.style.fontSize = fontSize + 'px';
+          subtitleLayer.style.fontWeight = style.bold ? '850' : '600';
+          subtitleLayer.style.letterSpacing = (style.letterSpacing * scale) + 'px';
+          subtitleLayer.style.lineHeight = String(style.lineSpacing);
+          subtitleLayer.style.textShadow = textShadowDepth > 0
+            ? ('0 ' + (textShadowDepth * 0.5) + 'px ' + textShadowDepth + 'px rgba(0,0,0,0.82)')
+            : 'none';
+          subtitleLayer.style.webkitTextStroke = textStroke > 0 ? (textStroke + 'px rgba(0,0,0,0.58)') : '0 transparent';
+          subtitleText.textContent = transformText(cue.text, style.textTransform);
+        }
+      }
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+      tl.to({}, {
+        duration: Math.max(0.05, project.durationSec),
+        ease: 'none',
+        onStart: () => renderAt(0),
+        onUpdate: () => renderAt(tl.time()),
+      }, 0);
+      tl.call(() => renderAt(project.durationSec), [], Math.max(0.05, project.durationSec));
+      window.__timelines['vaniscript-short'] = tl;
+      renderAt(0);
+    </script>
+  </body>
+</html>

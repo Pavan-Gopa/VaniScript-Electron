@@ -29,6 +29,19 @@ import {
   projectChunkNumbers,
 } from './lib/project-navigation';
 import { formatDocumentExportLocally, formatDocumentExportWithGemini, formatDocumentExportWithOpenAI } from './services/document-export';
+import { ShortsReelsPanel, ShortsSettings } from './components/ShortsReelsPanel';
+import { SourceMediaKind, sourceMediaKind } from './lib/media-source';
+import { buildShortsPrompt, parseShortsPlanResponse, parseTimestampToSeconds, ShortsClipPlan, ShortsPlanLanguageMode } from './lib/shorts-reels';
+import {
+  buildShortsAssSubtitle,
+  buildVerticalVideoFilter,
+  buildVerticalVideoFilterGraph,
+  extensionForShortsFormat,
+  fpsForShortsFrameRate,
+  verticalResolutionForPreset,
+} from './lib/shorts-render';
+import { buildShortsRenderProject } from './render-engine/RenderPipeline';
+import { alignedSegmentsToCues, AlignedSubtitleSegment } from './lib/subtitle-alignment';
 
 type Screen = 'upload' | 'config' | 'processing' | 'review' | 'export';
 type ViewMode = 'source' | 'translated' | 'dual';
@@ -44,11 +57,15 @@ interface Session {
   updatedAt?: string;
   sourceFile: string;
   sourceFileName: string;
+  sourceMediaKind?: SourceMediaKind;
+  originalVideoPath?: string;
   wavPath: string;
   config: SessionConfig;
   chunks: ChunkData[];
   currentIndex: number;
   targetLang: string;
+  shortsPlans?: ShortsClipPlan[];
+  selectedShortsPlanIndexes?: number[];
 }
 
 type LocalAsrSegment = { t0?: number; t1?: number; text?: string } | [number, number, string];
@@ -66,6 +83,71 @@ type GlossaryDraft = {
   existingEntryId?: string;
   scope: GlossaryScope;
 };
+
+const DEFAULT_SHORTS_SETTINGS: ShortsSettings = {
+  count: 4,
+  minDurationSec: 45,
+  maxDurationSec: 120,
+  mode: 'plan',
+  cropX: 0.5,
+  cropY: 0.42,
+  zoom: 1.12,
+  subtitleBottomMargin: 560,
+  subtitleFontFamily: 'Cuprum',
+  subtitleFontSize: 96,
+  subtitleBold: true,
+  subtitleTextTransform: 'uppercase',
+  subtitleTextColor: '#FFFFFF',
+  subtitleBoxColor: '#FF8C00',
+  subtitleBoxOpacity: 0.5,
+  subtitleBoxWidth: 86,
+  subtitleBoxHeight: 1.0,
+  subtitleBoxBlur: 0,
+  subtitleLetterSpacing: 0,
+  subtitleLineSpacing: 1,
+  subtitleEdgeSoftness: 0.25,
+  subtitleUseCharsPerLine: false,
+  subtitleUseLinesPerCue: false,
+  videoFormat: 'mp4',
+  resolutionPreset: 'source',
+  videoQuality: 'balanced',
+  frameRate: 'source',
+};
+
+const SHORTS_DEFAULTS_KEY = 'vs_shorts_defaults_v1';
+
+type PersistedShortsDefaults = {
+  settings?: Partial<ShortsSettings>;
+  planningProvider?: string;
+  subtitleMaxCharsPerLine?: number;
+  subtitleMaxLines?: number;
+};
+
+function loadShortsDefaults(): PersistedShortsDefaults {
+  try {
+    const raw = localStorage.getItem(SHORTS_DEFAULTS_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    if (parsed?.settings) {
+      const settings = { ...parsed.settings };
+      delete settings['render' + 'Engine'];
+      return {
+        ...parsed,
+        settings: {
+          ...settings,
+          resolutionPreset: settings.resolutionPreset === '1080p' ? 'source' : (settings.resolutionPreset || 'source'),
+          frameRate: settings.frameRate || 'source',
+        },
+      };
+    }
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+
+function saveShortsDefaults(defaults: PersistedShortsDefaults): void {
+  localStorage.setItem(SHORTS_DEFAULTS_KEY, JSON.stringify(defaults));
+}
 
 function formatTimestamp(totalSeconds: number): string {
   const safeSeconds = Math.max(0, Math.floor(totalSeconds));
@@ -125,6 +207,57 @@ function stripMetadataBlock(text: string): string {
     .trim();
 }
 
+function normalizeMetadataValue(value: string): string {
+  const trimmed = value.trim();
+  return /^(unknown|none|нет|неизвестно|---|-)$/i.test(trimmed) ? '' : trimmed;
+}
+
+function extractMetadataLineValue(text: string, labels: string[]): string {
+  const normalized = String(text || '').replace(/\r\n/g, '\n');
+  const pattern = new RegExp(`^\\s*(?:${labels.join('|')})\\s*:\\s*(.+?)\\s*$`, 'im');
+  const match = normalized.match(pattern);
+  return match ? normalizeMetadataValue(match[1]) : '';
+}
+
+function extractLecturerName(text: string): string {
+  return extractMetadataLineValue(text, ['Lecturer', 'Лектор']);
+}
+
+function replaceGenericSpeaker(text: string | undefined, speakerName: string): string | undefined {
+  if (!text || !speakerName.trim()) return text;
+  return text
+    .replace(/\bthe\s+speaker\b/gi, speakerName)
+    .replace(/\bspeaker\b/gi, speakerName)
+    .replace(/\bспикер\b/giu, speakerName)
+    .replace(/\bговорящий\b/giu, speakerName);
+}
+
+function personalizeShortsPlanSpeaker(plan: ShortsClipPlan, sourceSpeaker: string, targetSpeaker: string): ShortsClipPlan {
+  const sourceName = sourceSpeaker || targetSpeaker;
+  const targetName = targetSpeaker || sourceSpeaker;
+  return {
+    ...plan,
+    title: replaceGenericSpeaker(plan.title, targetName || sourceName) || plan.title,
+    summary: replaceGenericSpeaker(plan.summary, targetName || sourceName) || plan.summary,
+    hook: replaceGenericSpeaker(plan.hook, targetName || sourceName) || plan.hook,
+    sourceTitle: replaceGenericSpeaker(plan.sourceTitle, sourceName),
+    sourceSummary: replaceGenericSpeaker(plan.sourceSummary, sourceName),
+    sourceHook: replaceGenericSpeaker(plan.sourceHook, sourceName),
+    targetTitle: replaceGenericSpeaker(plan.targetTitle, targetName),
+    targetSummary: replaceGenericSpeaker(plan.targetSummary, targetName),
+    targetHook: replaceGenericSpeaker(plan.targetHook, targetName),
+  };
+}
+
+function safeExportPart(value: string, fallback = 'clip'): string {
+  return (value || fallback)
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+    .replace(/[^\p{L}\p{N}_ -]/gu, '')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .slice(0, 80) || fallback;
+}
+
 function localizedMetadataPrefix(cfg: SessionConfig, includeMetadata: boolean, targetLang: string): string {
   if (!includeMetadata) return '';
   const lang = targetLang.trim().toLowerCase();
@@ -168,6 +301,10 @@ function estimateTokens(text: string): number {
   return Math.max(0, Math.ceil(String(text || '').length / 4));
 }
 
+function isShortsPromptTooLargeForLocalAi(prompt: string): boolean {
+  return estimateTokens(prompt) > 12000;
+}
+
 function gibibytes(bytes: number): number {
   return bytes / 1024 / 1024 / 1024;
 }
@@ -198,11 +335,25 @@ export default function App() {
   const [audioError, setAudioError] = useState('');
   const [audioCurrentSec, setAudioCurrentSec] = useState(0);
   const [audioPlaying, setAudioPlaying] = useState(false);
-  const [subtitleMaxCharsPerLine, setSubtitleMaxCharsPerLine] = useState(42);
-  const [subtitleMaxLines, setSubtitleMaxLines] = useState(2);
+  const [shortsAudioSrc, setShortsAudioSrc] = useState('');
+  const [shortsAudioStatus, setShortsAudioStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [shortsAudioError, setShortsAudioError] = useState('');
+  const [shortsVideoSrc, setShortsVideoSrc] = useState('');
+  const [subtitleMaxCharsPerLine, setSubtitleMaxCharsPerLine] = useState(() => loadShortsDefaults().subtitleMaxCharsPerLine ?? 42);
+  const [subtitleMaxLines, setSubtitleMaxLines] = useState(() => loadShortsDefaults().subtitleMaxLines ?? 2);
   const [exportingKey, setExportingKey] = useState('');
+  const [shortsSettings, setShortsSettings] = useState<ShortsSettings>(() => ({
+    ...DEFAULT_SHORTS_SETTINGS,
+    ...(loadShortsDefaults().settings ?? {}),
+  }));
+  const [shortsPlans, setShortsPlans] = useState<ShortsClipPlan[]>([]);
+  const [shortsBusy, setShortsBusy] = useState(false);
+  const [shortsBusyLabel, setShortsBusyLabel] = useState('');
+  const [selectedShortsPlanIndex, setSelectedShortsPlanIndex] = useState<number | null>(null);
+  const [selectedShortsPlanIndexes, setSelectedShortsPlanIndexes] = useState<number[]>([]);
+  const [shortsVideoSourceInfo, setShortsVideoSourceInfo] = useState<{ width: number; height: number; durationSec: number; fps?: number } | null>(null);
   const [glossaryDraft, setGlossaryDraft] = useState<GlossaryDraft | null>(null);
-  const [editingProvider, setEditingProvider] = useState<string>(() => settings.translationProvider);
+  const [editingProvider, setEditingProvider] = useState<string>(() => loadShortsDefaults().planningProvider || settings.translationProvider);
   const [projectSidebarOpen, setProjectSidebarOpen] = useState(false);
   const [projectSidebarClosing, setProjectSidebarClosing] = useState(false);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
@@ -231,6 +382,37 @@ export default function App() {
     subtitleMaxCharsPerLine,
     subtitleMaxLines,
   }), [session?.targetLang, session?.chunks, session?.config, subtitleMaxCharsPerLine, subtitleMaxLines]);
+  const shortsPreviewOutputSize = useMemo(
+    () => verticalResolutionForPreset(shortsSettings.resolutionPreset, shortsVideoSourceInfo ?? { width: 1920, height: 1080 }),
+    [shortsSettings.resolutionPreset, shortsVideoSourceInfo]
+  );
+
+  useEffect(() => {
+    setShortsPlans(session?.shortsPlans ?? []);
+    setSelectedShortsPlanIndex(null);
+    setSelectedShortsPlanIndexes(session?.selectedShortsPlanIndexes ?? []);
+    setShortsVideoSourceInfo(null);
+  }, [session?.projectId, session?.sourceFile]);
+
+  useEffect(() => {
+    if (!session?.originalVideoPath || !window.electronAPI?.ffmpegGetVideoInfo) return;
+    let cancelled = false;
+    window.electronAPI.ffmpegGetVideoInfo({ inputPath: session.originalVideoPath }).then((info) => {
+      if (!cancelled && info.success && info.width && info.height) {
+        setShortsVideoSourceInfo({ width: info.width, height: info.height, durationSec: info.durationSec || 0, fps: info.fps });
+      }
+    });
+    return () => { cancelled = true; };
+  }, [session?.originalVideoPath]);
+
+  useEffect(() => {
+    if (!session) return;
+    setSession((prev) => prev ? {
+      ...prev,
+      shortsPlans,
+      selectedShortsPlanIndexes,
+    } : prev);
+  }, [shortsPlans, selectedShortsPlanIndexes]);
 
   useEffect(() => { applyTheme(settings.theme, settings.fontSize, settings.fontScale, settings.fontFamily); }, [settings.theme, settings.fontSize, settings.fontScale, settings.fontFamily]);
 
@@ -402,6 +584,99 @@ export default function App() {
       if (revokedUrl) URL.revokeObjectURL(revokedUrl);
     };
   }, [currentAudioPath]);
+
+  useEffect(() => {
+    let revokedUrl = '';
+    let cancelled = false;
+    const fullAudioPath = session?.wavPath || '';
+
+    const loadShortsAudio = async () => {
+      if (!fullAudioPath) {
+        setShortsAudioSrc('');
+        setShortsAudioStatus('idle');
+        setShortsAudioError('');
+        return;
+      }
+      if (!window.electronAPI) {
+        setShortsAudioSrc('');
+        setShortsAudioStatus('error');
+        setShortsAudioError('Electron file access is unavailable.');
+        return;
+      }
+
+      setShortsAudioStatus('loading');
+      setShortsAudioError('');
+      const directUrl = await window.electronAPI.pathToFileUrl?.({ filePath: fullAudioPath });
+      if (directUrl?.success && directUrl.url) {
+        if (!cancelled) {
+          setShortsAudioSrc(directUrl.url);
+          setShortsAudioStatus('ready');
+        }
+        return;
+      }
+
+      const result = await window.electronAPI.readFileBuffer({ filePath: fullAudioPath });
+      if (!result.success) {
+        if (!cancelled) {
+          setShortsAudioSrc('');
+          setShortsAudioStatus('error');
+          setShortsAudioError(result.error || 'Failed to read full session audio.');
+        }
+        return;
+      }
+
+      const bytes = new Uint8Array(result.data, result.byteOffset, result.byteLength);
+      const objectUrl = createObjectAudioUrl(bytes, audioMimeTypeForPath(fullAudioPath));
+      revokedUrl = objectUrl;
+      if (!cancelled) {
+        setShortsAudioSrc(objectUrl);
+        setShortsAudioStatus('ready');
+      } else {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+
+    loadShortsAudio();
+
+    return () => {
+      cancelled = true;
+      if (revokedUrl) URL.revokeObjectURL(revokedUrl);
+    };
+  }, [session?.wavPath]);
+
+  useEffect(() => {
+    let revokedUrl = '';
+    let cancelled = false;
+    const videoPath = session?.originalVideoPath || '';
+
+    const loadShortsVideo = async () => {
+      if (!videoPath || !window.electronAPI) {
+        setShortsVideoSrc('');
+        return;
+      }
+      const directUrl = await window.electronAPI.pathToFileUrl?.({ filePath: videoPath });
+      if (directUrl?.success && directUrl.url) {
+        if (!cancelled) setShortsVideoSrc(directUrl.url);
+        return;
+      }
+      const result = await window.electronAPI.readFileBuffer({ filePath: videoPath });
+      if (!result.success) {
+        if (!cancelled) setShortsVideoSrc('');
+        return;
+      }
+      const bytes = new Uint8Array(result.data, result.byteOffset, result.byteLength);
+      const objectUrl = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }));
+      revokedUrl = objectUrl;
+      if (!cancelled) setShortsVideoSrc(objectUrl);
+      else URL.revokeObjectURL(objectUrl);
+    };
+
+    loadShortsVideo();
+    return () => {
+      cancelled = true;
+      if (revokedUrl) URL.revokeObjectURL(revokedUrl);
+    };
+  }, [session?.originalVideoPath]);
 
   useEffect(() => {
     if (!session || !audioRef.current) return;
@@ -984,9 +1259,13 @@ export default function App() {
     try {
       // 1. Convert to WAV 16kHz mono (with graceful fallback)
       let wavPath = sourceFile;
+      const mediaKind = sourceMediaKind(sourceFile);
+      const originalVideoPath = mediaKind === 'video' ? sourceFile : undefined;
       if (window.electronAPI) {
-        setProcMsg('Converting audio to WAV 16kHz…');
-        const res = await window.electronAPI.ffmpegConvertToWav({ inputPath: sourceFile });
+        setProcMsg(mediaKind === 'video' ? 'Extracting audio from video…' : 'Converting audio to WAV 16kHz…');
+        const res = mediaKind === 'video' && window.electronAPI.ffmpegExtractAudioForTranscription
+          ? await window.electronAPI.ffmpegExtractAudioForTranscription({ inputPath: sourceFile })
+          : await window.electronAPI.ffmpegConvertToWav({ inputPath: sourceFile });
         if (res.success) {
           wavPath = res.outputPath;
         } else {
@@ -1051,7 +1330,7 @@ export default function App() {
       setProcProgress(90);
 
       const newSession: Session = {
-        sourceFile, sourceFileName, wavPath, config: cfg, chunks,
+        sourceFile, sourceFileName, sourceMediaKind: mediaKind, originalVideoPath, wavPath, config: cfg, chunks,
         currentIndex: 0, targetLang: cfg.targetLang,
       };
 
@@ -1297,6 +1576,449 @@ export default function App() {
 
     return baseText;
   };
+
+  const updateShortsSettings = useCallback((next: ShortsSettings) => {
+    setShortsSettings({ ...DEFAULT_SHORTS_SETTINGS, ...next });
+  }, []);
+
+  const handleSaveShortsDefaults = useCallback(() => {
+    saveShortsDefaults({
+      settings: shortsSettings,
+      planningProvider: editingProvider,
+      subtitleMaxCharsPerLine,
+      subtitleMaxLines,
+    });
+    alert('Shorts/Reels planning model, caption, and export settings saved as defaults.');
+  }, [editingProvider, shortsSettings, subtitleMaxCharsPerLine, subtitleMaxLines]);
+
+  const buildShortsTranscript = useCallback((mode: ShortsPlanLanguageMode = 'target') => {
+    if (!session) return '';
+    const chunks = session.chunks.filter((chunk) => chunk.status === 'done');
+    const original = buildTranscriptExport('original', 'TXT', chunks, exportOptions);
+    const translated = shouldTranslateChunk(session.targetLang)
+      ? buildTranscriptExport('translated', 'TXT', chunks, exportOptions)
+      : '';
+
+    if (mode === 'source' || !translated.trim()) return original;
+    if (mode === 'target') return translated;
+
+    const endSec = session.chunks.at(-1)?.endSec || 0;
+    const sourceLines = parseKaraokeLines(original, 0, endSec).filter((line) => line.kind === 'timed');
+    const targetLines = parseKaraokeLines(translated, 0, endSec).filter((line) => line.kind === 'timed');
+    return sourceLines.map((sourceLine) => {
+      const targetLine = targetLines.reduce<typeof targetLines[number] | null>((best, candidate) => {
+        const bestDistance = best ? Math.abs(best.startSec - sourceLine.startSec) : Number.POSITIVE_INFINITY;
+        const distance = Math.abs(candidate.startSec - sourceLine.startSec);
+        return distance < bestDistance ? candidate : best;
+      }, null);
+      return [
+        `[${formatPlaybackClock(sourceLine.startSec)}]`,
+        `Source: ${sourceLine.text}`,
+        targetLine ? `Target: ${targetLine.text}` : '',
+      ].filter(Boolean).join('\n');
+    }).join('\n\n');
+  }, [exportOptions, session]);
+
+  const getShortsSpeakerNames = useCallback(() => {
+    if (!session) return { source: '', target: '' };
+    const chunks = session.chunks.filter((chunk) => chunk.status === 'done');
+    const original = buildTranscriptExport('original', 'TXT', chunks, exportOptions);
+    const translated = shouldTranslateChunk(session.targetLang)
+      ? buildTranscriptExport('translated', 'TXT', chunks, exportOptions)
+      : '';
+    const source = extractLecturerName(original) || normalizeMetadataValue(session.config.lecturer);
+    const target = extractLecturerName(translated) || source;
+    return { source, target };
+  }, [exportOptions, session]);
+
+  const runShortsPrompt = useCallback(async (prompt: string): Promise<string> => {
+    if (!session) throw new Error('No active session.');
+    const providerId = editingProvider || session.config.translationProvider || settingsRef.current.translationProvider;
+
+    if (isLocalTranslationProvider(settingsRef.current, providerId)) {
+      if (!window.electronAPI?.localTranslateText) throw new Error('Local AI requires the Electron runtime.');
+      const estimatedPromptTokens = estimateTokens(prompt);
+      if (isShortsPromptTooLargeForLocalAi(prompt)) {
+        throw new Error(
+          `This transcript is too large for reliable local Shorts/Reels planning (${estimatedPromptTokens.toLocaleString()} estimated prompt tokens). ` +
+          'Please switch the editing/planning model to Gemini Cloud or OpenAI in the review toolbar or Settings, then run Find Moments again. Cloud APIs can handle this larger context much more reliably.'
+        );
+      }
+      const ctxSize = estimatedPromptTokens > 12000 ? 32768 : 16384;
+      const maxTokens = estimatedPromptTokens > 26000 ? 1400 : 2400;
+      const result = await window.electronAPI.localTranslateText({
+        modelId: providerId,
+        mode: 'custom',
+        text: prompt,
+        targetLang: session.targetLang === 'same' ? 'English' : session.targetLang,
+        maxTokens,
+        maxOutputChars: 50000,
+        ctxSize,
+        requestTimeoutMs: 180000,
+      });
+      return result.text || '';
+    }
+
+    const apiKey = getApiKeyForProvider(settingsRef.current, providerId);
+    if (!apiKey) throw new Error('Selected Shorts/Reels model has no API key configured.');
+
+    if (providerId === 'gemini-cloud') {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.2 },
+        }),
+      });
+      if (!response.ok) throw new Error(`Gemini Shorts/Reels error: ${response.status} ${response.statusText}`);
+      const json = await response.json();
+      const text = json.candidates?.[0]?.content?.parts?.map((part: { text?: string }) => part.text || '').join('') || '';
+      recordCloudUsage(providerId, { inputText: prompt, outputText: text });
+      return text;
+    }
+
+    if (providerId === 'gpt-cloud') {
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          temperature: 0.2,
+          messages: [
+            { role: 'system', content: 'You select short video clips from prepared transcripts. Return only the requested JSON.' },
+            { role: 'user', content: prompt },
+          ],
+        }),
+      });
+      if (!response.ok) throw new Error(`OpenAI Shorts/Reels error: ${response.status} ${response.statusText}`);
+      const json = await response.json();
+      const text = json.choices?.[0]?.message?.content || '';
+      recordCloudUsage(providerId, { inputText: prompt, outputText: text });
+      return text;
+    }
+
+    throw new Error(`Unsupported Shorts/Reels model: ${providerId}`);
+  }, [editingProvider, recordCloudUsage, session]);
+
+  const handleGenerateShortsPlan = useCallback(async (mode: ShortsPlanLanguageMode = 'target') => {
+    if (!session) return;
+    setShortsBusy(true);
+    setShortsBusyLabel('Planning clips...');
+    try {
+      const safeMode = mode === 'target' && !shouldTranslateChunk(session.targetLang) ? 'source' : mode;
+      const transcript = buildShortsTranscript(safeMode);
+      if (!transcript.trim()) throw new Error('No approved transcript text is available for Shorts/Reels planning.');
+      const speakerNames = getShortsSpeakerNames();
+      const speakerName = safeMode === 'source'
+        ? speakerNames.source || speakerNames.target
+        : safeMode === 'target'
+          ? speakerNames.target || speakerNames.source
+          : [
+            speakerNames.source ? `Source speaker: ${speakerNames.source}` : '',
+            speakerNames.target ? `Target speaker: ${speakerNames.target}` : '',
+          ].filter(Boolean).join('; ');
+      const prompt = buildShortsPrompt({
+        transcript,
+        count: shortsSettings.count,
+        minDurationSec: shortsSettings.minDurationSec,
+        maxDurationSec: shortsSettings.maxDurationSec,
+        outputLanguage: safeMode === 'source' || session.targetLang === 'same' ? 'English' : session.targetLang,
+        speakerName,
+        mode: safeMode,
+      });
+      const response = await runShortsPrompt(prompt);
+      const plans = parseShortsPlanResponse(response)
+        .map((plan) => personalizeShortsPlanSpeaker({ ...plan, languageMode: safeMode }, speakerNames.source, speakerNames.target));
+      setShortsPlans(plans);
+      setSelectedShortsPlanIndex(plans.length > 0 ? 0 : null);
+      setSelectedShortsPlanIndexes(plans.map((_, index) => index));
+    } catch (error) {
+      console.error('Shorts/Reels planning failed.', error);
+      alert(`Shorts/Reels planning failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setShortsBusy(false);
+      setShortsBusyLabel('');
+    }
+  }, [buildShortsTranscript, getShortsSpeakerNames, runShortsPrompt, session, shortsSettings.count, shortsSettings.maxDurationSec, shortsSettings.minDurationSec]);
+
+  const splitShortsCue = useCallback((cue: { startSec: number; endSec: number; text: string }) => {
+    if (!shortsSettings.subtitleUseCharsPerLine) {
+      return [{ ...cue, text: cue.text.trim() }];
+    }
+    const maxLines = shortsSettings.subtitleUseLinesPerCue ? subtitleMaxLines : 1;
+    const maxChars = Math.max(12, subtitleMaxCharsPerLine * maxLines);
+    const words = cue.text.trim().match(/\S+/g) || [];
+    if (words.length === 0) return [];
+    const chunks: string[] = [];
+    let current = '';
+
+    words.forEach((word) => {
+      const next = current ? `${current} ${word}` : word;
+      if (current && next.length > maxChars) {
+        chunks.push(current);
+        current = word;
+      } else {
+        current = next;
+      }
+    });
+    if (current) chunks.push(current);
+
+    if (chunks.length <= 1) return [{ ...cue, text: chunks[0] || cue.text }];
+
+    const totalWords = chunks.reduce((sum, chunk) => sum + (chunk.match(/\S+/g) || []).length, 0);
+    const duration = Math.max(0.5, cue.endSec - cue.startSec);
+    let cursor = cue.startSec;
+    return chunks.map((text, index) => {
+      const ratio = (text.match(/\S+/g) || []).length / Math.max(1, totalWords);
+      const isLast = index === chunks.length - 1;
+      const endSec = isLast ? cue.endSec : Math.min(cue.endSec, cursor + Math.max(0.8, duration * ratio));
+      const result = { startSec: cursor, endSec: Math.max(cursor + 0.5, endSec), text };
+      cursor = result.endSec;
+      return result;
+    });
+  }, [shortsSettings.subtitleUseCharsPerLine, shortsSettings.subtitleUseLinesPerCue, subtitleMaxCharsPerLine, subtitleMaxLines]);
+
+  const buildShortsCues = useCallback((plan: ShortsClipPlan, languageOverride?: 'source' | 'target') => {
+    if (!session) return [];
+    const clipStartSec = parseTimestampToSeconds(plan.start);
+    const clipEndSec = parseTimestampToSeconds(plan.end);
+    const manualSegments = languageOverride === 'source'
+      ? plan.sourceAlignment
+      : languageOverride === 'target'
+        ? plan.targetAlignment
+        : undefined;
+    if (manualSegments?.length) {
+      return alignedSegmentsToCues(manualSegments);
+    }
+    const customCaptionText = languageOverride === 'source'
+      ? plan.sourceCaptionText
+      : languageOverride === 'target'
+        ? plan.targetCaptionText || plan.captionText
+        : plan.captionText;
+    if (customCaptionText?.trim()) {
+      const captionText = customCaptionText.trim();
+      const customLines = parseKaraokeLines(customCaptionText, clipStartSec, clipEndSec)
+        .filter((line) => line.kind === 'timed')
+        .map((line) => ({
+          startSec: Math.max(0, line.startSec - clipStartSec),
+          endSec: Math.max(0.5, Math.min(clipEndSec, line.endSec) - clipStartSec),
+          text: line.text,
+        }))
+        .filter((cue) => cue.text.trim());
+      if (customLines.length > 0) return customLines;
+      return [{
+        startSec: 0,
+        endSec: Math.max(1, clipEndSec - clipStartSec),
+        text: captionText,
+      }].flatMap(splitShortsCue);
+    }
+    const mode = languageOverride || (plan.languageMode === 'source' ? 'source' : 'target');
+    const content = buildShortsTranscript(mode);
+    const lines = parseKaraokeLines(content, 0, session.chunks.at(-1)?.endSec || clipEndSec)
+      .filter((line) => line.kind === 'timed')
+      .filter((line) => line.endSec > clipStartSec && line.startSec < clipEndSec)
+      .map((line) => ({
+        startSec: Math.max(0, line.startSec - clipStartSec),
+        endSec: Math.max(0.5, Math.min(clipEndSec, line.endSec) - clipStartSec),
+        text: line.text,
+      }))
+      .filter((cue) => cue.text.trim());
+
+    if (lines.length > 0) return lines.flatMap(splitShortsCue);
+    return [{
+      startSec: 0,
+      endSec: Math.max(1, clipEndSec - clipStartSec),
+      text: plan.hook || plan.title,
+    }].flatMap(splitShortsCue);
+  }, [buildShortsTranscript, session, splitShortsCue]);
+
+  const buildShortsDetailText = useCallback((plan: ShortsClipPlan) => {
+    if (!session) return { source: '', target: '' };
+    const clipStartSec = parseTimestampToSeconds(plan.start);
+    const clipEndSec = parseTimestampToSeconds(plan.end);
+    const sessionEndSec = session.chunks.at(-1)?.endSec || clipEndSec;
+    const collect = (mode: ShortsPlanLanguageMode) => parseKaraokeLines(buildShortsTranscript(mode), 0, sessionEndSec)
+      .filter((line) => line.kind === 'timed')
+      .filter((line) => line.endSec > clipStartSec && line.startSec < clipEndSec)
+      .map((line) => `[${formatPlaybackClock(line.startSec)}] ${line.text}`)
+      .join('\n\n');
+    return {
+      source: collect('source'),
+      target: shouldTranslateChunk(session.targetLang) ? collect('target') : '',
+    };
+  }, [buildShortsTranscript, session]);
+
+  const writeShortsAssFile = useCallback(async (plan: ShortsClipPlan, outputSize: { width: number; height: number }, language: 'source' | 'target') => {
+    if (!window.electronAPI?.writeTempTextFile) throw new Error('Could not write subtitle file in this runtime.');
+    const ass = buildShortsAssSubtitle({
+      cues: buildShortsCues(plan, language),
+      width: outputSize.width,
+      height: outputSize.height,
+      bottomMargin: shortsSettings.subtitleBottomMargin,
+      maxLines: shortsSettings.subtitleUseLinesPerCue ? subtitleMaxLines : 8,
+      maxCharsPerLine: shortsSettings.subtitleUseCharsPerLine ? subtitleMaxCharsPerLine : undefined,
+      style: {
+        fontFamily: shortsSettings.subtitleFontFamily,
+        fontSize: shortsSettings.subtitleFontSize,
+        bold: shortsSettings.subtitleBold,
+        textTransform: shortsSettings.subtitleTextTransform,
+        textColor: shortsSettings.subtitleTextColor,
+        boxColor: shortsSettings.subtitleBoxColor,
+        boxOpacity: shortsSettings.subtitleBoxOpacity,
+        boxWidth: shortsSettings.subtitleBoxWidth,
+        boxHeight: shortsSettings.subtitleBoxHeight,
+        edgeBlur: shortsSettings.subtitleBoxBlur,
+        letterSpacing: shortsSettings.subtitleLetterSpacing,
+        lineSpacing: shortsSettings.subtitleLineSpacing,
+        edgeSoftness: shortsSettings.subtitleEdgeSoftness,
+        outline: 0,
+        shadow: 4,
+      },
+    });
+    const result = await window.electronAPI.writeTempTextFile({
+      fileName: `shorts_${Date.now()}.ass`,
+      content: ass,
+    });
+    if (!result.success || !result.filePath) throw new Error(result.error || 'Could not write subtitle file.');
+    return result.filePath;
+  }, [buildShortsCues, shortsSettings, subtitleMaxCharsPerLine, subtitleMaxLines]);
+
+  const shortsExportLanguagesForPlan = (plan: ShortsClipPlan): ('source' | 'target')[] => {
+    if (plan.languageMode === 'bilingual') return ['source', 'target'];
+    if (plan.languageMode === 'source') return ['source'];
+    return ['target'];
+  };
+
+  const shortsTitleForLanguage = (plan: ShortsClipPlan, language: 'source' | 'target'): string => {
+    if (language === 'source') return plan.sourceTitle || plan.title;
+    return plan.targetTitle || plan.title;
+  };
+
+  const handleExportShortsIdeas = useCallback(async () => {
+    if (!session || !window.electronAPI || shortsPlans.length === 0) return;
+    const selected = selectedShortsPlanIndexes.map((index) => shortsPlans[index]).filter(Boolean);
+    const ideas = selected.length > 0 ? selected : shortsPlans;
+    const filePath = await window.electronAPI.saveFile({
+      defaultName: `${session.sourceFileName.replace(/\.[^/.]+$/, '')}_shorts_ideas.json`,
+      filters: [
+        { name: 'JSON', extensions: ['json'] },
+        { name: 'Text', extensions: ['txt'] },
+      ],
+    });
+    if (!filePath) return;
+    const isText = filePath.toLowerCase().endsWith('.txt');
+    const content = isText
+      ? ideas.map((plan, index) => [
+          `${index + 1}. ${plan.title}`,
+          `${plan.start} -> ${plan.end}`,
+          plan.category ? `Category: ${plan.category}` : '',
+          plan.summary,
+          plan.hook ? `Hook: ${plan.hook}` : '',
+        ].filter(Boolean).join('\n')).join('\n\n')
+      : JSON.stringify({ format: 'vaniscript-shorts-ideas-v1', exportedAt: new Date().toISOString(), source: session.sourceFileName, clips: ideas }, null, 2);
+    const result = await window.electronAPI.writeFile({ filePath, content });
+    if (!result.success) alert(result.error || 'Could not export Shorts/Reels ideas.');
+  }, [selectedShortsPlanIndexes, session, shortsPlans]);
+
+  const handleExportSelectedShortsVideos = useCallback(async () => {
+    if (!session?.originalVideoPath || !window.electronAPI) return;
+    const selected = selectedShortsPlanIndexes.map((index) => ({ index, plan: shortsPlans[index] })).filter((item) => item.plan);
+    const jobs = selected.flatMap(({ index, plan }) => shortsExportLanguagesForPlan(plan).map((language) => ({ index, plan, language })));
+    if (jobs.length === 0) return;
+    setShortsBusy(true);
+    setShortsBusyLabel(`Exporting ${jobs.length} video${jobs.length === 1 ? '' : 's'}...`);
+    try {
+      const outputDir = await window.electronAPI.openDirectory();
+      if (!outputDir) return;
+      let exportSourceInfo = shortsVideoSourceInfo ?? { width: 1920, height: 1080, durationSec: 0, fps: undefined as number | undefined };
+      if (window.electronAPI.ffmpegGetVideoInfo) {
+        const probedInfo = await window.electronAPI.ffmpegGetVideoInfo({ inputPath: session.originalVideoPath });
+        if (probedInfo.success && probedInfo.width && probedInfo.height) {
+          exportSourceInfo = {
+            width: probedInfo.width,
+            height: probedInfo.height,
+            durationSec: probedInfo.durationSec || 0,
+            fps: probedInfo.fps,
+          };
+          setShortsVideoSourceInfo(exportSourceInfo);
+        } else if (shortsSettings.resolutionPreset === 'source' || shortsSettings.frameRate === 'source') {
+          throw new Error(probedInfo.error || 'Could not read source video resolution/FPS for source-based export.');
+        }
+      }
+      const outputSize = verticalResolutionForPreset(shortsSettings.resolutionPreset, exportSourceInfo);
+      const extension = extensionForShortsFormat(shortsSettings.videoFormat);
+      const exported: string[] = [];
+      const videoUrlResult = await window.electronAPI.pathToFileUrl({ filePath: session.originalVideoPath });
+      if (!videoUrlResult.success || !videoUrlResult.url) {
+        throw new Error(videoUrlResult.error || 'Could not prepare source video for shorts export.');
+      }
+
+      for (let i = 0; i < jobs.length; i += 1) {
+        const { index, plan, language } = jobs[i];
+        setShortsBusyLabel(`Exporting ${i + 1}/${jobs.length}...`);
+        const frameKeyframes = language === 'source' ? plan.sourceFrameKeyframes : plan.targetFrameKeyframes;
+        const startSec = parseTimestampToSeconds(plan.start);
+        const endSec = parseTimestampToSeconds(plan.end);
+        const outputPath = `${outputDir}/${String(index + 1).padStart(2, '0')}_${language}_${safeExportPart(shortsTitleForLanguage(plan, language))}${extension}`;
+        const project = buildShortsRenderProject({
+          id: `${session.sourceFileName}_${index}_${language}`,
+          title: shortsTitleForLanguage(plan, language),
+          inputVideoSrc: videoUrlResult.url,
+          sourceWidth: exportSourceInfo.width,
+          sourceHeight: exportSourceInfo.height,
+          clipStartSec: startSec,
+          clipEndSec: endSec,
+          outputWidth: outputSize.width,
+          outputHeight: outputSize.height,
+          fps: fpsForShortsFrameRate(shortsSettings.frameRate || 'source', exportSourceInfo.fps),
+          cues: buildShortsCues(plan, language),
+          frameKeyframes,
+          subtitleBottomMargin: shortsSettings.subtitleBottomMargin,
+          style: {
+            fontFamily: shortsSettings.subtitleFontFamily,
+            fontSize: shortsSettings.subtitleFontSize,
+            bold: shortsSettings.subtitleBold,
+            textTransform: shortsSettings.subtitleTextTransform,
+            textColor: shortsSettings.subtitleTextColor,
+            boxColor: shortsSettings.subtitleBoxColor,
+            boxOpacity: shortsSettings.subtitleBoxOpacity,
+            boxWidth: shortsSettings.subtitleBoxWidth,
+            boxHeight: shortsSettings.subtitleBoxHeight,
+            edgeBlur: shortsSettings.subtitleBoxBlur,
+            letterSpacing: shortsSettings.subtitleLetterSpacing,
+            lineSpacing: shortsSettings.subtitleLineSpacing,
+            edgeSoftness: shortsSettings.subtitleEdgeSoftness,
+            outline: 0,
+            shadow: 4,
+          },
+        });
+        if (!window.electronAPI.hyperframesExportShortClip) {
+          throw new Error('HyperFrames export is not available in this build.');
+        }
+        const result = await window.electronAPI.hyperframesExportShortClip({
+          project,
+          inputVideoPath: session.originalVideoPath,
+          outputPath,
+          format: shortsSettings.videoFormat,
+          qualityPreset: shortsSettings.videoQuality,
+        });
+        if (!result.success) throw new Error(result.error || `Could not export clip ${index + 1}.`);
+        exported.push(result.outputPath || outputPath);
+      }
+
+      alert(`Exported ${exported.length} clip${exported.length === 1 ? '' : 's'}:\n${outputDir}`);
+    } catch (error) {
+      console.error('Shorts/Reels export failed.', error);
+      alert(`Shorts/Reels export failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setShortsBusy(false);
+      setShortsBusyLabel('');
+    }
+  }, [selectedShortsPlanIndexes, session?.originalVideoPath, shortsPlans, shortsSettings, shortsVideoSourceInfo, writeShortsAssFile]);
 
   const handleExportDownload = async (which: 'original' | 'translated', format: OutputFormat) => {
     if (!session) return;
@@ -1700,61 +2422,122 @@ export default function App() {
         {screen === 'export' && session && (() => (
             <div className="export-screen">
               <div className="export-card">
-                <div style={{ fontSize: 48 }}>✅</div>
-                <div>
-                  <p style={{ fontSize: 18, fontWeight: 700, marginBottom: 6 }}>Transcription Complete</p>
-                  <p style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)' }}>
+                <div className="export-hero">
+                  <p>Export</p>
+                  <span>
                     {session.chunks.length} segments · {session.sourceFileName}
-                  </p>
+                  </span>
                 </div>
-                <div className="export-dl-grid">
-                  {(['TXT', 'SRT', 'VTT', 'Markdown'] as OutputFormat[]).map(f => (
-                    <button
-                      key={f}
-                      className="btn-dl btn-dl-secondary"
-                      disabled={Boolean(exportingKey)}
-                      onClick={() => handleExportDownload('original', f)}
-                    >
-                      {exportingKey === `original-${f}` ? 'Formatting…' : `⬇ ${f}`}
-                    </button>
-                  ))}
-                  {session.targetLang !== 'same' && (['TXT', 'SRT', 'VTT', 'Markdown'] as OutputFormat[]).map(f => (
-                    <button
-                      key={`t-${f}`}
-                      className="btn-dl btn-dl-primary"
-                      disabled={Boolean(exportingKey)}
-                      onClick={() => handleExportDownload('translated', f)}
-                    >
-                      {exportingKey === `translated-${f}` ? 'Formatting…' : `⬇ ${f} (${session.targetLang})`}
-                    </button>
-                  ))}
-                </div>
-                <div className="export-subtitle-settings">
-                  <div className="export-subtitle-title">Subtitle Layout</div>
-                  <label className="export-slider-row">
-                    <span>Characters per line</span>
-                    <input
-                      type="range"
-                      min={16}
-                      max={64}
-                      step={1}
-                      value={subtitleMaxCharsPerLine}
-                      onChange={(event) => setSubtitleMaxCharsPerLine(Number(event.currentTarget.value))}
+                <div className="export-scroll-flow">
+                  <div className="export-tab-panel">
+                    <div className="export-section-heading">
+                      <div>
+                        <h3>Document export</h3>
+                        <p>Download the reviewed transcript as text, subtitles, or a formatted Markdown document.</p>
+                      </div>
+                    </div>
+                    <div className="export-dl-grid">
+                      {(['TXT', 'SRT', 'VTT', 'Markdown'] as OutputFormat[]).map(f => (
+                        <button
+                          key={f}
+                          className="btn-dl btn-dl-secondary"
+                          disabled={Boolean(exportingKey)}
+                          onClick={() => handleExportDownload('original', f)}
+                        >
+                          {exportingKey === `original-${f}` ? 'Formatting…' : `⬇ Original ${f}`}
+                        </button>
+                      ))}
+                      {session.targetLang !== 'same' && (['TXT', 'SRT', 'VTT', 'Markdown'] as OutputFormat[]).map(f => (
+                        <button
+                          key={`t-${f}`}
+                          className="btn-dl btn-dl-primary"
+                          disabled={Boolean(exportingKey)}
+                          onClick={() => handleExportDownload('translated', f)}
+                        >
+                          {exportingKey === `translated-${f}` ? 'Formatting…' : `⬇ Target ${f}`}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="export-tab-panel">
+                    <ShortsReelsPanel
+                      hasVideo={Boolean(session.originalVideoPath)}
+                      hasTranslation={shouldTranslateChunk(session.targetLang)}
+                      targetLang={session.targetLang}
+                      settings={shortsSettings}
+                      plans={shortsPlans}
+                      isBusy={shortsBusy}
+                      busyLabel={shortsBusyLabel}
+                      selectedPlanIndex={selectedShortsPlanIndex}
+                      selectedPlanIndexes={selectedShortsPlanIndexes}
+                      planningProviders={editingProviders}
+                      planningProvider={editingProvider}
+                      onPlanningProviderChange={setEditingProvider}
+                      previewAudioSrc={shortsAudioSrc}
+                      previewAudioPath={session.wavPath}
+                      previewAudioStatus={shortsAudioStatus}
+                      previewAudioError={shortsAudioError}
+                      previewVideoSrc={shortsVideoSrc}
+                      previewOutputSize={shortsPreviewOutputSize}
+                      subtitleMaxCharsPerLine={subtitleMaxCharsPerLine}
+                      subtitleMaxLines={subtitleMaxLines}
+                      onChange={updateShortsSettings}
+                      onSubtitleLayoutChange={({ maxCharsPerLine, maxLines }) => {
+                        setSubtitleMaxCharsPerLine(maxCharsPerLine);
+                        setSubtitleMaxLines(maxLines);
+                      }}
+                      onFindMoments={handleGenerateShortsPlan}
+                      onFocusPlan={(index) => {
+                        setSelectedShortsPlanIndex(index);
+                      }}
+                      onTogglePlan={(index) => {
+                        setSelectedShortsPlanIndexes((prev) => {
+                          const next = prev.includes(index)
+                            ? prev.filter((item) => item !== index)
+                            : [...prev, index];
+                          return next.sort((a, b) => a - b);
+                        });
+                        setSelectedShortsPlanIndex(index);
+                      }}
+                      onUpdatePlan={(index, patch) => {
+                        setShortsPlans((prev) => prev.map((plan, itemIndex) => itemIndex === index ? { ...plan, ...patch } : plan));
+                      }}
+                      onRemovePlan={(index) => {
+                        setShortsPlans((prev) => prev.filter((_, itemIndex) => itemIndex !== index));
+                        setSelectedShortsPlanIndexes((prev) => prev
+                          .filter((item) => item !== index)
+                          .map((item) => item > index ? item - 1 : item)
+                        );
+                        setSelectedShortsPlanIndex((prev) => {
+                          if (prev === null) return null;
+                          if (prev === index) return null;
+                          return prev > index ? prev - 1 : prev;
+                        });
+                      }}
+                      onSavePlanAlignment={(index, language, segments) => {
+                        setShortsPlans((prev) => prev.map((plan, itemIndex) => {
+                          if (itemIndex !== index) return plan;
+                          return language === 'source'
+                            ? { ...plan, sourceAlignment: segments as AlignedSubtitleSegment[] }
+                            : { ...plan, targetAlignment: segments as AlignedSubtitleSegment[] };
+                        }));
+                      }}
+                      onSavePlanFrameKeyframes={(index, language, keyframes) => {
+                        setShortsPlans((prev) => prev.map((plan, itemIndex) => {
+                          if (itemIndex !== index) return plan;
+                          return language === 'source'
+                            ? { ...plan, sourceFrameKeyframes: keyframes }
+                            : { ...plan, targetFrameKeyframes: keyframes };
+                        }));
+                      }}
+                      getPlanCues={buildShortsCues}
+                      getPlanDetailText={buildShortsDetailText}
+                      onExportIdeas={handleExportShortsIdeas}
+                      onExportSelected={handleExportSelectedShortsVideos}
+                      onSaveDefaults={handleSaveShortsDefaults}
                     />
-                    <strong>{subtitleMaxCharsPerLine}</strong>
-                  </label>
-                  <label className="export-slider-row">
-                    <span>Lines per cue</span>
-                    <input
-                      type="range"
-                      min={1}
-                      max={3}
-                      step={1}
-                      value={subtitleMaxLines}
-                      onChange={(event) => setSubtitleMaxLines(Number(event.currentTarget.value))}
-                    />
-                    <strong>{subtitleMaxLines}</strong>
-                  </label>
+                  </div>
                 </div>
                 <div className="export-actions">
                   <button className="btn-cancel" onClick={() => setScreen('review')}>
