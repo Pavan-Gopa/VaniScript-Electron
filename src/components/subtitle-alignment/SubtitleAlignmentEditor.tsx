@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Download, Pause, Play, Save, Scissors, SplitSquareHorizontal, Trash2, Link2, Unlink2, Undo2, Redo2 } from 'lucide-react';
+import { Download, Pause, Play, Save, Scissors, SplitSquareHorizontal, Trash2, Link2, Unlink2, Undo2, Redo2, Languages } from 'lucide-react';
 import { formatPlaybackClock } from '../../lib/karaoke';
 import {
   AlignedSubtitleSegment,
@@ -13,6 +13,7 @@ import {
 } from '../../lib/subtitle-alignment';
 import {
   addCut,
+  removeCut,
   retimeSubtitlesAfterCut,
   retimeKeyframesAfterCut,
   effectiveDuration,
@@ -47,6 +48,8 @@ type Props = {
   syncEnabled?: boolean;
   /** Whether a linked partner exists */
   hasLinkedPartner?: boolean;
+  /** Current display language for Source/Target toggle */
+  currentLanguage?: 'source' | 'target';
   onClose: () => void;
   onSave: (segments: AlignedSubtitleSegment[]) => void;
   onDraftChange?: (segments: AlignedSubtitleSegment[]) => void;
@@ -56,6 +59,8 @@ type Props = {
   onImportMotion?: () => void;
   onSaveCuts?: (cuts: TimelineCut[]) => void;
   onSaveTrim?: (trim: TimelineTrim) => void;
+  /** Switch between source/target language inside the editor */
+  onSwitchLanguage?: (lang: 'source' | 'target') => void;
 };
 
 const MIN_DURATION = 0.25;
@@ -121,6 +126,8 @@ export function SubtitleAlignmentEditor({
   onImportMotion,
   onSaveCuts,
   onSaveTrim,
+  currentLanguage,
+  onSwitchLanguage,
 }: Props) {
   const clipDurationSec = Math.max(1, clipEndSec - clipStartSec);
   const [segments, setSegments] = useState<AlignedSubtitleSegment[]>([]);
@@ -252,20 +259,29 @@ export function SubtitleAlignmentEditor({
         const delta = event.key === 'ArrowLeft' ? -0.08 : 0.08;
         seek(currentSec + delta);
       }
-      // Undo: Cmd+Z
+      // Undo: Cmd+Z / Ctrl+Z
       if ((event.metaKey || event.ctrlKey) && event.key === 'z' && !event.shiftKey) {
         event.preventDefault();
         performUndo();
       }
-      // Redo: Cmd+Shift+Z
+      // Redo: Cmd+Shift+Z / Ctrl+Shift+Z
       if ((event.metaKey || event.ctrlKey) && event.key === 'z' && event.shiftKey) {
         event.preventDefault();
         performRedo();
       }
+      // Delete/Backspace: remove cut region under playhead
+      if (event.key === 'Backspace' || event.key === 'Delete') {
+        const cutIndex = cuts.findIndex((c) => currentSec >= c.startSec && currentSec <= c.endSec);
+        if (cutIndex >= 0) {
+          event.preventDefault();
+          pushUndo();
+          setCuts((prev) => removeCut(prev, cutIndex));
+        }
+      }
     };
     window.addEventListener('keydown', keydown);
     return () => window.removeEventListener('keydown', keydown);
-  }, [currentSec, isOpen, onClose]);
+  }, [currentSec, cuts, isOpen, onClose]);
 
   useEffect(() => {
     if (!scrubbing) return;
@@ -476,6 +492,7 @@ export function SubtitleAlignmentEditor({
     if (!rect) return;
     event.preventDefault();
     event.stopPropagation();
+    pushUndo();
     setSelectedId(segment.id);
     setDragState({
       id: segment.id,
@@ -547,15 +564,32 @@ export function SubtitleAlignmentEditor({
             <p>{languageLabel} · {formatPlaybackClock(clipStartSec)} → {formatPlaybackClock(clipEndSec)}</p>
           </div>
           <div className="alignment-head-actions">
-            {hasLinkedPartner && (
+            {/* Source / Target language toggle */}
+            {onSwitchLanguage && (
+              <div className="alignment-lang-toggle">
+                <button
+                  type="button"
+                  className={`btn-dl btn-dl-lang ${currentLanguage === 'source' ? 'active' : ''}`}
+                  onClick={() => onSwitchLanguage('source')}
+                >Source</button>
+                <button
+                  type="button"
+                  className={`btn-dl btn-dl-lang ${currentLanguage === 'target' ? 'active' : ''}`}
+                  onClick={() => onSwitchLanguage('target')}
+                >Target</button>
+              </div>
+            )}
+            {/* Sync toggle — always visible when callback exists */}
+            {onToggleSync && (
               <button
                 type="button"
                 className={`btn-dl btn-dl-sync ${syncEnabled ? 'sync-on' : 'sync-off'}`}
                 onClick={onToggleSync}
-                title={syncEnabled ? 'Sync ON — edits propagate to linked clip' : 'Sync OFF — edits stay local'}
+                disabled={!hasLinkedPartner}
+                title={!hasLinkedPartner ? 'No linked partner clip' : syncEnabled ? 'Sync ON — edits propagate to linked clip' : 'Sync OFF — edits stay local'}
               >
                 {syncEnabled ? <Link2 size={14} /> : <Unlink2 size={14} />}
-                {syncEnabled ? 'Sync ON' : 'Sync OFF'}
+                {syncEnabled ? 'Sync' : 'Sync'}
               </button>
             )}
             {hasLinkedPartner && onImportMotion && (
@@ -704,7 +738,15 @@ export function SubtitleAlignmentEditor({
                   key={i}
                   className="alignment-cut-region"
                   style={{ left: `${pct(cut.startSec, clipDurationSec)}%`, width: `${pct(cut.endSec - cut.startSec, clipDurationSec)}%` }}
-                  title={`Cut: ${formatPlaybackClock(cut.startSec)} → ${formatPlaybackClock(cut.endSec)}`}
+                  title={`Cut: ${formatPlaybackClock(cut.startSec)} → ${formatPlaybackClock(cut.endSec)} — press Backspace to delete`}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    pushUndo();
+                    setCuts((prev) => removeCut(prev, i));
+                  }}
+                  onClick={() => {
+                    seek(cut.startSec);
+                  }}
                 />
               ))}
               <b className="alignment-track-playhead" style={{ left: `${pct(currentSec, clipDurationSec)}%` }} />
@@ -747,7 +789,16 @@ export function SubtitleAlignmentEditor({
                 <div className="alignment-razor-mark" style={{ left: `${pct(razorStart, clipDurationSec)}%` }} />
               )}
               {cuts.map((cut, i) => (
-                <div key={`ac${i}`} className="alignment-cut-region" style={{ left: `${pct(cut.startSec, clipDurationSec)}%`, width: `${pct(cut.endSec - cut.startSec, clipDurationSec)}%` }} />
+                <div
+                  key={`ac${i}`}
+                  className="alignment-cut-region"
+                  style={{ left: `${pct(cut.startSec, clipDurationSec)}%`, width: `${pct(cut.endSec - cut.startSec, clipDurationSec)}%` }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    pushUndo();
+                    setCuts((prev) => removeCut(prev, i));
+                  }}
+                />
               ))}
               <b style={{ left: `${pct(currentSec, clipDurationSec)}%` }} />
             </div>
@@ -783,7 +834,16 @@ export function SubtitleAlignmentEditor({
               );
             })}
             {cuts.map((cut, i) => (
-              <div key={`sc${i}`} className="alignment-cut-region" style={{ left: `${pct(cut.startSec, clipDurationSec)}%`, width: `${pct(cut.endSec - cut.startSec, clipDurationSec)}%` }} />
+              <div
+                key={`sc${i}`}
+                className="alignment-cut-region"
+                style={{ left: `${pct(cut.startSec, clipDurationSec)}%`, width: `${pct(cut.endSec - cut.startSec, clipDurationSec)}%` }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  pushUndo();
+                  setCuts((prev) => removeCut(prev, i));
+                }}
+              />
             ))}
             <b className="alignment-track-playhead" style={{ left: `${pct(currentSec, clipDurationSec)}%` }} />
             </div>
@@ -814,11 +874,12 @@ export function SubtitleAlignmentEditor({
             {selected ? (
               <>
                 <div className="alignment-editor-toolbar">
-                  <button type="button" onClick={() => setSegments((prev) => splitSegment(prev, selected.id, clipDurationSec))}><SplitSquareHorizontal size={14} /> Split</button>
-                  <button type="button" onClick={() => setSegments((prev) => mergeSegmentWithNext(prev, selected.id, clipDurationSec))}><Scissors size={14} /> Merge next</button>
+                  <button type="button" onClick={() => { pushUndo(); setSegments((prev) => splitSegment(prev, selected.id, clipDurationSec)); }}><SplitSquareHorizontal size={14} /> Split</button>
+                  <button type="button" onClick={() => { pushUndo(); setSegments((prev) => mergeSegmentWithNext(prev, selected.id, clipDurationSec)); }}><Scissors size={14} /> Merge next</button>
                   <button
                     type="button"
                     onClick={() => {
+                      pushUndo();
                       setSegments((prev) => prev.filter((segment) => segment.id !== selected.id));
                       setSelectedId('');
                     }}
@@ -828,6 +889,7 @@ export function SubtitleAlignmentEditor({
                 </div>
                 <textarea
                   value={selected.text}
+                  onFocus={() => pushUndo()}
                   onChange={(event) => setSegments((prev) => updateSegmentText(prev, selected.id, event.currentTarget.value, clipDurationSec))}
                 />
                 <div className="alignment-word-row">
@@ -876,6 +938,7 @@ export function SubtitleAlignmentEditor({
                 <button
                   type="button"
                   onClick={() => {
+                    pushUndo();
                     const nextPoint: FrameKeyframe = {
                       id: `frame_${Date.now()}`,
                       time: currentSec,
@@ -894,7 +957,7 @@ export function SubtitleAlignmentEditor({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setFrameKeyframes([])}
+                  onClick={() => { pushUndo(); setFrameKeyframes([]); }}
                   disabled={frameKeyframes.length === 0}
                 >
                   Clear
@@ -918,7 +981,7 @@ export function SubtitleAlignmentEditor({
                       {index + 1}. {formatPlaybackClock(point.time)}
                     </button>
                     <span>{point.zoom.toFixed(2)}x · X {point.x} · Y {point.y}</span>
-                    <button type="button" onClick={() => setFrameKeyframes((prev) => prev.filter((item) => item.id !== point.id))}>×</button>
+                    <button type="button" onClick={() => { pushUndo(); setFrameKeyframes((prev) => prev.filter((item) => item.id !== point.id)); }}>×</button>
                   </div>
                 ))}
               </div>

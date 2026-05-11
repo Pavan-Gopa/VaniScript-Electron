@@ -709,6 +709,14 @@ export function ShortsReelsPanel({
           hasLinkedPartner={editorIndex !== null ? !!plans[editorIndex]?.linkedClipGroupId : false}
           onToggleSync={() => { if (editorIndex !== null) onToggleClipSync?.(editorIndex); }}
           onImportMotion={() => { if (editorIndex !== null) onImportMotion?.(editorIndex); }}
+          currentLanguage={displayLanguage}
+          onSwitchLanguage={(lang) => {
+            // Save current alignment before switching
+            if (editorIndex !== null) {
+              onSavePlanAlignment(editorIndex, displayLanguage, [] /* will be populated by save callback */);
+            }
+            setDisplayLanguage(lang);
+          }}
         />
       )}
 

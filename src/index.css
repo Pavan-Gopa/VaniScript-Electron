@@ -2532,6 +2532,37 @@ html, body, #root {
   border-color: rgba(255,255,255,0.15) !important;
   color: var(--text-2) !important;
 }
+.btn-dl-sync:disabled {
+  opacity: 0.3 !important;
+  cursor: not-allowed !important;
+}
+
+/* ── Source / Target language toggle ── */
+.alignment-lang-toggle {
+  display: inline-flex;
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.btn-dl-lang {
+  border: none !important;
+  border-radius: 0 !important;
+  padding: 6px 14px !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: rgba(255,255,255,0.04) !important;
+  color: var(--text-2) !important;
+  transition: background 0.15s, color 0.15s;
+}
+.btn-dl-lang.active {
+  background: var(--accent) !important;
+  color: #000 !important;
+}
+.btn-dl-lang:not(.active):hover {
+  background: rgba(255,255,255,0.1) !important;
+}
 .btn-dl-icon {
   width: 32px !important; height: 32px !important;
   padding: 0 !important;
@@ -2671,7 +2702,14 @@ html, body, #root {
   background: rgba(230,74,74,0.18);
   border-left: 1px solid rgba(230,74,74,0.45);
   border-right: 1px solid rgba(230,74,74,0.45);
-  z-index: 3; pointer-events: none;
+  z-index: 3; pointer-events: auto; cursor: pointer;
+  background-image: repeating-linear-gradient(
+    -45deg, transparent, transparent 3px, rgba(230,74,74,0.12) 3px, rgba(230,74,74,0.12) 6px
+  );
+  transition: background 0.15s;
+}
+.alignment-cut-region:hover {
+  background-color: rgba(230,74,74,0.32);
 }
 
 /* ── Replace Clip Modal ── */
