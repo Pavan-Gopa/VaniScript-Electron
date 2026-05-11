@@ -660,8 +660,8 @@ export function SubtitleAlignmentEditor({
   }
 
   return (
-    <div className="alignment-backdrop" onMouseDown={onClose}>
-      <div className="alignment-editor" onMouseDown={(event) => event.stopPropagation()}>
+    <div className="alignment-backdrop">
+      <div className="alignment-editor">
         <div className="alignment-head">
           <div>
             <h3>{title}</h3>
