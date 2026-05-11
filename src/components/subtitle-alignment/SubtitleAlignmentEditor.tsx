@@ -213,7 +213,7 @@ export function SubtitleAlignmentEditor({
     setFrameZoom(settings.zoom);
     setFramePanX(0);
     setFramePanY(0);
-    setFrameGuideColor(initialFrameKeyframes?.[0]?.backgroundColor || '#000000');
+    setBgSettings((prev) => ({ ...prev, frameGuideColor: initialFrameKeyframes?.[0]?.backgroundColor || prev.frameGuideColor || '#ffaa19' }));
     setTimelineZoom(1);
      setFrameKeyframes((initialFrameKeyframes || []).map((keyframe) => ({
       ...keyframe,
@@ -402,7 +402,7 @@ export function SubtitleAlignmentEditor({
     setFrameZoom(frame.zoom);
     setFramePanX(frame.x);
     setFramePanY(frame.y);
-    setFrameGuideColor(frame.backgroundColor || '#000000');
+    setBgSettings((prev) => ({ ...prev, frameGuideColor: frame.backgroundColor || prev.frameGuideColor || '#ffaa19' }));
   }, [currentSec, frameKeyframes, isOpen]);
 
   // Playback boundaries derived from trim
@@ -588,7 +588,7 @@ export function SubtitleAlignmentEditor({
     setFrameZoom(settings.zoom);
     setFramePanX(0);
     setFramePanY(0);
-    setFrameGuideColor('#000000');
+    setBgSettings((prev) => ({ ...prev, frameGuideColor: '#ffaa19' }));
     setFrameKeyframes([]);
     setCuts([]);
     setTrim({ trimStartSec: 0, trimEndSec: 0 });
