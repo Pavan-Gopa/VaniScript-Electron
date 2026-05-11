@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Pause, Play, Save, Scissors, SplitSquareHorizontal, Trash2 } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Download, Pause, Play, Save, Scissors, SplitSquareHorizontal, Trash2, Link2, Unlink2, Undo2, Redo2 } from 'lucide-react';
 import { formatPlaybackClock } from '../../lib/karaoke';
 import {
   AlignedSubtitleSegment,
@@ -11,6 +11,17 @@ import {
   splitSegment,
   updateSegmentText,
 } from '../../lib/subtitle-alignment';
+import {
+  addCut,
+  retimeSubtitlesAfterCut,
+  retimeKeyframesAfterCut,
+  effectiveDuration,
+  UndoRedoStack,
+  type UndoableState,
+  type TimelineCut,
+  type TimelineTrim,
+  type BoundaryResolution,
+} from '../../lib/TimelineCutEngine';
 import { ShortsSettings } from '../ShortsReelsPanel';
 
 type AlignmentCue = { startSec: number; endSec: number; text: string };
@@ -27,14 +38,24 @@ type Props = {
   initialCues: AlignmentCue[];
   initialSegments?: AlignedSubtitleSegment[];
   initialFrameKeyframes?: FrameKeyframe[];
+  initialCuts?: TimelineCut[];
+  initialTrim?: TimelineTrim;
   settings: ShortsSettings;
   subtitleMaxCharsPerLine: number;
   subtitleMaxLines: number;
+  /** Whether sync with linked clip is active */
+  syncEnabled?: boolean;
+  /** Whether a linked partner exists */
+  hasLinkedPartner?: boolean;
   onClose: () => void;
   onSave: (segments: AlignedSubtitleSegment[]) => void;
   onDraftChange?: (segments: AlignedSubtitleSegment[]) => void;
   onSaveFrameKeyframes?: (keyframes: FrameKeyframe[]) => void;
   onDraftFrameKeyframes?: (keyframes: FrameKeyframe[]) => void;
+  onToggleSync?: () => void;
+  onImportMotion?: () => void;
+  onSaveCuts?: (cuts: TimelineCut[]) => void;
+  onSaveTrim?: (trim: TimelineTrim) => void;
 };
 
 const MIN_DURATION = 0.25;
@@ -84,14 +105,22 @@ export function SubtitleAlignmentEditor({
   initialCues,
   initialSegments,
   initialFrameKeyframes,
+  initialCuts,
+  initialTrim,
   settings,
   subtitleMaxCharsPerLine,
   subtitleMaxLines,
+  syncEnabled,
+  hasLinkedPartner,
   onClose,
   onSave,
   onDraftChange,
   onSaveFrameKeyframes,
   onDraftFrameKeyframes,
+  onToggleSync,
+  onImportMotion,
+  onSaveCuts,
+  onSaveTrim,
 }: Props) {
   const clipDurationSec = Math.max(1, clipEndSec - clipStartSec);
   const [segments, setSegments] = useState<AlignedSubtitleSegment[]>([]);
@@ -117,6 +146,14 @@ export function SubtitleAlignmentEditor({
     originalEnd: number;
     pixelsPerSecond: number;
   } | null>(null);
+  // ── New state for timeline surgery ──
+  const [cuts, setCuts] = useState<TimelineCut[]>([]);
+  const [trim, setTrim] = useState<TimelineTrim>({ trimStartSec: 0, trimEndSec: 0 });
+  const [razorActive, setRazorActive] = useState(false);
+  const [razorStart, setRazorStart] = useState<number | null>(null);
+  const [trimDragState, setTrimDragState] = useState<{ edge: 'start' | 'end'; pointerX: number; original: number } | null>(null);
+  const undoStackRef = useRef(new UndoRedoStack());
+  const [undoTick, setUndoTick] = useState(0); // force re-render on undo/redo
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
@@ -155,7 +192,7 @@ export function SubtitleAlignmentEditor({
     setFramePanY(0);
     setFrameBackgroundColor(initialFrameKeyframes?.[0]?.backgroundColor || '#000000');
     setTimelineZoom(1);
-    setFrameKeyframes((initialFrameKeyframes || []).map((keyframe) => ({
+     setFrameKeyframes((initialFrameKeyframes || []).map((keyframe) => ({
       ...keyframe,
       time: Math.min(Math.max(0, keyframe.time), clipDurationSec),
       zoom: Math.min(Math.max(0.5, keyframe.zoom), 2),
@@ -163,8 +200,13 @@ export function SubtitleAlignmentEditor({
       y: Math.min(Math.max(-30, keyframe.y), 30),
       backgroundColor: keyframe.backgroundColor || '#000000',
     })).sort((a, b) => a.time - b.time));
+    setCuts(initialCuts || []);
+    setTrim(initialTrim || { trimStartSec: 0, trimEndSec: 0 });
+    setRazorActive(false);
+    setRazorStart(null);
+    undoStackRef.current.clear();
     window.setTimeout(() => { initializedRef.current = true; }, 0);
-  }, [clipDurationSec, clipEndSec, clipStartSec, initialCues, initialFrameKeyframes, initialSegments, isOpen, languageLabel, settings.zoom, title]);
+  }, [clipDurationSec, clipEndSec, clipStartSec, initialCues, initialCuts, initialFrameKeyframes, initialSegments, initialTrim, isOpen, languageLabel, settings.zoom, title]);
 
   useEffect(() => {
     if (!isOpen || !initializedRef.current || !onDraftChange) return;
@@ -210,6 +252,16 @@ export function SubtitleAlignmentEditor({
         const delta = event.key === 'ArrowLeft' ? -0.08 : 0.08;
         seek(currentSec + delta);
       }
+      // Undo: Cmd+Z
+      if ((event.metaKey || event.ctrlKey) && event.key === 'z' && !event.shiftKey) {
+        event.preventDefault();
+        performUndo();
+      }
+      // Redo: Cmd+Shift+Z
+      if ((event.metaKey || event.ctrlKey) && event.key === 'z' && event.shiftKey) {
+        event.preventDefault();
+        performRedo();
+      }
     };
     window.addEventListener('keydown', keydown);
     return () => window.removeEventListener('keydown', keydown);
@@ -226,6 +278,37 @@ export function SubtitleAlignmentEditor({
       window.removeEventListener('pointerup', up);
     };
   }, [scrubbing]);
+
+  // Trim drag handling
+  useEffect(() => {
+    if (!trimDragState) return;
+    const trackEl = waveformTrackRef.current || timelineRef.current;
+    if (!trackEl) return;
+    const rect = trackEl.getBoundingClientRect();
+    const pxPerSec = rect.width / clipDurationSec;
+    const move = (event: PointerEvent) => {
+      const deltaPx = event.clientX - trimDragState.pointerX;
+      const deltaSec = deltaPx / pxPerSec;
+      if (trimDragState.edge === 'start') {
+        setTrim((prev: TimelineTrim) => ({
+          ...prev,
+          trimStartSec: Math.max(0, Math.min(clipDurationSec * 0.45, trimDragState.original + deltaSec)),
+        }));
+      } else {
+        setTrim((prev: TimelineTrim) => ({
+          ...prev,
+          trimEndSec: Math.max(0, Math.min(clipDurationSec * 0.45, trimDragState.original - deltaSec)),
+        }));
+      }
+    };
+    const up = () => setTrimDragState(null);
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up, { once: true });
+    return () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+  }, [clipDurationSec, trimDragState]);
 
   useEffect(() => {
     if (!dragState) return;
@@ -409,6 +492,50 @@ export function SubtitleAlignmentEditor({
     setSegments(normalized);
     onSave(normalized);
     onSaveFrameKeyframes?.(effectiveFrameKeyframes);
+    onSaveCuts?.(cuts);
+    onSaveTrim?.(trim);
+  }
+
+  function getCurrentUndoState(): UndoableState {
+    return { segments, frameKeyframes, cuts, trim };
+  }
+
+  function pushUndo() {
+    undoStackRef.current.push(getCurrentUndoState());
+  }
+
+  function performUndo() {
+    const restored = undoStackRef.current.undo(getCurrentUndoState());
+    if (!restored) return;
+    setSegments(restored.segments);
+    setFrameKeyframes(restored.frameKeyframes);
+    setCuts(restored.cuts);
+    setTrim(restored.trim);
+    setUndoTick((t) => t + 1);
+  }
+
+  function performRedo() {
+    const restored = undoStackRef.current.redo(getCurrentUndoState());
+    if (!restored) return;
+    setSegments(restored.segments);
+    setFrameKeyframes(restored.frameKeyframes);
+    setCuts(restored.cuts);
+    setTrim(restored.trim);
+    setUndoTick((t) => t + 1);
+  }
+
+  function handleRazorCut(startSec: number, endSec: number) {
+    if (endSec <= startSec + 0.1) return;
+    pushUndo();
+    const newCut: TimelineCut = { startSec, endSec };
+    const nextCuts = addCut(cuts, newCut, clipDurationSec);
+    const nextSegments = retimeSubtitlesAfterCut(segments, newCut, clipDurationSec, 'trim');
+    const nextKeyframes = retimeKeyframesAfterCut(frameKeyframes, newCut);
+    setCuts(nextCuts);
+    setSegments(nextSegments);
+    setFrameKeyframes(nextKeyframes);
+    setRazorActive(false);
+    setRazorStart(null);
   }
 
   return (
@@ -420,6 +547,45 @@ export function SubtitleAlignmentEditor({
             <p>{languageLabel} · {formatPlaybackClock(clipStartSec)} → {formatPlaybackClock(clipEndSec)}</p>
           </div>
           <div className="alignment-head-actions">
+            {hasLinkedPartner && (
+              <button
+                type="button"
+                className={`btn-dl btn-dl-sync ${syncEnabled ? 'sync-on' : 'sync-off'}`}
+                onClick={onToggleSync}
+                title={syncEnabled ? 'Sync ON — edits propagate to linked clip' : 'Sync OFF — edits stay local'}
+              >
+                {syncEnabled ? <Link2 size={14} /> : <Unlink2 size={14} />}
+                {syncEnabled ? 'Sync ON' : 'Sync OFF'}
+              </button>
+            )}
+            {hasLinkedPartner && onImportMotion && (
+              <button
+                type="button"
+                className="btn-dl btn-dl-secondary"
+                onClick={onImportMotion}
+                title="Copy motion keyframes from the linked clip"
+              >
+                <Download size={14} /> Import Motion
+              </button>
+            )}
+            <button
+              type="button"
+              className="btn-dl btn-dl-icon"
+              onClick={performUndo}
+              disabled={!undoStackRef.current.canUndo}
+              title="Undo (⌘Z)"
+            >
+              <Undo2 size={14} />
+            </button>
+            <button
+              type="button"
+              className="btn-dl btn-dl-icon"
+              onClick={performRedo}
+              disabled={!undoStackRef.current.canRedo}
+              title="Redo (⌘⇧Z)"
+            >
+              <Redo2 size={14} />
+            </button>
             <button type="button" className="btn-dl btn-dl-secondary" onClick={() => setInspectorOpen((open) => !open)}>
               {inspectorOpen ? 'Hide inspector' : 'Show inspector'}
             </button>
@@ -484,58 +650,143 @@ export function SubtitleAlignmentEditor({
             {playing ? <Pause size={15} /> : <Play size={15} />}
           </button>
           <span className="alignment-time-chip">{formatPlaybackClock(currentSec)} / {formatPlaybackClock(clipDurationSec)}</span>
-          <div
-            className="alignment-waveform"
-            title="Drag to scrub. Cmd/Ctrl + mouse wheel zooms the timeline."
-            onPointerDown={(event) => {
-              event.preventDefault();
-              seekFromPointer(event.clientX, waveformTrackRef.current);
-              setScrubbing(true);
-            }}
+          <button
+            type="button"
+            className={`alignment-razor-btn ${razorActive ? 'active' : ''}`}
+            onClick={() => { setRazorActive((r) => !r); setRazorStart(null); }}
+            title="Razor tool — click two points on the timeline to cut a section"
           >
+            <Scissors size={14} /> {razorActive ? 'Cancel Razor' : 'Razor'}
+          </button>
+          {cuts.length > 0 && (
+            <span className="alignment-cut-badge">{cuts.length} cut{cuts.length !== 1 ? 's' : ''}</span>
+          )}
+        </div>
+
+        {/* ── Multi-track timeline ── */}
+        <div className="alignment-multitrack" onWheel={handleTimelineWheel}>
+          {/* Video track label */}
+          <div className="alignment-track-row alignment-track-video">
+            <span className="alignment-track-label">Video</span>
             <div
-              ref={waveformTrackRef}
-              className="alignment-waveform-track"
+              className="alignment-track-content"
               style={{ width: `${timelineZoom * 100}%` }}
+            >
+              <div className="alignment-track-bar" />
+              {/* Trim handles */}
+              {trim.trimStartSec > 0 && (
+                <div className="alignment-trim-region trim-start" style={{ width: `${pct(trim.trimStartSec, clipDurationSec)}%` }} />
+              )}
+              {trim.trimEndSec > 0 && (
+                <div className="alignment-trim-region trim-end" style={{ width: `${pct(trim.trimEndSec, clipDurationSec)}%` }} />
+              )}
+              <div
+                className="alignment-trim-handle trim-handle-start"
+                style={{ left: `${pct(trim.trimStartSec, clipDurationSec)}%` }}
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  pushUndo();
+                  setTrimDragState({ edge: 'start', pointerX: e.clientX, original: trim.trimStartSec });
+                }}
+              />
+              <div
+                className="alignment-trim-handle trim-handle-end"
+                style={{ right: `${pct(trim.trimEndSec, clipDurationSec)}%` }}
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  pushUndo();
+                  setTrimDragState({ edge: 'end', pointerX: e.clientX, original: trim.trimEndSec });
+                }}
+              />
+              {/* Cut regions */}
+              {cuts.map((cut, i) => (
+                <div
+                  key={i}
+                  className="alignment-cut-region"
+                  style={{ left: `${pct(cut.startSec, clipDurationSec)}%`, width: `${pct(cut.endSec - cut.startSec, clipDurationSec)}%` }}
+                  title={`Cut: ${formatPlaybackClock(cut.startSec)} → ${formatPlaybackClock(cut.endSec)}`}
+                />
+              ))}
+              <b className="alignment-track-playhead" style={{ left: `${pct(currentSec, clipDurationSec)}%` }} />
+            </div>
+          </div>
+
+          {/* Audio waveform track */}
+          <div className="alignment-track-row alignment-track-audio">
+            <span className="alignment-track-label">Audio</span>
+            <div
+              className="alignment-track-content"
+              ref={waveformTrackRef}
+              style={{ width: `${timelineZoom * 100}%` }}
+              onPointerDown={(event) => {
+                event.preventDefault();
+                if (razorActive) {
+                  const rect = waveformTrackRef.current?.getBoundingClientRect();
+                  if (!rect || rect.width <= 0) return;
+                  const sec = ((event.clientX - rect.left) / rect.width) * clipDurationSec;
+                  if (razorStart === null) {
+                    setRazorStart(sec);
+                  } else {
+                    const start = Math.min(razorStart, sec);
+                    const end = Math.max(razorStart, sec);
+                    handleRazorCut(start, end);
+                  }
+                } else {
+                  seekFromPointer(event.clientX, waveformTrackRef.current);
+                  setScrubbing(true);
+                }
+              }}
             >
               <div className="alignment-waveform-fill" style={{ width: `${pct(currentSec, clipDurationSec)}%` }} />
               {waveformPeaks.length > 0 ? waveformPeaks.map((peak, index) => (
                 <i key={index} style={{ height: `${Math.max(5, peak * 100)}%` }} />
               )) : (
-                <em>{waveformError || 'Loading real waveform...'}</em>
+                <em>{waveformError || 'Loading waveform...'}</em>
               )}
+              {razorStart !== null && (
+                <div className="alignment-razor-mark" style={{ left: `${pct(razorStart, clipDurationSec)}%` }} />
+              )}
+              {cuts.map((cut, i) => (
+                <div key={`ac${i}`} className="alignment-cut-region" style={{ left: `${pct(cut.startSec, clipDurationSec)}%`, width: `${pct(cut.endSec - cut.startSec, clipDurationSec)}%` }} />
+              ))}
               <b style={{ left: `${pct(currentSec, clipDurationSec)}%` }} />
             </div>
           </div>
-        </div>
 
-        <div className="alignment-timeline" onWheel={handleTimelineWheel}>
-          <div
-            className="alignment-timeline-track"
-            ref={timelineRef}
-            style={{ width: `${timelineZoom * 100}%` }}
-            onPointerDown={(event) => {
-              if (event.target === event.currentTarget) seekFromPointer(event.clientX, event.currentTarget);
-            }}
-          >
-          {segments.map((segment) => {
-            const left = pct(segment.start, clipDurationSec);
-            const width = Math.max(0.6, pct(segment.end - segment.start, clipDurationSec));
-            const activeClass = active?.id === segment.id ? 'active' : selected?.id === segment.id ? 'selected' : '';
-            return (
-              <div
-                key={segment.id}
-                className={`alignment-block ${activeClass}`}
-                style={{ left: `${left}%`, width: `${width}%` }}
-                onPointerDown={(event) => startDrag(event, segment, 'move')}
-                onDoubleClick={() => seek(segment.start)}
-              >
-                <span className="alignment-resize left" onPointerDown={(event) => startDrag(event, segment, 'start')} />
-                <strong>{segment.text}</strong>
-                <span className="alignment-resize right" onPointerDown={(event) => startDrag(event, segment, 'end')} />
-              </div>
-            );
-          })}
+          {/* Subtitle blocks track */}
+          <div className="alignment-track-row alignment-track-subtitles">
+            <span className="alignment-track-label">Subs</span>
+            <div
+              className="alignment-track-content alignment-timeline-track"
+              ref={timelineRef}
+              style={{ width: `${timelineZoom * 100}%` }}
+              onPointerDown={(event) => {
+                if (event.target === event.currentTarget) seekFromPointer(event.clientX, event.currentTarget);
+              }}
+            >
+            {segments.map((segment) => {
+              const left = pct(segment.start, clipDurationSec);
+              const width = Math.max(0.6, pct(segment.end - segment.start, clipDurationSec));
+              const activeClass = active?.id === segment.id ? 'active' : selected?.id === segment.id ? 'selected' : '';
+              return (
+                <div
+                  key={segment.id}
+                  className={`alignment-block ${activeClass}`}
+                  style={{ left: `${left}%`, width: `${width}%` }}
+                  onPointerDown={(event) => startDrag(event, segment, 'move')}
+                  onDoubleClick={() => seek(segment.start)}
+                >
+                  <span className="alignment-resize left" onPointerDown={(event) => startDrag(event, segment, 'start')} />
+                  <strong>{segment.text}</strong>
+                  <span className="alignment-resize right" onPointerDown={(event) => startDrag(event, segment, 'end')} />
+                </div>
+              );
+            })}
+            {cuts.map((cut, i) => (
+              <div key={`sc${i}`} className="alignment-cut-region" style={{ left: `${pct(cut.startSec, clipDurationSec)}%`, width: `${pct(cut.endSec - cut.startSec, clipDurationSec)}%` }} />
+            ))}
+            <b className="alignment-track-playhead" style={{ left: `${pct(currentSec, clipDurationSec)}%` }} />
+            </div>
           </div>
         </div>
 

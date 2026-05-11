@@ -5,6 +5,8 @@ import type { ProviderOption } from '../lib/provider-registry';
 import { parseTimestampToSeconds, ShortsClipPlan, ShortsPlanLanguageMode } from '../lib/shorts-reels';
 import { ShortsFrameRatePreset, ShortsResolutionPreset, ShortsTextTransform, ShortsVideoFormat, ShortsVideoQuality } from '../lib/shorts-render';
 import { SubtitleAlignmentEditor } from './subtitle-alignment/SubtitleAlignmentEditor';
+import { ReplaceClipModal } from './ReplaceClipModal';
+import { toggleSync } from '../lib/ClipSyncManager';
 
 export type ShortsExportMode = 'plan' | 'video';
 
@@ -73,6 +75,9 @@ type Props = {
   onExportIdeas: () => void;
   onExportSelected: () => void;
   onSaveDefaults: () => void;
+  onReplacePlan?: (index: number, startTimestamp: string, endTimestamp: string) => void;
+  onToggleClipSync?: (index: number) => void;
+  onImportMotion?: (index: number) => void;
 };
 
 function clipDurationLabel(plan: ShortsClipPlan): string {
@@ -194,9 +199,13 @@ export function ShortsReelsPanel({
   onExportIdeas,
   onExportSelected,
   onSaveDefaults,
+  onReplacePlan,
+  onToggleClipSync,
+  onImportMotion,
 }: Props) {
   const [detailsIndex, setDetailsIndex] = useState<number | null>(null);
   const [editorIndex, setEditorIndex] = useState<number | null>(null);
+  const [replaceIndex, setReplaceIndex] = useState<number | null>(null);
   const [previewCueIndex, setPreviewCueIndex] = useState(0);
   const [displayLanguage, setDisplayLanguage] = useState<ShortsDisplayLanguage>('target');
   const [copiedKey, setCopiedKey] = useState<string>('');
@@ -341,7 +350,7 @@ export function ShortsReelsPanel({
                   </button>
                   <div className="shorts-card-actions">
                     <button type="button" onClick={() => { onFocusPlan(index); setDetailsIndex(index); }}>Details</button>
-                    <button type="button" onClick={() => onFindMoments(plan.languageMode || 'target')}>Replace</button>
+                    <button type="button" onClick={() => setReplaceIndex(index)}>Replace</button>
                     <button type="button" onClick={() => onRemovePlan(index)}>Delete</button>
                     <button
                       type="button"
@@ -688,8 +697,25 @@ export function ShortsReelsPanel({
               onSavePlanFrameKeyframes(editorIndex, displayLanguage, keyframes);
             }
           }}
+          syncEnabled={editorIndex !== null ? plans[editorIndex]?.syncEnabled : false}
+          hasLinkedPartner={editorIndex !== null ? !!plans[editorIndex]?.linkedClipGroupId : false}
+          onToggleSync={() => { if (editorIndex !== null) onToggleClipSync?.(editorIndex); }}
+          onImportMotion={() => { if (editorIndex !== null) onImportMotion?.(editorIndex); }}
         />
       )}
+
+      <ReplaceClipModal
+        isOpen={replaceIndex !== null}
+        plan={replaceIndex !== null ? plans[replaceIndex] || null : null}
+        isBusy={isBusy}
+        onClose={() => setReplaceIndex(null)}
+        onRegenerate={(start, end) => {
+          if (replaceIndex !== null && onReplacePlan) {
+            onReplacePlan(replaceIndex, start, end);
+            setReplaceIndex(null);
+          }
+        }}
+      />
     </section>
   );
 }

@@ -1,5 +1,21 @@
 import type { AlignedSubtitleSegment, FrameKeyframe } from './subtitle-alignment';
 
+/** A cut region removed from the clip timeline via razor/delete. */
+export type TimelineCut = {
+  /** Start of the removed section, relative to clip start (seconds). */
+  startSec: number;
+  /** End of the removed section, relative to clip start (seconds). */
+  endSec: number;
+};
+
+/** Edge trim applied to the clip without changing the source timecodes. */
+export type TimelineTrim = {
+  /** Seconds trimmed from the start. */
+  trimStartSec: number;
+  /** Seconds trimmed from the end. */
+  trimEndSec: number;
+};
+
 export type ShortsClipPlan = {
   start: string;
   end: string;
@@ -23,6 +39,15 @@ export type ShortsClipPlan = {
   sourceFrameKeyframes?: FrameKeyframe[];
   targetFrameKeyframes?: FrameKeyframe[];
   languageMode?: ShortsPlanLanguageMode;
+
+  /** Groups source + target clips so edits can be synced. */
+  linkedClipGroupId?: string;
+  /** Whether frame/style sync is active for this clip. */
+  syncEnabled?: boolean;
+  /** Timeline cuts (razor tool removals). */
+  timelineCuts?: TimelineCut[];
+  /** Edge trim. */
+  timelineTrim?: TimelineTrim;
 };
 
 export type ShortsPlanLanguageMode = 'source' | 'target' | 'bilingual';
