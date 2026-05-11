@@ -162,6 +162,13 @@ export function SubtitleAlignmentEditor({
   const [looping, setLooping] = useState(false);
   const undoStackRef = useRef(new UndoRedoStack());
   const [undoTick, setUndoTick] = useState(0); // force re-render on undo/redo
+  // ── Refs for playback (avoid stale closures in RAF/timeupdate) ──
+  const cutsRef = useRef<TimelineCut[]>([]);
+  const trimRef = useRef<TimelineTrim>({ trimStartSec: 0, trimEndSec: 0 });
+  const loopingRef = useRef(false);
+  cutsRef.current = cuts;
+  trimRef.current = trim;
+  loopingRef.current = looping;
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
@@ -394,7 +401,12 @@ export function SubtitleAlignmentEditor({
   const playStart = trim.trimStartSec;
   const playEnd = clipDurationSec - trim.trimEndSec;
 
-  /** Find the cut region the given time falls inside, or null. */
+  /** Find the cut region the given time falls inside, reading from ref for RAF safety. */
+  function findCutAtRef(sec: number): TimelineCut | null {
+    return cutsRef.current.find((c) => sec >= c.startSec && sec < c.endSec) || null;
+  }
+
+  /** Same but using state directly (for render-time logic). */
   function findCutAt(sec: number): TimelineCut | null {
     return cuts.find((c) => sec >= c.startSec && sec < c.endSec) || null;
   }
@@ -405,44 +417,55 @@ export function SubtitleAlignmentEditor({
     return hit ? hit.endSec : sec;
   }
 
+  /** Skip using ref (for RAF/timeupdate). */
+  function skipCutRef(sec: number): number {
+    const hit = findCutAtRef(sec);
+    return hit ? hit.endSec : sec;
+  }
+
   useEffect(() => {
     if (!isOpen || !playing) return;
     let frameId = 0;
     const tick = () => {
       const video = videoRef.current;
       const audio = audioRef.current;
-      if (video && !video.paused) {
-        let local = video.currentTime - clipStartSec;
-        // Skip over cut regions
-        const hit = findCutAt(local);
-        if (hit) {
-          local = hit.endSec;
-          video.currentTime = clipStartSec + local;
-          if (audio) audio.currentTime = clipStartSec + local;
-        }
-        // Respect trim end / loop
-        if (local >= playEnd) {
-          if (looping) {
-            const restart = skipCut(playStart);
-            video.currentTime = clipStartSec + restart;
-            if (audio) audio.currentTime = clipStartSec + restart;
-            setCurrentSec(restart);
-          } else {
-            video.pause();
-            audio?.pause();
-            setCurrentSec(playEnd);
-            setPlaying(false);
-            return;
-          }
-        } else {
-          setCurrentSec(Math.min(Math.max(0, local), clipDurationSec));
-        }
-        frameId = window.requestAnimationFrame(tick);
+      if (!video || video.paused) return;
+
+      let local = video.currentTime - clipStartSec;
+      const currentTrim = trimRef.current;
+      const currentPlayEnd = clipDurationSec - currentTrim.trimEndSec;
+      const currentPlayStart = currentTrim.trimStartSec;
+
+      // Skip over cut regions (read from ref for latest data)
+      const hit = findCutAtRef(local);
+      if (hit) {
+        local = hit.endSec + 0.01; // small offset to avoid re-detecting same cut
+        video.currentTime = clipStartSec + local;
+        if (audio) audio.currentTime = clipStartSec + local;
       }
+
+      // Respect trim end / loop
+      if (local >= currentPlayEnd - 0.02) {
+        if (loopingRef.current) {
+          const restart = skipCutRef(currentPlayStart);
+          video.currentTime = clipStartSec + restart;
+          if (audio) audio.currentTime = clipStartSec + restart;
+          setCurrentSec(restart);
+        } else {
+          video.pause();
+          audio?.pause();
+          setCurrentSec(currentPlayEnd);
+          setPlaying(false);
+          return; // don't request next frame
+        }
+      } else {
+        setCurrentSec(Math.min(Math.max(0, local), clipDurationSec));
+      }
+      frameId = window.requestAnimationFrame(tick);
     };
     frameId = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(frameId);
-  }, [clipDurationSec, clipStartSec, cuts, isOpen, looping, playEnd, playStart, playing, trim]);
+  }, [clipDurationSec, clipStartSec, isOpen, playing]);
 
   useEffect(() => {
     let cancelled = false;
@@ -527,24 +550,29 @@ export function SubtitleAlignmentEditor({
     const audio = audioRef.current;
     if (!video) return;
     let local = video.currentTime - clipStartSec;
-    // Skip over cut regions
-    const hit = findCutAt(local);
+
+    // Skip over cut regions (use ref for latest data)
+    const hit = findCutAtRef(local);
     if (hit) {
-      local = hit.endSec;
+      local = hit.endSec + 0.01;
       video.currentTime = clipStartSec + local;
       if (audio) audio.currentTime = clipStartSec + local;
     }
+
+    const currentTrim = trimRef.current;
+    const currentPlayEnd = clipDurationSec - currentTrim.trimEndSec;
+
     // Respect trim end
-    if (local >= playEnd) {
-      if (looping) {
-        const restart = skipCut(playStart);
+    if (local >= currentPlayEnd) {
+      if (loopingRef.current) {
+        const restart = skipCutRef(currentTrim.trimStartSec);
         video.currentTime = clipStartSec + restart;
         if (audio) audio.currentTime = clipStartSec + restart;
         setCurrentSec(restart);
       } else {
         video.pause();
         audio?.pause();
-        syncMedia(playEnd);
+        syncMedia(currentPlayEnd);
         setPlaying(false);
       }
       return;
