@@ -426,10 +426,17 @@ export function SubtitleAlignmentEditor({
   useEffect(() => {
     if (!isOpen || !playing) return;
     let frameId = 0;
+    let stopped = false;
     const tick = () => {
+      if (stopped) return;
       const video = videoRef.current;
       const audio = audioRef.current;
-      if (!video || video.paused) return;
+
+      // Always schedule next frame first (never let the loop die)
+      frameId = window.requestAnimationFrame(tick);
+
+      // Only process when video is actually playing
+      if (!video || video.paused || video.seeking) return;
 
       let local = video.currentTime - clipStartSec;
       const currentTrim = trimRef.current;
@@ -439,9 +446,12 @@ export function SubtitleAlignmentEditor({
       // Skip over cut regions (read from ref for latest data)
       const hit = findCutAtRef(local);
       if (hit) {
-        local = hit.endSec + 0.01; // small offset to avoid re-detecting same cut
-        video.currentTime = clipStartSec + local;
-        if (audio) audio.currentTime = clipStartSec + local;
+        const jumpTo = hit.endSec + 0.02;
+        console.log('[Razor] Skipping cut region', hit.startSec.toFixed(2), '->', hit.endSec.toFixed(2), ', jumping to', jumpTo.toFixed(2));
+        video.currentTime = clipStartSec + jumpTo;
+        if (audio) audio.currentTime = clipStartSec + jumpTo;
+        setCurrentSec(jumpTo);
+        return; // wait for next frame after seek
       }
 
       // Respect trim end / loop
@@ -452,19 +462,19 @@ export function SubtitleAlignmentEditor({
           if (audio) audio.currentTime = clipStartSec + restart;
           setCurrentSec(restart);
         } else {
+          stopped = true;
+          window.cancelAnimationFrame(frameId);
           video.pause();
           audio?.pause();
           setCurrentSec(currentPlayEnd);
           setPlaying(false);
-          return; // don't request next frame
         }
       } else {
         setCurrentSec(Math.min(Math.max(0, local), clipDurationSec));
       }
-      frameId = window.requestAnimationFrame(tick);
     };
     frameId = window.requestAnimationFrame(tick);
-    return () => window.cancelAnimationFrame(frameId);
+    return () => { stopped = true; window.cancelAnimationFrame(frameId); };
   }, [clipDurationSec, clipStartSec, isOpen, playing]);
 
   useEffect(() => {
@@ -546,45 +556,13 @@ export function SubtitleAlignmentEditor({
   }
 
   function handleTimeUpdate() {
+    // Cut/trim/loop skipping is handled exclusively by the RAF tick loop.
+    // This handler just updates currentSec for scrub display when not playing
+    // (e.g. after a manual seek or when video fires timeupdate while paused).
     const video = videoRef.current;
-    const audio = audioRef.current;
-    if (!video) return;
-    let local = video.currentTime - clipStartSec;
-
-    // Skip over cut regions (use ref for latest data)
-    const hit = findCutAtRef(local);
-    if (hit) {
-      local = hit.endSec + 0.01;
-      video.currentTime = clipStartSec + local;
-      if (audio) audio.currentTime = clipStartSec + local;
-    }
-
-    const currentTrim = trimRef.current;
-    const currentPlayEnd = clipDurationSec - currentTrim.trimEndSec;
-
-    // Respect trim end
-    if (local >= currentPlayEnd) {
-      if (loopingRef.current) {
-        const restart = skipCutRef(currentTrim.trimStartSec);
-        video.currentTime = clipStartSec + restart;
-        if (audio) audio.currentTime = clipStartSec + restart;
-        setCurrentSec(restart);
-      } else {
-        video.pause();
-        audio?.pause();
-        syncMedia(currentPlayEnd);
-        setPlaying(false);
-      }
-      return;
-    }
-    if (local >= clipDurationSec) {
-      video.pause();
-      audio?.pause();
-      syncMedia(clipDurationSec);
-      setPlaying(false);
-      return;
-    }
-    setCurrentSec(Math.max(0, local));
+    if (!video || playing) return; // RAF tick handles it when playing
+    const local = video.currentTime - clipStartSec;
+    setCurrentSec(Math.min(Math.max(0, local), clipDurationSec));
   }
 
   /** Reset everything to the initial state as if opening the editor for the first time. */
@@ -708,8 +686,7 @@ export function SubtitleAlignmentEditor({
                 type="button"
                 className={`btn-dl btn-dl-sync ${syncEnabled ? 'sync-on' : 'sync-off'}`}
                 onClick={onToggleSync}
-                disabled={!hasLinkedPartner}
-                title={!hasLinkedPartner ? 'No linked partner clip' : syncEnabled ? 'Sync ON — edits propagate to linked clip' : 'Sync OFF — edits stay local'}
+                title={syncEnabled ? 'Sync ON — edits propagate to linked clip' : 'Sync OFF — click to enable sync'}
               >
                 {syncEnabled ? <Link2 size={14} /> : <Unlink2 size={14} />}
                 {syncEnabled ? 'Sync' : 'Sync'}
@@ -773,8 +750,6 @@ export function SubtitleAlignmentEditor({
               }}
               onLoadedMetadata={() => syncMedia(currentSec)}
               onTimeUpdate={handleTimeUpdate}
-              onPlay={() => setPlaying(true)}
-              onPause={() => setPlaying(false)}
             />
             <div className="alignment-frame-guide" ref={frameGuideRef}>
             {previewCaption && (
