@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildRenderMediaSegments,
   buildShortsRenderProject,
   interpolateFrameState,
   normalizeRenderSubtitles,
@@ -72,4 +73,66 @@ test('buildShortsRenderProject stores editor style and timeline as render source
   assert.equal(project.subtitles[0].text, 'Hare Krishna');
   assert.equal(project.captionStyle.fontFamily, 'Cuprum');
   assert.equal(project.frameKeyframes[0].backgroundColor, '#CA9E3F');
+  assert.deepEqual(project.mediaSegments, [{
+    sourceStartSec: 12,
+    sourceEndSec: 18,
+    outputStartSec: 0,
+    outputEndSec: 6,
+  }]);
+});
+
+test('buildRenderMediaSegments applies edge trim and razor cuts in source order', () => {
+  assert.deepEqual(buildRenderMediaSegments(100, 120, [
+    { startSec: 6, endSec: 8 },
+  ], { trimStartSec: 2, trimEndSec: 3 }), [
+    { sourceStartSec: 102, sourceEndSec: 106, outputStartSec: 0, outputEndSec: 4 },
+    { sourceStartSec: 108, sourceEndSec: 117, outputStartSec: 4, outputEndSec: 13 },
+  ]);
+});
+
+test('buildShortsRenderProject shifts cues and keyframes for trim while exporting cut media segments', () => {
+  const project = buildShortsRenderProject({
+    id: 'clip-trim-cut',
+    title: 'Clip',
+    inputVideoSrc: 'file:///tmp/video.mov',
+    sourceWidth: 1920,
+    sourceHeight: 1080,
+    clipStartSec: 100,
+    clipEndSec: 120,
+    outputWidth: 1080,
+    outputHeight: 1920,
+    fps: 24,
+    cues: [{ startSec: 2.5, endSec: 5, text: 'Trimmed cue' }],
+    frameKeyframes: [{ id: 'frame', time: 3, x: 5, y: -2, zoom: 0.8, backgroundColor: '#CA9E3F' }],
+    timelineTrim: { trimStartSec: 2, trimEndSec: 3 },
+    timelineCuts: [{ startSec: 6, endSec: 8 }],
+    style: {
+      fontFamily: 'Cuprum',
+      fontSize: 96,
+      bold: true,
+      textTransform: 'uppercase',
+      textColor: '#FFFFFF',
+      boxColor: '#FF8C00',
+      boxOpacity: 0.5,
+      boxWidth: 86,
+      boxHeight: 1,
+      edgeBlur: 8,
+      letterSpacing: 0,
+      lineSpacing: 1.05,
+      edgeSoftness: 0.25,
+      outline: 0,
+      shadow: 4,
+    },
+    subtitleBottomMargin: 560,
+  });
+
+  assert.equal(project.durationSec, 13);
+  assert.equal(project.durationInFrames, 312);
+  assert.deepEqual(project.mediaSegments, [
+    { sourceStartSec: 102, sourceEndSec: 106, outputStartSec: 0, outputEndSec: 4 },
+    { sourceStartSec: 108, sourceEndSec: 117, outputStartSec: 4, outputEndSec: 13 },
+  ]);
+  assert.deepEqual(project.subtitles, [{ id: 'cue_0', startSec: 0.5, endSec: 3, text: 'Trimmed cue' }]);
+  assert.equal(project.frameKeyframes[0].time, 0);
+  assert.equal(project.frameKeyframes[1].time, 1);
 });

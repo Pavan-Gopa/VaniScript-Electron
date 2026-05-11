@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildCompositionHtml } = require('./hyperframes-renderer');
+const { buildCompositionHtml, buildMediaSegmentsFilter } = require('./hyperframes-renderer');
 
 test('buildCompositionHtml emits the HyperFrames producer contract', () => {
   const html = buildCompositionHtml({
@@ -45,7 +45,24 @@ test('buildCompositionHtml emits the HyperFrames producer contract', () => {
   assert.match(html, /<audio[\s\S]*id="source-audio"[\s\S]*data-media-start="12"/);
   assert.match(html, /const paddingY = fontSize \* 0\.12 \* style\.boxHeight;/);
   assert.match(html, /const paddingX = paddingY \* 1\.45;/);
+  assert.match(html, /<div id="subtitle-layer"><span id="subtitle-text"><\/span><\/div>/);
+  const subtitleLayerCss = html.match(/#subtitle-layer \{([\s\S]*?)\n      \}/)?.[1] || '';
+  const subtitleTextCss = html.match(/#subtitle-text \{([\s\S]*?)\n      \}/)?.[1] || '';
+  assert.doesNotMatch(subtitleLayerCss, /white-space: pre-wrap;/);
+  assert.match(subtitleTextCss, /white-space: pre-wrap;/);
   assert.match(html, /window\.__timelines = window\.__timelines \|\| \{\};/);
   assert.match(html, /window\.__timelines\['vaniscript-short'\] = tl;/);
   assert.doesNotMatch(html, /window\.__hf\s*=/);
+});
+
+test('buildMediaSegmentsFilter concats trim and razor-safe media segments', () => {
+  const filter = buildMediaSegmentsFilter([
+    { sourceStartSec: 102, sourceEndSec: 106, outputStartSec: 0, outputEndSec: 4 },
+    { sourceStartSec: 108, sourceEndSec: 117, outputStartSec: 4, outputEndSec: 13 },
+  ], "scale='min(1080,iw)':-2:flags=lanczos");
+
+  assert.match(filter, /\[0:v\]trim=start=102\.000:end=106\.000,setpts=PTS-STARTPTS\[v0\]/);
+  assert.match(filter, /\[0:a\]atrim=start=108\.000:end=117\.000,asetpts=PTS-STARTPTS\[a1\]/);
+  assert.match(filter, /\[v0\]\[a0\]\[v1\]\[a1\]concat=n=2:v=1:a=1\[vcat\]\[aout\]/);
+  assert.match(filter, /\[vcat\]scale='min\(1080,iw\)':-2:flags=lanczos\[vout\]/);
 });

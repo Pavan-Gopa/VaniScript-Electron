@@ -2065,6 +2065,7 @@ html, body, #root {
   backdrop-filter: blur(12px);
 }
 .alignment-editor {
+  position: relative;
   width: min(1440px, 100%);
   height: min(930px, 94vh);
   display: grid;
@@ -2076,6 +2077,29 @@ html, body, #root {
   background: rgba(12,16,29,0.98);
   box-shadow: 0 30px 110px rgba(0,0,0,0.55);
   padding: 16px;
+}
+/* X close button — absolute top-right corner */
+.alignment-close-x {
+  position: absolute;
+  top: 8px; right: 8px;
+  width: 28px; height: 28px;
+  border: none; border-radius: 8px;
+  background: rgba(255,255,255,0.06);
+  color: var(--text-2);
+  cursor: pointer;
+  display: inline-grid; place-items: center;
+  transition: background 0.15s, color 0.15s;
+  z-index: 10;
+}
+.alignment-close-x:hover {
+  background: rgba(230,74,74,0.2);
+  color: #ff7070;
+}
+/* Save flash animation */
+.alignment-save-btn.save-flash {
+  background: rgba(74,222,128,0.22) !important;
+  border-color: rgba(74,222,128,0.5) !important;
+  color: #4ade80 !important;
 }
 .alignment-workspace {
   min-height: 0;

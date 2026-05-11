@@ -1,5 +1,6 @@
 import type { FrameKeyframe } from '../lib/subtitle-alignment';
-import type { RenderSubtitleCue, ShortsRenderProject, ShortsRenderProjectInput } from './types';
+import type { TimelineCut, TimelineTrim } from '../lib/shorts-reels';
+import type { RenderMediaSegment, RenderSubtitleCue, ShortsRenderProject, ShortsRenderProjectInput } from './types';
 
 const DEFAULT_FRAME: FrameKeyframe = {
   id: 'frame_default',
@@ -71,12 +72,117 @@ export function normalizeRenderSubtitles(
     .sort((a, b) => a.startSec - b.startSec);
 }
 
+function normalizeTrim(trim: TimelineTrim | undefined, clipDurationSec: number): TimelineTrim {
+  const trimStartSec = clamp(Number(trim?.trimStartSec) || 0, 0, Math.max(0, clipDurationSec));
+  const trimEndSec = clamp(Number(trim?.trimEndSec) || 0, 0, Math.max(0, clipDurationSec - trimStartSec));
+  return { trimStartSec, trimEndSec };
+}
+
+function normalizeCuts(cuts: TimelineCut[] | undefined, clipDurationSec: number, trim: TimelineTrim): TimelineCut[] {
+  const trimStart = trim.trimStartSec;
+  const trimEnd = clipDurationSec - trim.trimEndSec;
+  if (trimEnd <= trimStart) return [];
+
+  const sorted = (cuts || [])
+    .map((cut) => ({
+      startSec: clamp(Number(cut.startSec) || 0, trimStart, trimEnd),
+      endSec: clamp(Number(cut.endSec) || 0, trimStart, trimEnd),
+    }))
+    .filter((cut) => cut.endSec > cut.startSec + 0.01)
+    .sort((a, b) => a.startSec - b.startSec);
+
+  const merged: TimelineCut[] = [];
+  for (const cut of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && cut.startSec <= last.endSec + 0.01) {
+      last.endSec = Math.max(last.endSec, cut.endSec);
+    } else {
+      merged.push({ ...cut });
+    }
+  }
+  return merged;
+}
+
+export function buildRenderMediaSegments(
+  clipStartSec: number,
+  clipEndSec: number,
+  cuts: TimelineCut[] | undefined,
+  trim: TimelineTrim | undefined,
+): RenderMediaSegment[] {
+  const clipDurationSec = Math.max(0, clipEndSec - clipStartSec);
+  const normalizedTrim = normalizeTrim(trim, clipDurationSec);
+  const normalizedCuts = normalizeCuts(cuts, clipDurationSec, normalizedTrim);
+  const windowStart = normalizedTrim.trimStartSec;
+  const windowEnd = clipDurationSec - normalizedTrim.trimEndSec;
+  const mediaSegments: RenderMediaSegment[] = [];
+  let cursor = windowStart;
+  let outputCursor = 0;
+
+  const pushSegment = (start: number, end: number) => {
+    if (end <= start + 0.01) return;
+    const duration = end - start;
+    mediaSegments.push({
+      sourceStartSec: clipStartSec + start,
+      sourceEndSec: clipStartSec + end,
+      outputStartSec: outputCursor,
+      outputEndSec: outputCursor + duration,
+    });
+    outputCursor += duration;
+  };
+
+  for (const cut of normalizedCuts) {
+    pushSegment(cursor, cut.startSec);
+    cursor = Math.max(cursor, cut.endSec);
+  }
+  pushSegment(cursor, windowEnd);
+
+  return mediaSegments.length > 0
+    ? mediaSegments
+    : [{
+        sourceStartSec: clipStartSec,
+        sourceEndSec: clipEndSec,
+        outputStartSec: 0,
+        outputEndSec: clipDurationSec,
+      }];
+}
+
+function shiftCuesForTrim(
+  cues: Array<{ startSec: number; endSec: number; text: string }>,
+  trimStartSec: number,
+): Array<{ startSec: number; endSec: number; text: string }> {
+  if (trimStartSec <= 0) return cues;
+  return cues.map((cue) => ({
+    ...cue,
+    startSec: cue.startSec - trimStartSec,
+    endSec: cue.endSec - trimStartSec,
+  }));
+}
+
+function shiftKeyframesForTrim(keyframes: FrameKeyframe[], trimStartSec: number, durationSec: number): FrameKeyframe[] {
+  if (trimStartSec <= 0) return keyframes.filter((point) => point.time <= durationSec + 0.01);
+  const baseFrame = {
+    ...interpolateFrameState(keyframes, trimStartSec),
+    id: 'frame_trim_start',
+    time: 0,
+  };
+  const shifted = keyframes
+    .map((point) => ({ ...point, time: point.time - trimStartSec }))
+    .filter((point) => point.time >= -0.01 && point.time <= durationSec + 0.01)
+    .map((point) => ({ ...point, time: Math.max(0, point.time) }));
+  return [baseFrame, ...shifted.filter((point) => point.time > 0.01)];
+}
+
 export function buildShortsRenderProject(input: ShortsRenderProjectInput): ShortsRenderProject {
-  const durationSec = Math.max(1, input.clipEndSec - input.clipStartSec);
+  const clipDurationSec = Math.max(0, input.clipEndSec - input.clipStartSec);
+  const trim = normalizeTrim(input.timelineTrim, clipDurationSec);
+  const cuts = normalizeCuts(input.timelineCuts, clipDurationSec, trim);
+  const mediaSegments = buildRenderMediaSegments(input.clipStartSec, input.clipEndSec, cuts, trim);
+  const durationSec = Math.max(0.05, mediaSegments[mediaSegments.length - 1]?.outputEndSec || clipDurationSec || 1);
   const fps = Math.max(1, Math.round(input.fps || 30));
-  const keyframes = input.frameKeyframes?.length
+  const initialKeyframes = input.frameKeyframes?.length
     ? input.frameKeyframes
     : [{ ...DEFAULT_FRAME, backgroundColor: '#000000' }];
+  const keyframes = shiftKeyframesForTrim(initialKeyframes, trim.trimStartSec, durationSec);
 
   return {
     id: input.id,
@@ -91,9 +197,12 @@ export function buildShortsRenderProject(input: ShortsRenderProjectInput): Short
     clipEndSec: input.clipEndSec,
     durationSec,
     durationInFrames: Math.max(1, Math.ceil(durationSec * fps)),
-    subtitles: normalizeRenderSubtitles(input.cues, durationSec),
+    subtitles: normalizeRenderSubtitles(shiftCuesForTrim(input.cues, trim.trimStartSec), durationSec),
     captionStyle: input.style,
     subtitleBottomMargin: input.subtitleBottomMargin,
-    frameKeyframes: keyframes,
+    frameKeyframes: keyframes.length ? keyframes : [{ ...DEFAULT_FRAME, backgroundColor: initialKeyframes[0]?.backgroundColor || '#000000' }],
+    mediaSegments,
+    timelineCuts: cuts,
+    timelineTrim: trim,
   };
 }

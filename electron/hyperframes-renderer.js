@@ -92,8 +92,19 @@ function normalizeProject(project) {
         backgroundColor: '#000000',
       }];
 
+  const mediaSegments = (project.mediaSegments || [])
+    .map((segment) => ({
+      sourceStartSec: Math.max(0, Number(segment.sourceStartSec) || 0),
+      sourceEndSec: Math.max(0, Number(segment.sourceEndSec) || 0),
+      outputStartSec: Math.max(0, Number(segment.outputStartSec) || 0),
+      outputEndSec: Math.max(0, Number(segment.outputEndSec) || 0),
+    }))
+    .filter((segment) => segment.sourceEndSec > segment.sourceStartSec + 0.01)
+    .sort((a, b) => a.outputStartSec - b.outputStartSec);
+
   return {
     ...project,
+    mediaSegments,
     frameKeyframes: frameKeyframes
       .map((frame) => ({
         id: frame.id,
@@ -193,12 +204,30 @@ async function createBrowserSafeProxy({
       : Math.min(Number(project.sourceWidth) || 1920, 1920);
   const scaleWidth = Math.max(2, Math.round(proxyMaxWidth / 2) * 2);
   const vf = `scale='min(${scaleWidth},iw)':-2:flags=lanczos`;
-  const commonArgs = [
-    '-y',
-    '-ss', String(clipStartSec),
-    '-i', sourcePath,
-    '-t', String(durationSec),
-    '-vf', vf,
+  const mediaSegments = Array.isArray(project.mediaSegments) ? project.mediaSegments : [];
+  const singleSegment = mediaSegments.length === 1 ? mediaSegments[0] : null;
+  const baseArgs = ['-y'];
+  const inputArgs = singleSegment
+    ? [
+        '-ss', String(singleSegment.sourceStartSec),
+        '-i', sourcePath,
+        '-t', String(Math.max(0.1, singleSegment.sourceEndSec - singleSegment.sourceStartSec)),
+        '-vf', vf,
+      ]
+    : mediaSegments.length > 1
+      ? [
+          '-i', sourcePath,
+          '-filter_complex', buildMediaSegmentsFilter(mediaSegments, vf),
+          '-map', '[vout]',
+          '-map', '[aout]',
+        ]
+      : [
+          '-ss', String(clipStartSec),
+          '-i', sourcePath,
+          '-t', String(durationSec),
+          '-vf', vf,
+        ];
+  const outputArgs = [
     '-pix_fmt', 'yuv420p',
     '-movflags', '+faststart',
     '-c:a', 'aac',
@@ -209,14 +238,32 @@ async function createBrowserSafeProxy({
     : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20'];
 
   try {
-    await runFfmpeg(ffmpegPath, [...commonArgs, ...hardwareArgs, proxyPath], log);
+    await runFfmpeg(ffmpegPath, [...baseArgs, ...inputArgs, ...outputArgs, ...hardwareArgs, proxyPath], log);
     return proxyPath;
   } catch (error) {
     if (process.platform !== 'darwin') throw error;
     log.warn('HyperFrames proxy hardware encode failed, retrying with libx264.', error.message || String(error));
-    await runFfmpeg(ffmpegPath, [...commonArgs, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', proxyPath], log);
+    await runFfmpeg(ffmpegPath, [...baseArgs, ...inputArgs, ...outputArgs, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', proxyPath], log);
     return proxyPath;
   }
+}
+
+function buildMediaSegmentsFilter(mediaSegments, scaleFilter) {
+  const normalized = mediaSegments
+    .filter((segment) => segment.sourceEndSec > segment.sourceStartSec + 0.01)
+    .sort((a, b) => a.outputStartSec - b.outputStartSec);
+  const trimParts = [];
+  const concatInputs = [];
+  normalized.forEach((segment, index) => {
+    const start = Number(segment.sourceStartSec).toFixed(3);
+    const end = Number(segment.sourceEndSec).toFixed(3);
+    trimParts.push(`[0:v]trim=start=${start}:end=${end},setpts=PTS-STARTPTS[v${index}]`);
+    trimParts.push(`[0:a]atrim=start=${start}:end=${end},asetpts=PTS-STARTPTS[a${index}]`);
+    concatInputs.push(`[v${index}][a${index}]`);
+  });
+  trimParts.push(`${concatInputs.join('')}concat=n=${normalized.length}:v=1:a=1[vcat][aout]`);
+  trimParts.push(`[vcat]${scaleFilter}[vout]`);
+  return trimParts.join(';');
 }
 
 function buildCompositionHtml(project, relativeVideoPath) {
@@ -287,16 +334,16 @@ function buildCompositionHtml(project, relativeVideoPath) {
         max-width: 100%;
         box-sizing: border-box;
         text-align: center;
-        white-space: pre-wrap;
         overflow: hidden;
-        overflow-wrap: anywhere;
-        word-break: normal;
         pointer-events: none;
         display: none;
       }
       #subtitle-text {
         display: block;
         margin: 0;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        word-break: normal;
       }
     </style>
   </head>
@@ -327,9 +374,7 @@ function buildCompositionHtml(project, relativeVideoPath) {
           src="${escapeHtml(relativeVideoPath)}"
         ></audio>
       </div>
-      <div id="subtitle-layer">
-        <span id="subtitle-text"></span>
-      </div>
+      <div id="subtitle-layer"><span id="subtitle-text"></span></div>
     </div>
     <script>
       const project = ${asJsonScript(project)};
@@ -551,6 +596,7 @@ async function renderShortClipWithHyperFrames({
 
 module.exports = {
   buildCompositionHtml,
+  buildMediaSegmentsFilter,
   renderShortClipWithHyperFrames,
   interpolateFrameState,
 };

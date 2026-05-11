@@ -682,7 +682,6 @@ export function ShortsReelsPanel({
               onSavePlanAlignment(editorIndex, displayLanguage, segments);
               if (!selectedPlanIndexes.includes(editorIndex)) onTogglePlan(editorIndex);
             }
-            setEditorIndex(null);
           }}
           onDraftChange={(segments) => {
             if (editorIndex !== null) {

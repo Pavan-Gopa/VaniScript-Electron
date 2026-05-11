@@ -33,7 +33,6 @@ import { ShortsReelsPanel, ShortsSettings } from './components/ShortsReelsPanel'
 import { SourceMediaKind, sourceMediaKind } from './lib/media-source';
 import { buildShortsPrompt, parseShortsPlanResponse, parseTimestampToSeconds, secondsToShortsTimestamp, ShortsClipPlan, ShortsPlanLanguageMode } from './lib/shorts-reels';
 import { toggleSync, copyMotionFrom, findLinkedPartnerIndex, resolveClipLanguageRole } from './lib/ClipSyncManager';
-import { buildFfmpegSelectExpression } from './lib/TimelineCutEngine';
 import {
   buildShortsAssSubtitle,
   buildVerticalVideoFilter,
@@ -2042,24 +2041,18 @@ export default function App() {
             outline: 0,
             shadow: 4,
           },
+          timelineCuts: plan.timelineCuts,
+          timelineTrim: plan.timelineTrim,
         });
         if (!window.electronAPI.hyperframesExportShortClip) {
           throw new Error('HyperFrames export is not available in this build.');
         }
-        // Build FFmpeg select expression for timeline cuts/trims
-        const clipDurationSec = Math.max(0, endSec - startSec);
-        const hasCutsOrTrims = (plan.timelineCuts && plan.timelineCuts.length > 0) ||
-          (plan.timelineTrim && (plan.timelineTrim.trimStartSec > 0 || plan.timelineTrim.trimEndSec > 0));
-        const selectExpression = hasCutsOrTrims
-          ? buildFfmpegSelectExpression(plan.timelineCuts || [], plan.timelineTrim, clipDurationSec)
-          : undefined;
         const result = await window.electronAPI.hyperframesExportShortClip({
           project,
           inputVideoPath: session.originalVideoPath,
           outputPath,
           format: shortsSettings.videoFormat,
           qualityPreset: shortsSettings.videoQuality,
-          ...(selectExpression ? { selectExpression } : {}),
         });
         if (!result.success) throw new Error(result.error || `Could not export clip ${index + 1}.`);
         exported.push(result.outputPath || outputPath);

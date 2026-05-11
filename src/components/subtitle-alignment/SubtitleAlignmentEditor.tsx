@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Download, Pause, Play, Save, Scissors, SplitSquareHorizontal, Trash2, Link2, Unlink2, Undo2, Redo2, Languages, Repeat, RotateCcw } from 'lucide-react';
+import { Download, Pause, Play, Save, Scissors, SplitSquareHorizontal, Trash2, Link2, Unlink2, Undo2, Redo2, Languages, Repeat, RotateCcw, CheckCheck, X } from 'lucide-react';
 import { formatPlaybackClock } from '../../lib/karaoke';
 import {
   AlignedSubtitleSegment,
@@ -160,6 +160,7 @@ export function SubtitleAlignmentEditor({
   const [razorStart, setRazorStart] = useState<number | null>(null);
   const [trimDragState, setTrimDragState] = useState<{ edge: 'start' | 'end'; pointerX: number; original: number } | null>(null);
   const [looping, setLooping] = useState(false);
+  const [savedFlash, setSavedFlash] = useState(false); // green ✓ feedback after save
   const undoStackRef = useRef(new UndoRedoStack());
   const [undoTick, setUndoTick] = useState(0); // force re-render on undo/redo
   // ── Refs for playback (avoid stale closures in RAF/timeupdate) ──
@@ -447,7 +448,6 @@ export function SubtitleAlignmentEditor({
       const hit = findCutAtRef(local);
       if (hit) {
         const jumpTo = hit.endSec + 0.02;
-        console.log('[Razor] Skipping cut region', hit.startSec.toFixed(2), '->', hit.endSec.toFixed(2), ', jumping to', jumpTo.toFixed(2));
         video.currentTime = clipStartSec + jumpTo;
         if (audio) audio.currentTime = clipStartSec + jumpTo;
         setCurrentSec(jumpTo);
@@ -612,6 +612,9 @@ export function SubtitleAlignmentEditor({
     onSaveFrameKeyframes?.(effectiveFrameKeyframes);
     onSaveCuts?.(cuts);
     onSaveTrim?.(trim);
+    // Show green flash feedback, don't close the modal
+    setSavedFlash(true);
+    setTimeout(() => setSavedFlash(false), 2000);
   }
 
   function getCurrentUndoState(): UndoableState {
@@ -731,9 +734,25 @@ export function SubtitleAlignmentEditor({
             >
               <RotateCcw size={14} /> Reset
             </button>
-            <button type="button" className="btn-dl btn-dl-secondary" onClick={onClose}>Close</button>
-            <button type="button" className="btn-dl btn-dl-primary" onClick={save}><Save size={14} /> Save edits</button>
+            <button
+              type="button"
+              className={`btn-dl btn-dl-primary alignment-save-btn ${savedFlash ? 'save-flash' : ''}`}
+              onClick={save}
+              title="Save edits (stays open)"
+            >
+              {savedFlash ? <CheckCheck size={14} /> : <Save size={14} />}
+              {savedFlash ? 'Saved!' : 'Save edits'}
+            </button>
           </div>
+          {/* X close button — far top-right corner */}
+          <button
+            type="button"
+            className="alignment-close-x"
+            onClick={onClose}
+            title="Close visual editor"
+          >
+            <X size={16} />
+          </button>
         </div>
 
         <div className={`alignment-workspace ${inspectorOpen ? '' : 'inspector-closed'}`}>
