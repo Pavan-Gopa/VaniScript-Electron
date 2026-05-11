@@ -140,7 +140,7 @@ export function SubtitleAlignmentEditor({
   const [frameZoom, setFrameZoom] = useState(settings.zoom);
   const [framePanX, setFramePanX] = useState(0);
   const [framePanY, setFramePanY] = useState(0);
-  const [frameBackgroundColor, setFrameBackgroundColor] = useState('#000000');
+  const [frameGuideColor, setFrameGuideColor] = useState('#ffaa19');
   const [frameKeyframes, setFrameKeyframes] = useState<FrameKeyframe[]>([]);
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [timelineZoom, setTimelineZoom] = useState(1);
@@ -190,9 +190,9 @@ export function SubtitleAlignmentEditor({
       x: framePanX,
       y: framePanY,
       zoom: frameZoom,
-      backgroundColor: frameBackgroundColor,
+      backgroundColor: frameGuideColor,
     }];
-  }, [frameBackgroundColor, frameKeyframes, framePanX, framePanY, frameZoom]);
+  }, [frameGuideColor, frameKeyframes, framePanX, framePanY, frameZoom]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -210,7 +210,7 @@ export function SubtitleAlignmentEditor({
     setFrameZoom(settings.zoom);
     setFramePanX(0);
     setFramePanY(0);
-    setFrameBackgroundColor(initialFrameKeyframes?.[0]?.backgroundColor || '#000000');
+    setFrameGuideColor(initialFrameKeyframes?.[0]?.backgroundColor || '#000000');
     setTimelineZoom(1);
      setFrameKeyframes((initialFrameKeyframes || []).map((keyframe) => ({
       ...keyframe,
@@ -399,7 +399,7 @@ export function SubtitleAlignmentEditor({
     setFrameZoom(frame.zoom);
     setFramePanX(frame.x);
     setFramePanY(frame.y);
-    setFrameBackgroundColor(frame.backgroundColor || '#000000');
+    setFrameGuideColor(frame.backgroundColor || '#000000');
   }, [currentSec, frameKeyframes, isOpen]);
 
   // Playback boundaries derived from trim
@@ -585,7 +585,7 @@ export function SubtitleAlignmentEditor({
     setFrameZoom(settings.zoom);
     setFramePanX(0);
     setFramePanY(0);
-    setFrameBackgroundColor('#000000');
+    setFrameGuideColor('#000000');
     setFrameKeyframes([]);
     setCuts([]);
     setTrim({ trimStartSec: 0, trimEndSec: 0 });
@@ -765,7 +765,7 @@ export function SubtitleAlignmentEditor({
         <div className={`alignment-workspace ${inspectorOpen ? '' : 'inspector-closed'}`}>
           <div className="alignment-left">
         <div className="alignment-main">
-          <div className="alignment-preview" style={{ backgroundColor: bgSettings.solidEnabled ? bgSettings.solidColor : frameBackgroundColor }}>
+          <div className="alignment-preview" style={{ backgroundColor: bgSettings.solidEnabled ? bgSettings.solidColor : '#000000' }}>
             {/* Blur background video layer */}
             {bgSettings.blurEnabled && (
               <video
@@ -777,6 +777,11 @@ export function SubtitleAlignmentEditor({
                 style={{
                   filter: `blur(${bgSettings.blurStrength}px)`,
                   transform: `scale(${bgSettings.blurScale})`,
+                }}
+                onLoadedMetadata={() => {
+                  if (blurVideoRef.current && videoRef.current) {
+                    blurVideoRef.current.currentTime = videoRef.current.currentTime;
+                  }
                 }}
               />
             )}
@@ -800,16 +805,14 @@ export function SubtitleAlignmentEditor({
               style={{
                 transform: `translate(${framePanX}%, ${framePanY}%) scale(${frameZoom})`,
                 ...(bgSettings.featherEnabled ? {
-                  WebkitMaskImage: `linear-gradient(to bottom, transparent 0px, black ${bgSettings.featherTop}px, black calc(100% - ${bgSettings.featherBottom}px), transparent 100%), linear-gradient(to right, transparent 0px, black ${bgSettings.featherLeft}px, black calc(100% - ${bgSettings.featherRight}px), transparent 100%)`,
-                  WebkitMaskComposite: 'destination-in' as any,
-                  maskImage: `linear-gradient(to bottom, transparent 0px, black ${bgSettings.featherTop}px, black calc(100% - ${bgSettings.featherBottom}px), transparent 100%), linear-gradient(to right, transparent 0px, black ${bgSettings.featherLeft}px, black calc(100% - ${bgSettings.featherRight}px), transparent 100%)`,
-                  maskComposite: 'intersect' as any,
+                  WebkitMaskImage: `linear-gradient(to bottom, transparent 0px, black ${bgSettings.featherTop}px, black calc(100% - ${bgSettings.featherBottom}px), transparent 100%)`,
+                  maskImage: `linear-gradient(to bottom, transparent 0px, black ${bgSettings.featherTop}px, black calc(100% - ${bgSettings.featherBottom}px), transparent 100%)`,
                 } : {}),
               }}
               onLoadedMetadata={() => syncMedia(currentSec)}
               onTimeUpdate={handleTimeUpdate}
             />
-            <div className="alignment-frame-guide" ref={frameGuideRef}>
+            <div className="alignment-frame-guide" ref={frameGuideRef} style={{ '--frame-guide-color': frameGuideColor } as React.CSSProperties}>
             {previewCaption && (
               <div
                 className="alignment-caption-preview"
@@ -1099,9 +1102,9 @@ export function SubtitleAlignmentEditor({
               <h4>Frame animation</h4>
               <p>Adjust the frame, then press Add point. Transitions between points are smooth.</p>
               <label>
-                <span>Bg</span>
-                <input type="color" value={frameBackgroundColor} onChange={(event) => setFrameBackgroundColor(event.currentTarget.value)} />
-                <b>{frameBackgroundColor}</b>
+                <span>Guide</span>
+                <input type="color" value={frameGuideColor} onChange={(event) => setFrameGuideColor(event.currentTarget.value)} />
+                <b>{frameGuideColor}</b>
               </label>
               <label>
                 <span>Zoom</span>
@@ -1129,7 +1132,7 @@ export function SubtitleAlignmentEditor({
                       x: framePanX,
                       y: framePanY,
                       zoom: frameZoom,
-                      backgroundColor: frameBackgroundColor,
+                      backgroundColor: frameGuideColor,
                     };
                     setFrameKeyframes((prev) => [
                       ...prev.filter((point) => Math.abs(point.time - currentSec) > 0.15),
@@ -1159,7 +1162,7 @@ export function SubtitleAlignmentEditor({
                         setFrameZoom(point.zoom);
                         setFramePanX(point.x);
                         setFramePanY(point.y);
-                        setFrameBackgroundColor(point.backgroundColor || frameBackgroundColor);
+                        setFrameGuideColor(point.backgroundColor || frameGuideColor);
                       }}
                     >
                       {index + 1}. {formatPlaybackClock(point.time)}
@@ -1272,16 +1275,6 @@ export function SubtitleAlignmentEditor({
                       <span>Bottom</span>
                       <input type="range" min={0} max={100} step={1} value={bgSettings.featherBottom} onChange={(e) => setBgSettings(prev => ({ ...prev, featherBottom: Number(e.target.value) }))} />
                       <b>{bgSettings.featherBottom}px</b>
-                    </label>
-                    <label>
-                      <span>Left</span>
-                      <input type="range" min={0} max={100} step={1} value={bgSettings.featherLeft} onChange={(e) => setBgSettings(prev => ({ ...prev, featherLeft: Number(e.target.value) }))} />
-                      <b>{bgSettings.featherLeft}px</b>
-                    </label>
-                    <label>
-                      <span>Right</span>
-                      <input type="range" min={0} max={100} step={1} value={bgSettings.featherRight} onChange={(e) => setBgSettings(prev => ({ ...prev, featherRight: Number(e.target.value) }))} />
-                      <b>{bgSettings.featherRight}px</b>
                     </label>
                   </>
                 )}
