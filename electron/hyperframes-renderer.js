@@ -270,6 +270,9 @@ function buildCompositionHtml(project, relativeVideoPath) {
   const sourceAspect = Math.max(0.1, project.sourceWidth / Math.max(1, project.sourceHeight));
   const stageWidth = Math.max(project.width, project.height * sourceAspect);
   const embeddedFonts = fontFaceCssForProject(project);
+  const bg = project.backgroundSettings || {};
+  const blurEnabled = !!bg.blurEnabled;
+  const gradientEnabled = !!bg.gradientEnabled;
 
   return `<!doctype html>
 <html>
@@ -278,7 +281,7 @@ function buildCompositionHtml(project, relativeVideoPath) {
     <meta name="viewport" content="width=${project.width}, height=${project.height}, initial-scale=1" />
     <meta data-composition-id="vaniscript-short" data-width="${project.width}" data-height="${project.height}" />
     <title>${escapeHtml(project.title || 'VaniScript HyperFrames')}</title>
-    <script src="./assets/gsap.min.js"></script>
+    <script src="./assets/gsap.min.js"><\/script>
     <style>
       ${embeddedFonts}
       :root {
@@ -295,9 +298,7 @@ function buildCompositionHtml(project, relativeVideoPath) {
         background: transparent;
         font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
-      .clip {
-        visibility: hidden;
-      }
+      .clip { visibility: hidden; }
       #stage {
         position: relative;
         width: var(--canvas-width);
@@ -305,72 +306,55 @@ function buildCompositionHtml(project, relativeVideoPath) {
         overflow: hidden;
         background: #000000;
       }
-      #background {
-        position: absolute;
-        inset: 0;
-        background: #000000;
+      #background { position: absolute; inset: 0; background: #000000; }
+      #blur-bg {
+        position: absolute; inset: 0; width: 100%; height: 100%;
+        object-fit: cover; transform-origin: center; z-index: 0;
+        display: ${blurEnabled ? 'block' : 'none'};
+      }
+      #gradient-overlay {
+        position: absolute; inset: 0; z-index: 1; pointer-events: none;
+        display: ${gradientEnabled ? 'block' : 'none'};
       }
       #video-stage {
-        position: absolute;
-        left: 50%;
-        top: 50%;
-        width: var(--stage-width);
-        height: 100%;
+        position: absolute; left: 50%; top: 50%;
+        width: var(--stage-width); height: 100%;
         transform: translate(-50%, -50%);
-        overflow: visible;
+        overflow: visible; z-index: 2;
       }
       #source-video {
-        position: absolute;
-        inset: 0;
-        width: 100%;
-        height: 100%;
-        object-fit: contain;
-        transform-origin: center center;
+        position: absolute; inset: 0; width: 100%; height: 100%;
+        object-fit: contain; transform-origin: center center;
       }
       #subtitle-layer {
-        position: absolute;
-        left: 50%;
-        transform: translateX(-50%);
-        max-width: 100%;
-        box-sizing: border-box;
-        text-align: center;
-        overflow: hidden;
-        pointer-events: none;
-        display: none;
+        position: absolute; left: 50%; transform: translateX(-50%);
+        max-width: 100%; box-sizing: border-box; text-align: center;
+        overflow: hidden; pointer-events: none; display: none; z-index: 3;
       }
       #subtitle-text {
-        display: block;
-        margin: 0;
-        white-space: pre-wrap;
-        overflow-wrap: anywhere;
-        word-break: normal;
+        display: block; margin: 0;
+        white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal;
       }
     </style>
   </head>
   <body>
     <div id="stage">
       <div id="background"></div>
+      ${blurEnabled ? `<video id="blur-bg" muted playsinline preload="auto" src="${escapeHtml(relativeVideoPath)}"></video>` : '<div id="blur-bg"></div>'}
+      <div id="gradient-overlay"></div>
       <div id="video-stage">
         <video
-          id="source-video"
-          class="clip"
-          data-start="0"
-          data-duration="${project.durationSec}"
-          data-track-index="0"
-          data-media-start="${project.clipStartSec}"
-          muted
-          playsinline
-          preload="auto"
+          id="source-video" class="clip"
+          data-start="0" data-duration="${project.durationSec}"
+          data-track-index="0" data-media-start="${project.clipStartSec}"
+          muted playsinline preload="auto"
           src="${escapeHtml(relativeVideoPath)}"
         ></video>
         <audio
           id="source-audio"
-          data-start="0"
-          data-duration="${project.durationSec}"
-          data-track-index="1"
-          data-media-start="${project.clipStartSec}"
-          data-volume="1"
-          preload="auto"
+          data-start="0" data-duration="${project.durationSec}"
+          data-track-index="1" data-media-start="${project.clipStartSec}"
+          data-volume="1" preload="auto"
           src="${escapeHtml(relativeVideoPath)}"
         ></audio>
       </div>
@@ -380,46 +364,63 @@ function buildCompositionHtml(project, relativeVideoPath) {
       const project = ${asJsonScript(project)};
       const stage = document.getElementById('stage');
       const background = document.getElementById('background');
+      const blurBg = document.getElementById('blur-bg');
+      const gradientOverlay = document.getElementById('gradient-overlay');
       const video = document.getElementById('source-video');
       const subtitleLayer = document.getElementById('subtitle-layer');
       const subtitleText = document.getElementById('subtitle-text');
+      const bgS = project.backgroundSettings || {};
 
-      const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
-      const smoothstep = (value) => {
-        const t = clamp(value, 0, 1);
-        return t * t * (3 - (2 * t));
-      };
+      const clamp = (v, mn, mx) => Math.min(Math.max(v, mn), mx);
+      const smoothstep = (v) => { const t = clamp(v, 0, 1); return t * t * (3 - (2 * t)); };
       const hexToRgba = (hex, opacity) => {
-        const clean = String(hex || '#000000').replace('#', '').padEnd(6, '0').slice(0, 6);
-        const r = parseInt(clean.slice(0, 2), 16);
-        const g = parseInt(clean.slice(2, 4), 16);
-        const b = parseInt(clean.slice(4, 6), 16);
-        return 'rgba(' + r + ', ' + g + ', ' + b + ', ' + clamp(opacity, 0, 1) + ')';
+        const c = String(hex || '#000000').replace('#', '').padEnd(6, '0').slice(0, 6);
+        return 'rgba(' + parseInt(c.slice(0,2),16) + ',' + parseInt(c.slice(2,4),16) + ',' + parseInt(c.slice(4,6),16) + ',' + clamp(opacity,0,1) + ')';
       };
-      const titleCase = (text) => text.toLowerCase().replace(/(^|\\s)\\S/g, (match) => match.toUpperCase());
-      const transformText = (text, mode) => {
-        if (mode === 'uppercase') return text.toUpperCase();
-        if (mode === 'title') return titleCase(text);
-        return text;
-      };
-      const activeCue = (timeSec) => project.subtitles.find((cue) => timeSec >= cue.startSec && timeSec < cue.endSec) || null;
-      const interpolateFrameState = (timeSec) => {
-        const keyframes = project.frameKeyframes || [];
-        if (keyframes.length === 0) return { x: 0, y: 0, zoom: 1, backgroundColor: '#000000' };
-        if (keyframes.length === 1 || timeSec <= keyframes[0].time) return keyframes[0];
-        const last = keyframes[keyframes.length - 1];
-        if (timeSec >= last.time) return last;
-        const nextIndex = keyframes.findIndex((point) => point.time >= timeSec);
-        const from = keyframes[Math.max(0, nextIndex - 1)];
-        const to = keyframes[nextIndex];
-        const progress = smoothstep((timeSec - from.time) / Math.max(0.001, to.time - from.time));
+      const titleCase = (t) => t.toLowerCase().replace(/(^|\\\\s)\\\\S/g, (m) => m.toUpperCase());
+      const transformText = (t, mode) => mode === 'uppercase' ? t.toUpperCase() : mode === 'title' ? titleCase(t) : t;
+      const activeCue = (ts) => project.subtitles.find((c) => ts >= c.startSec && ts < c.endSec) || null;
+      const interpolateFrameState = (ts) => {
+        const kf = project.frameKeyframes || [];
+        if (!kf.length) return { x: 0, y: 0, zoom: 1, backgroundColor: '#000000' };
+        if (kf.length === 1 || ts <= kf[0].time) return kf[0];
+        const last = kf[kf.length - 1];
+        if (ts >= last.time) return last;
+        const ni = kf.findIndex((p) => p.time >= ts);
+        const from = kf[Math.max(0, ni - 1)];
+        const to = kf[ni];
+        const p = smoothstep((ts - from.time) / Math.max(0.001, to.time - from.time));
         return {
-          x: from.x + ((to.x - from.x) * progress),
-          y: from.y + ((to.y - from.y) * progress),
-          zoom: from.zoom + ((to.zoom - from.zoom) * progress),
+          x: from.x + ((to.x - from.x) * p),
+          y: from.y + ((to.y - from.y) * p),
+          zoom: from.zoom + ((to.zoom - from.zoom) * p),
           backgroundColor: from.backgroundColor || to.backgroundColor || '#000000',
         };
       };
+
+      // Setup blur background
+      if (bgS.blurEnabled && blurBg && blurBg.tagName === 'VIDEO') {
+        blurBg.style.filter = 'blur(' + (bgS.blurStrength || 30) + 'px)';
+        blurBg.style.transform = 'scale(' + (bgS.blurScale || 1.3) + ')';
+      }
+      // Setup gradient overlay
+      if (bgS.gradientEnabled && gradientOverlay) {
+        const gT = bgS.gradientType || 'linear';
+        const gA = bgS.gradientColorA || '#000000';
+        const gB = bgS.gradientColorB || '#1a1a2e';
+        gradientOverlay.style.background = gT === 'radial'
+          ? 'radial-gradient(ellipse at center,' + gA + ',' + gB + ')'
+          : 'linear-gradient(' + (bgS.gradientAngle || 180) + 'deg,' + gA + ',' + gB + ')';
+        gradientOverlay.style.opacity = String(bgS.gradientOpacity || 0.6);
+      }
+      // Setup feathering mask (applied once, stays)
+      if (bgS.featherEnabled) {
+        const fT = bgS.featherTop || 0;
+        const fB = bgS.featherBottom || 0;
+        const mask = 'linear-gradient(to bottom, transparent 0px, black ' + fT + 'px, black calc(100% - ' + fB + 'px), transparent 100%)';
+        video.style.webkitMaskImage = mask;
+        video.style.maskImage = mask;
+      }
 
       function renderAt(timeSec) {
         const frame = interpolateFrameState(timeSec);
@@ -434,9 +435,17 @@ function buildCompositionHtml(project, relativeVideoPath) {
         const textShadowDepth = Math.max(0, style.shadow) * scale;
         const textStroke = Math.max(0, style.outline) * scale;
 
-        background.style.background = frame.backgroundColor || '#000000';
-        stage.style.background = frame.backgroundColor || '#000000';
-        video.style.transform = 'translate(' + frame.x + '%, ' + frame.y + '%) scale(' + frame.zoom + ')';
+        const bgColor = bgS.solidEnabled ? (bgS.solidColor || '#000000') : (frame.backgroundColor || '#000000');
+        background.style.background = bgColor;
+        stage.style.background = bgColor;
+        video.style.transform = 'translate(' + frame.x + '%,' + frame.y + '%) scale(' + frame.zoom + ')';
+
+        // Sync blur bg time
+        if (bgS.blurEnabled && blurBg && blurBg.tagName === 'VIDEO') {
+          if (Math.abs((blurBg.currentTime || 0) - (video.currentTime || 0)) > 0.08) {
+            blurBg.currentTime = video.currentTime || 0;
+          }
+        }
 
         const cue = activeCue(timeSec);
         if (!cue) {
@@ -473,7 +482,7 @@ function buildCompositionHtml(project, relativeVideoPath) {
       tl.call(() => renderAt(project.durationSec), [], Math.max(0.05, project.durationSec));
       window.__timelines['vaniscript-short'] = tl;
       renderAt(0);
-    </script>
+    <\/script>
   </body>
 </html>`;
 }

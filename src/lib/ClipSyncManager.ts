@@ -121,6 +121,11 @@ export function copyMotionFrom(
     }
   }
 
+  // Copy background settings
+  if (source.backgroundSettings) {
+    patch.backgroundSettings = structuredClone(source.backgroundSettings);
+  }
+
   return patch;
 }
 
@@ -163,6 +168,12 @@ export function buildSyncPatch(
   }
   if (appliedPatch.timelineTrim) {
     mirror.timelineTrim = structuredClone(appliedPatch.timelineTrim);
+    hasChanges = true;
+  }
+
+  // Mirror background settings (shared across languages)
+  if (appliedPatch.backgroundSettings) {
+    mirror.backgroundSettings = structuredClone(appliedPatch.backgroundSettings);
     hasChanges = true;
   }
 

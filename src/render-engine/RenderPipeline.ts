@@ -204,5 +204,6 @@ export function buildShortsRenderProject(input: ShortsRenderProjectInput): Short
     mediaSegments,
     timelineCuts: cuts,
     timelineTrim: trim,
+    backgroundSettings: input.backgroundSettings,
   };
 }

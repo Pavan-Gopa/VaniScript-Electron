@@ -1,4 +1,5 @@
 import type { AlignedSubtitleSegment, FrameKeyframe } from './subtitle-alignment';
+import type { BackgroundSettings } from './shorts-render';
 
 /** A cut region removed from the clip timeline via razor/delete. */
 export type TimelineCut = {
@@ -48,6 +49,8 @@ export type ShortsClipPlan = {
   timelineCuts?: TimelineCut[];
   /** Edge trim. */
   timelineTrim?: TimelineTrim;
+  /** Background compositor settings. */
+  backgroundSettings?: BackgroundSettings;
 };
 
 export type ShortsPlanLanguageMode = 'source' | 'target' | 'bilingual';

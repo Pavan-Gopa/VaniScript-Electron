@@ -42,6 +42,7 @@ type Props = {
   initialFrameKeyframes?: FrameKeyframe[];
   initialCuts?: TimelineCut[];
   initialTrim?: TimelineTrim;
+  initialBackgroundSettings?: import('../../lib/shorts-render').BackgroundSettings;
   settings: ShortsSettings;
   subtitleMaxCharsPerLine: number;
   subtitleMaxLines: number;
@@ -60,6 +61,7 @@ type Props = {
   onImportMotion?: () => void;
   onSaveCuts?: (cuts: TimelineCut[]) => void;
   onSaveTrim?: (trim: TimelineTrim) => void;
+  onSaveBackgroundSettings?: (bg: import('../../lib/shorts-render').BackgroundSettings) => void;
   /** Switch between source/target language inside the editor */
   onSwitchLanguage?: (lang: 'source' | 'target') => void;
 };
@@ -113,6 +115,7 @@ export function SubtitleAlignmentEditor({
   initialFrameKeyframes,
   initialCuts,
   initialTrim,
+  initialBackgroundSettings,
   settings,
   subtitleMaxCharsPerLine,
   subtitleMaxLines,
@@ -127,6 +130,7 @@ export function SubtitleAlignmentEditor({
   onImportMotion,
   onSaveCuts,
   onSaveTrim,
+  onSaveBackgroundSettings,
   currentLanguage,
   onSwitchLanguage,
 }: Props) {
@@ -141,6 +145,9 @@ export function SubtitleAlignmentEditor({
   const [framePanX, setFramePanX] = useState(0);
   const [framePanY, setFramePanY] = useState(0);
   const [frameGuideColor, setFrameGuideColor] = useState('#ffaa19');
+  const [frameGuideOpacity, setFrameGuideOpacity] = useState(0.75);
+  const [frameGuideBorderWidth, setFrameGuideBorderWidth] = useState(2);
+  const [frameGuideBlur, setFrameGuideBlur] = useState(0);
   const [frameKeyframes, setFrameKeyframes] = useState<FrameKeyframe[]>([]);
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [timelineZoom, setTimelineZoom] = useState(1);
@@ -162,7 +169,7 @@ export function SubtitleAlignmentEditor({
   const [trimDragState, setTrimDragState] = useState<{ edge: 'start' | 'end'; pointerX: number; original: number } | null>(null);
   const [looping, setLooping] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false); // green ✓ feedback after save
-  const [bgSettings, setBgSettings] = useState<BackgroundSettings>(defaultBackgroundSettings());
+  const [bgSettings, setBgSettings] = useState<BackgroundSettings>(initialBackgroundSettings || defaultBackgroundSettings());
   const [inspectorTab, setInspectorTab] = useState<'frame' | 'background'>('frame');
   const blurVideoRef = useRef<HTMLVideoElement>(null);
   const undoStackRef = useRef(new UndoRedoStack());
@@ -619,6 +626,7 @@ export function SubtitleAlignmentEditor({
     onSaveFrameKeyframes?.(effectiveFrameKeyframes);
     onSaveCuts?.(cuts);
     onSaveTrim?.(trim);
+    onSaveBackgroundSettings?.(bgSettings);
     // Show green flash feedback, don't close the modal
     setSavedFlash(true);
     setTimeout(() => setSavedFlash(false), 2000);
@@ -812,7 +820,12 @@ export function SubtitleAlignmentEditor({
               onLoadedMetadata={() => syncMedia(currentSec)}
               onTimeUpdate={handleTimeUpdate}
             />
-            <div className="alignment-frame-guide" ref={frameGuideRef} style={{ '--frame-guide-color': frameGuideColor } as React.CSSProperties}>
+            <div className="alignment-frame-guide" ref={frameGuideRef} style={{
+              '--frame-guide-color': frameGuideColor,
+              '--frame-guide-opacity': frameGuideOpacity,
+              '--frame-guide-border-width': `${frameGuideBorderWidth}px`,
+              '--frame-guide-blur': `${frameGuideBlur}px`,
+            } as React.CSSProperties}>
             {previewCaption && (
               <div
                 className="alignment-caption-preview"
@@ -1105,6 +1118,21 @@ export function SubtitleAlignmentEditor({
                 <span>Guide</span>
                 <input type="color" value={frameGuideColor} onChange={(event) => setFrameGuideColor(event.currentTarget.value)} />
                 <b>{frameGuideColor}</b>
+              </label>
+              <label>
+                <span>Dim</span>
+                <input type="range" min={0} max={1} step={0.05} value={frameGuideOpacity} onChange={(e) => setFrameGuideOpacity(Number(e.currentTarget.value))} />
+                <b>{Math.round(frameGuideOpacity * 100)}%</b>
+              </label>
+              <label>
+                <span>Border</span>
+                <input type="range" min={0} max={8} step={0.5} value={frameGuideBorderWidth} onChange={(e) => setFrameGuideBorderWidth(Number(e.currentTarget.value))} />
+                <b>{frameGuideBorderWidth}px</b>
+              </label>
+              <label>
+                <span>Glow</span>
+                <input type="range" min={0} max={20} step={1} value={frameGuideBlur} onChange={(e) => setFrameGuideBlur(Number(e.currentTarget.value))} />
+                <b>{frameGuideBlur}px</b>
               </label>
               <label>
                 <span>Zoom</span>

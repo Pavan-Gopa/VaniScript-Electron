@@ -2043,6 +2043,7 @@ export default function App() {
           },
           timelineCuts: plan.timelineCuts,
           timelineTrim: plan.timelineTrim,
+          backgroundSettings: plan.backgroundSettings,
         });
         if (!window.electronAPI.hyperframesExportShortClip) {
           throw new Error('HyperFrames export is not available in this build.');

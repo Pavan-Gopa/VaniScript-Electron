@@ -1,5 +1,5 @@
 import type { FrameKeyframe } from '../lib/subtitle-alignment';
-import type { ShortsSubtitleStyle } from '../lib/shorts-render';
+import type { BackgroundSettings, ShortsSubtitleStyle } from '../lib/shorts-render';
 import type { TimelineCut, TimelineTrim } from '../lib/shorts-reels';
 
 export type RenderSubtitleCue = {
@@ -36,6 +36,7 @@ export type ShortsRenderProject = {
   mediaSegments: RenderMediaSegment[];
   timelineCuts?: TimelineCut[];
   timelineTrim?: TimelineTrim;
+  backgroundSettings?: BackgroundSettings;
 };
 
 export type ShortsRenderProjectInput = {
@@ -55,4 +56,5 @@ export type ShortsRenderProjectInput = {
   frameKeyframes?: FrameKeyframe[];
   timelineCuts?: TimelineCut[];
   timelineTrim?: TimelineTrim;
+  backgroundSettings?: BackgroundSettings;
 };
