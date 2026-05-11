@@ -2604,6 +2604,33 @@ html, body, #root {
   font-size: 10px; font-weight: 800;
 }
 
+/* ── Loop button ── */
+.alignment-loop-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px; background: rgba(255,255,255,0.05);
+  color: var(--text-1); padding: 5px 10px;
+  font-size: 11px; font-weight: 760; cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.alignment-loop-btn.active {
+  border-color: rgba(80,160,255,0.5);
+  background: rgba(80,160,255,0.18);
+  color: #6cb8ff;
+}
+
+/* ── Danger / Reset button ── */
+.btn-dl-danger {
+  border: 1px solid rgba(230,74,74,0.35) !important;
+  background: rgba(230,74,74,0.12) !important;
+  color: #ff7070 !important;
+  font-weight: 700 !important;
+  transition: background 0.15s;
+}
+.btn-dl-danger:hover {
+  background: rgba(230,74,74,0.22) !important;
+}
+
 /* ── Multi-track timeline ── */
 .alignment-multitrack {
   display: grid; gap: 2px; overflow: hidden;

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Download, Pause, Play, Save, Scissors, SplitSquareHorizontal, Trash2, Link2, Unlink2, Undo2, Redo2, Languages } from 'lucide-react';
+import { Download, Pause, Play, Save, Scissors, SplitSquareHorizontal, Trash2, Link2, Unlink2, Undo2, Redo2, Languages, Repeat, RotateCcw } from 'lucide-react';
 import { formatPlaybackClock } from '../../lib/karaoke';
 import {
   AlignedSubtitleSegment,
@@ -159,6 +159,7 @@ export function SubtitleAlignmentEditor({
   const [razorActive, setRazorActive] = useState(false);
   const [razorStart, setRazorStart] = useState<number | null>(null);
   const [trimDragState, setTrimDragState] = useState<{ edge: 'start' | 'end'; pointerX: number; original: number } | null>(null);
+  const [looping, setLooping] = useState(false);
   const undoStackRef = useRef(new UndoRedoStack());
   const [undoTick, setUndoTick] = useState(0); // force re-render on undo/redo
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -389,20 +390,59 @@ export function SubtitleAlignmentEditor({
     setFrameBackgroundColor(frame.backgroundColor || '#000000');
   }, [currentSec, frameKeyframes, isOpen]);
 
+  // Playback boundaries derived from trim
+  const playStart = trim.trimStartSec;
+  const playEnd = clipDurationSec - trim.trimEndSec;
+
+  /** Find the cut region the given time falls inside, or null. */
+  function findCutAt(sec: number): TimelineCut | null {
+    return cuts.find((c) => sec >= c.startSec && sec < c.endSec) || null;
+  }
+
+  /** If sec falls inside a cut, return the endSec of that cut; otherwise return sec unchanged. */
+  function skipCut(sec: number): number {
+    const hit = findCutAt(sec);
+    return hit ? hit.endSec : sec;
+  }
+
   useEffect(() => {
     if (!isOpen || !playing) return;
     let frameId = 0;
     const tick = () => {
       const video = videoRef.current;
+      const audio = audioRef.current;
       if (video && !video.paused) {
-        const local = video.currentTime - clipStartSec;
-        setCurrentSec(Math.min(Math.max(0, local), clipDurationSec));
+        let local = video.currentTime - clipStartSec;
+        // Skip over cut regions
+        const hit = findCutAt(local);
+        if (hit) {
+          local = hit.endSec;
+          video.currentTime = clipStartSec + local;
+          if (audio) audio.currentTime = clipStartSec + local;
+        }
+        // Respect trim end / loop
+        if (local >= playEnd) {
+          if (looping) {
+            const restart = skipCut(playStart);
+            video.currentTime = clipStartSec + restart;
+            if (audio) audio.currentTime = clipStartSec + restart;
+            setCurrentSec(restart);
+          } else {
+            video.pause();
+            audio?.pause();
+            setCurrentSec(playEnd);
+            setPlaying(false);
+            return;
+          }
+        } else {
+          setCurrentSec(Math.min(Math.max(0, local), clipDurationSec));
+        }
         frameId = window.requestAnimationFrame(tick);
       }
     };
     frameId = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(frameId);
-  }, [clipDurationSec, clipStartSec, isOpen, playing]);
+  }, [clipDurationSec, clipStartSec, cuts, isOpen, looping, playEnd, playStart, playing, trim]);
 
   useEffect(() => {
     let cancelled = false;
@@ -437,7 +477,9 @@ export function SubtitleAlignmentEditor({
   }
 
   function seek(nextLocalSec: number) {
-    syncMedia(nextLocalSec);
+    // If seeking lands inside a cut, skip to end of cut
+    const adjusted = skipCut(nextLocalSec);
+    syncMedia(adjusted);
   }
 
   function seekFromPointer(clientX: number, element: HTMLElement | null) {
@@ -458,12 +500,19 @@ export function SubtitleAlignmentEditor({
     const audio = audioRef.current;
     if (!video) return;
     if (video.paused) {
-      if (currentSec >= clipDurationSec - 0.05) syncMedia(0);
+      // If at end or past trim end, restart from trim start
+      let startAt = currentSec;
+      if (startAt >= playEnd - 0.05 || startAt < playStart) {
+        startAt = skipCut(playStart);
+      }
+      // Skip cut if starting inside one
+      startAt = skipCut(startAt);
+      syncMedia(startAt);
       if (audio) {
-        audio.currentTime = clipStartSec + currentSec;
+        audio.currentTime = clipStartSec + startAt;
         await audio.play().catch(() => undefined);
       }
-      video.currentTime = clipStartSec + currentSec;
+      video.currentTime = clipStartSec + startAt;
       await video.play();
       setPlaying(true);
     } else {
@@ -475,16 +524,62 @@ export function SubtitleAlignmentEditor({
 
   function handleTimeUpdate() {
     const video = videoRef.current;
+    const audio = audioRef.current;
     if (!video) return;
-    const local = video.currentTime - clipStartSec;
+    let local = video.currentTime - clipStartSec;
+    // Skip over cut regions
+    const hit = findCutAt(local);
+    if (hit) {
+      local = hit.endSec;
+      video.currentTime = clipStartSec + local;
+      if (audio) audio.currentTime = clipStartSec + local;
+    }
+    // Respect trim end
+    if (local >= playEnd) {
+      if (looping) {
+        const restart = skipCut(playStart);
+        video.currentTime = clipStartSec + restart;
+        if (audio) audio.currentTime = clipStartSec + restart;
+        setCurrentSec(restart);
+      } else {
+        video.pause();
+        audio?.pause();
+        syncMedia(playEnd);
+        setPlaying(false);
+      }
+      return;
+    }
     if (local >= clipDurationSec) {
       video.pause();
-      audioRef.current?.pause();
+      audio?.pause();
       syncMedia(clipDurationSec);
       setPlaying(false);
       return;
     }
     setCurrentSec(Math.max(0, local));
+  }
+
+  /** Reset everything to the initial state as if opening the editor for the first time. */
+  function resetToInitial() {
+    if (!confirm('Reset all edits? This will discard all changes and restore the clip to its initial state.')) return;
+    const next = initialSegments?.length
+      ? normalizeSegments(initialSegments, clipDurationSec)
+      : cuesToAlignedSegments(initialCues, clipDurationSec);
+    setSegments(next);
+    setSelectedId(next[0]?.id || '');
+    setCurrentSec(0);
+    setPlaying(false);
+    setFrameZoom(settings.zoom);
+    setFramePanX(0);
+    setFramePanY(0);
+    setFrameBackgroundColor('#000000');
+    setFrameKeyframes([]);
+    setCuts([]);
+    setTrim({ trimStartSec: 0, trimEndSec: 0 });
+    setRazorActive(false);
+    setRazorStart(null);
+    undoStackRef.current.clear();
+    syncMedia(0);
   }
 
   function startDrag(event: React.PointerEvent, segment: AlignedSubtitleSegment, mode: 'move' | 'start' | 'end') {
@@ -623,6 +718,14 @@ export function SubtitleAlignmentEditor({
             <button type="button" className="btn-dl btn-dl-secondary" onClick={() => setInspectorOpen((open) => !open)}>
               {inspectorOpen ? 'Hide inspector' : 'Show inspector'}
             </button>
+            <button
+              type="button"
+              className="btn-dl btn-dl-danger"
+              onClick={resetToInitial}
+              title="Reset all changes to initial state"
+            >
+              <RotateCcw size={14} /> Reset
+            </button>
             <button type="button" className="btn-dl btn-dl-secondary" onClick={onClose}>Close</button>
             <button type="button" className="btn-dl btn-dl-primary" onClick={save}><Save size={14} /> Save edits</button>
           </div>
@@ -692,8 +795,21 @@ export function SubtitleAlignmentEditor({
           >
             <Scissors size={14} /> {razorActive ? 'Cancel Razor' : 'Razor'}
           </button>
+          <button
+            type="button"
+            className={`alignment-loop-btn ${looping ? 'active' : ''}`}
+            onClick={() => setLooping((l) => !l)}
+            title={looping ? 'Loop ON — playback will loop within trim boundaries' : 'Loop OFF'}
+          >
+            <Repeat size={14} /> {looping ? 'Loop ON' : 'Loop'}
+          </button>
           {cuts.length > 0 && (
             <span className="alignment-cut-badge">{cuts.length} cut{cuts.length !== 1 ? 's' : ''}</span>
+          )}
+          {(trim.trimStartSec > 0 || trim.trimEndSec > 0) && (
+            <span className="alignment-time-chip" style={{ fontSize: '10px' }}>
+              In: {formatPlaybackClock(playStart)} — Out: {formatPlaybackClock(playEnd)}
+            </span>
           )}
         </div>
 
