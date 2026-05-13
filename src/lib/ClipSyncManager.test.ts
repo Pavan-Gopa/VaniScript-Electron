@@ -110,6 +110,62 @@ test('buildSyncPatch mirrors every clip-level synced editor parameter', () => {
   assert.deepEqual(result?.patch.backgroundSettings, backgroundSettings);
 });
 
+test('buildSyncPatch syncs a bilingual source/target plan even without a linked group id', () => {
+  const sourceAlignment = [{ id: 'source-1', start: 3, end: 5, text: 'Source text', words: [] }];
+  const sourceFrameKeyframes = [{ id: 'kf-1', time: 0, x: -9, y: 6, zoom: 1.55, backgroundColor: '#ffaa19' }];
+  const result = buildSyncPatch([{
+    start: '00:00',
+    end: '00:10',
+    title: 'Bilingual',
+    summary: '',
+    hook: '',
+    languageMode: 'bilingual',
+    syncEnabled: true,
+    sourceAlignment,
+    targetAlignment: [{ id: 'target-1', start: 0, end: 1, text: 'Target text', words: [] }],
+    sourceFrameKeyframes,
+    targetFrameKeyframes: [],
+  }], 0, { sourceAlignment, sourceFrameKeyframes });
+
+  assert.equal(result?.partnerIndex, 0);
+  assert.deepEqual(result?.patch.targetFrameKeyframes, sourceFrameKeyframes);
+  assert.equal(result?.patch.targetAlignment?.[0]?.start, 3);
+  assert.equal(result?.patch.targetAlignment?.[0]?.end, 5);
+  assert.equal(result?.patch.targetAlignment?.[0]?.text, 'Target text');
+});
+
+test('buildSyncPatch mirrors linked pair timing using the partner language text', () => {
+  const changedSource = [{ id: 'source-1', start: 4, end: 7, text: 'Source text', words: [] }];
+  const plans: ShortsClipPlan[] = [{
+    start: '00:00',
+    end: '00:10',
+    title: 'Source card',
+    summary: '',
+    hook: '',
+    languageMode: 'source',
+    linkedClipGroupId: 'pair-1',
+    syncEnabled: true,
+    sourceAlignment: changedSource,
+  }, {
+    start: '00:00',
+    end: '00:10',
+    title: 'Target card',
+    summary: '',
+    hook: '',
+    languageMode: 'target',
+    linkedClipGroupId: 'pair-1',
+    syncEnabled: true,
+    targetAlignment: [{ id: 'target-1', start: 0, end: 1, text: 'Текст перевода', words: [] }],
+  }];
+
+  const result = buildSyncPatch(plans, 0, { sourceAlignment: changedSource });
+
+  assert.equal(result?.partnerIndex, 1);
+  assert.equal(result?.patch.targetAlignment?.[0]?.start, 4);
+  assert.equal(result?.patch.targetAlignment?.[0]?.end, 7);
+  assert.equal(result?.patch.targetAlignment?.[0]?.text, 'Текст перевода');
+});
+
 test('toggleSync enables bilingual sync by copying existing source editor parameters to target', () => {
   const plans: ShortsClipPlan[] = [{
     start: '00:00',

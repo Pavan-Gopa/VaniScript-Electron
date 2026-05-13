@@ -186,7 +186,9 @@ export function buildSyncPatch(
   appliedPatch: Partial<ShortsClipPlan>
 ): { partnerIndex: number; patch: Partial<ShortsClipPlan> } | null {
   const plan = plans[changedIndex];
-  if (!plan?.syncEnabled || !plan.linkedClipGroupId) return null;
+  if (!plan?.syncEnabled) return null;
+  const linkedPartnerIndex = plan.linkedClipGroupId ? findLinkedPartnerIndex(plans, changedIndex) : -1;
+  const destinationPlan = linkedPartnerIndex >= 0 ? plans[linkedPartnerIndex] : plan;
 
   const mirror: Partial<ShortsClipPlan> = {};
   let hasChanges = false;
@@ -203,11 +205,11 @@ export function buildSyncPatch(
 
   // Mirror subtitle timing/layout, but never replace translated/source text.
   if (appliedPatch.sourceAlignment) {
-    mirror.targetAlignment = mirrorAlignmentTiming(appliedPatch.sourceAlignment, plan.targetAlignment);
+    mirror.targetAlignment = mirrorAlignmentTiming(appliedPatch.sourceAlignment, destinationPlan.targetAlignment);
     hasChanges = true;
   }
   if (appliedPatch.targetAlignment) {
-    mirror.sourceAlignment = mirrorAlignmentTiming(appliedPatch.targetAlignment, plan.sourceAlignment);
+    mirror.sourceAlignment = mirrorAlignmentTiming(appliedPatch.targetAlignment, destinationPlan.sourceAlignment);
     hasChanges = true;
   }
 
@@ -233,10 +235,9 @@ export function buildSyncPatch(
   // For bilingual plans, Source and Target live inside the SAME plan object.
   // findLinkedPartnerIndex won't find a separate partner (index !== planIndex),
   // so we apply the mirror patch to the SAME plan (self-sync).
-  const partnerIndex = findLinkedPartnerIndex(plans, changedIndex);
-  if (partnerIndex >= 0) {
+  if (linkedPartnerIndex >= 0) {
     // Inter-plan sync: two separate plans linked together
-    return { partnerIndex, patch: mirror };
+    return { partnerIndex: linkedPartnerIndex, patch: mirror };
   }
 
   // No external partner found — try intra-plan sync (bilingual single plan)

@@ -174,12 +174,24 @@ export function SubtitleAlignmentEditor({
   const undoStackRef = useRef(new UndoRedoStack());
   const [undoTick, setUndoTick] = useState(0); // force re-render on undo/redo
   // ── Refs for playback (avoid stale closures in RAF/timeupdate) ──
+  const segmentsRef = useRef<AlignedSubtitleSegment[]>([]);
   const cutsRef = useRef<TimelineCut[]>([]);
   const trimRef = useRef<TimelineTrim>({ trimStartSec: 0, trimEndSec: 0 });
   const loopingRef = useRef(false);
+  const frameZoomRef = useRef(settings.zoom);
+  const framePanXRef = useRef(0);
+  const framePanYRef = useRef(0);
+  const frameKeyframesRef = useRef<FrameKeyframe[]>([]);
+  const bgSettingsRef = useRef<BackgroundSettings>(initialBackgroundSettings || defaultBackgroundSettings());
+  segmentsRef.current = segments;
   cutsRef.current = cuts;
   trimRef.current = trim;
   loopingRef.current = looping;
+  frameZoomRef.current = frameZoom;
+  framePanXRef.current = framePanX;
+  framePanYRef.current = framePanY;
+  frameKeyframesRef.current = frameKeyframes;
+  bgSettingsRef.current = bgSettings;
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
@@ -209,6 +221,7 @@ export function SubtitleAlignmentEditor({
     const next = initialSegments?.length
       ? normalizeSegments(initialSegments, clipDurationSec)
       : cuesToAlignedSegments(initialCues, clipDurationSec);
+    segmentsRef.current = next;
     setSegments(next);
     setSelectedId(next[0]?.id || '');
     setCurrentSec(0);
@@ -216,22 +229,31 @@ export function SubtitleAlignmentEditor({
     setFrameZoom(settings.zoom);
     setFramePanX(0);
     setFramePanY(0);
+    frameZoomRef.current = settings.zoom;
+    framePanXRef.current = 0;
+    framePanYRef.current = 0;
     const nextBg = initialBackgroundSettings || defaultBackgroundSettings();
-    setBgSettings({
+    const seededBg = {
       ...nextBg,
       frameGuideColor: initialFrameKeyframes?.[0]?.backgroundColor || nextBg.frameGuideColor || '#ffaa19',
-    });
+    };
+    bgSettingsRef.current = seededBg;
+    setBgSettings(seededBg);
     setTimelineZoom(1);
-     setFrameKeyframes((initialFrameKeyframes || []).map((keyframe) => ({
+    const nextFrameKeyframes = (initialFrameKeyframes || []).map((keyframe) => ({
       ...keyframe,
       time: Math.min(Math.max(0, keyframe.time), clipDurationSec),
       zoom: Math.min(Math.max(0.5, keyframe.zoom), 2),
       x: Math.min(Math.max(-50, keyframe.x), 50),
       y: Math.min(Math.max(-30, keyframe.y), 30),
       backgroundColor: keyframe.backgroundColor || '#000000',
-    })).sort((a, b) => a.time - b.time));
-    setCuts(initialCuts || []);
-    setTrim(initialTrim || { trimStartSec: 0, trimEndSec: 0 });
+    })).sort((a, b) => a.time - b.time);
+    frameKeyframesRef.current = nextFrameKeyframes;
+    setFrameKeyframes(nextFrameKeyframes);
+    cutsRef.current = initialCuts || [];
+    setCuts(cutsRef.current);
+    trimRef.current = initialTrim || { trimStartSec: 0, trimEndSec: 0 };
+    setTrim(trimRef.current);
     setRazorActive(false);
     setRazorStart(null);
     undoStackRef.current.clear();
@@ -253,6 +275,22 @@ export function SubtitleAlignmentEditor({
     }, 250);
     return () => window.clearTimeout(timer);
   }, [effectiveFrameKeyframes, isOpen, onDraftFrameKeyframes]);
+
+  useEffect(() => {
+    if (!isOpen || !initializedRef.current || !onSaveCuts) return;
+    const timer = window.setTimeout(() => {
+      onSaveCuts(cuts);
+    }, 150);
+    return () => window.clearTimeout(timer);
+  }, [cuts, isOpen, onSaveCuts]);
+
+  useEffect(() => {
+    if (!isOpen || !initializedRef.current || !onSaveTrim) return;
+    const timer = window.setTimeout(() => {
+      onSaveTrim(trim);
+    }, 150);
+    return () => window.clearTimeout(timer);
+  }, [isOpen, onSaveTrim, trim]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -305,7 +343,11 @@ export function SubtitleAlignmentEditor({
         if (cutIndex >= 0) {
           event.preventDefault();
           pushUndo();
-          setCuts((prev) => removeCut(prev, cutIndex));
+          setCuts((prev) => {
+            const next = removeCut(prev, cutIndex);
+            cutsRef.current = next;
+            return next;
+          });
         }
       }
     };
@@ -336,15 +378,23 @@ export function SubtitleAlignmentEditor({
       const deltaPx = event.clientX - trimDragState.pointerX;
       const deltaSec = deltaPx / pxPerSec;
       if (trimDragState.edge === 'start') {
-        setTrim((prev: TimelineTrim) => ({
-          ...prev,
-          trimStartSec: Math.max(0, Math.min(clipDurationSec * 0.45, trimDragState.original + deltaSec)),
-        }));
+        setTrim((prev: TimelineTrim) => {
+          const next = {
+            ...prev,
+            trimStartSec: Math.max(0, Math.min(clipDurationSec * 0.45, trimDragState.original + deltaSec)),
+          };
+          trimRef.current = next;
+          return next;
+        });
       } else {
-        setTrim((prev: TimelineTrim) => ({
-          ...prev,
-          trimEndSec: Math.max(0, Math.min(clipDurationSec * 0.45, trimDragState.original - deltaSec)),
-        }));
+        setTrim((prev: TimelineTrim) => {
+          const next = {
+            ...prev,
+            trimEndSec: Math.max(0, Math.min(clipDurationSec * 0.45, trimDragState.original - deltaSec)),
+          };
+          trimRef.current = next;
+          return next;
+        });
       }
     };
     const up = () => setTrimDragState(null);
@@ -360,18 +410,22 @@ export function SubtitleAlignmentEditor({
     if (!dragState) return;
     const move = (event: PointerEvent) => {
       const deltaSec = (event.clientX - dragState.pointerX) / dragState.pixelsPerSecond;
-      setSegments((prev) => normalizeSegments(prev.map((segment) => {
-        if (segment.id !== dragState.id) return segment;
-        if (dragState.mode === 'move') {
-          const duration = dragState.originalEnd - dragState.originalStart;
-          const start = Math.min(Math.max(0, dragState.originalStart + deltaSec), Math.max(0, clipDurationSec - duration));
-          return { ...segment, start, end: start + duration };
-        }
-        if (dragState.mode === 'start') {
-          return { ...segment, start: Math.min(Math.max(0, dragState.originalStart + deltaSec), segment.end - MIN_DURATION) };
-        }
-        return { ...segment, end: Math.max(segment.start + MIN_DURATION, Math.min(clipDurationSec, dragState.originalEnd + deltaSec)) };
-      }), clipDurationSec));
+      setSegments((prev) => {
+        const next = normalizeSegments(prev.map((segment) => {
+          if (segment.id !== dragState.id) return segment;
+          if (dragState.mode === 'move') {
+            const duration = dragState.originalEnd - dragState.originalStart;
+            const start = Math.min(Math.max(0, dragState.originalStart + deltaSec), Math.max(0, clipDurationSec - duration));
+            return { ...segment, start, end: start + duration };
+          }
+          if (dragState.mode === 'start') {
+            return { ...segment, start: Math.min(Math.max(0, dragState.originalStart + deltaSec), segment.end - MIN_DURATION) };
+          }
+          return { ...segment, end: Math.max(segment.start + MIN_DURATION, Math.min(clipDurationSec, dragState.originalEnd + deltaSec)) };
+        }), clipDurationSec);
+        segmentsRef.current = next;
+        return next;
+      });
     };
     const up = () => setDragState(null);
     window.addEventListener('pointermove', move);
@@ -416,7 +470,14 @@ export function SubtitleAlignmentEditor({
     setFrameZoom(frame.zoom);
     setFramePanX(frame.x);
     setFramePanY(frame.y);
-    setBgSettings((prev) => ({ ...prev, frameGuideColor: frame.backgroundColor || prev.frameGuideColor || '#ffaa19' }));
+    frameZoomRef.current = frame.zoom;
+    framePanXRef.current = frame.x;
+    framePanYRef.current = frame.y;
+    setBgSettings((prev) => {
+      const next = { ...prev, frameGuideColor: frame.backgroundColor || prev.frameGuideColor || '#ffaa19' };
+      bgSettingsRef.current = next;
+      return next;
+    });
   }, [currentSec, frameKeyframes, isOpen]);
 
   // Playback boundaries derived from trim
@@ -602,6 +663,7 @@ export function SubtitleAlignmentEditor({
     const next = initialSegments?.length
       ? normalizeSegments(initialSegments, clipDurationSec)
       : cuesToAlignedSegments(initialCues, clipDurationSec);
+    segmentsRef.current = next;
     setSegments(next);
     setSelectedId(next[0]?.id || '');
     setCurrentSec(0);
@@ -610,13 +672,20 @@ export function SubtitleAlignmentEditor({
     setFrameZoom(settings.zoom);
     setFramePanX(0);
     setFramePanY(0);
+    frameZoomRef.current = settings.zoom;
+    framePanXRef.current = 0;
+    framePanYRef.current = 0;
+    frameKeyframesRef.current = [];
     setFrameKeyframes([]);
     // Reset background settings to defaults
     const resetBg = defaultBackgroundSettings();
+    bgSettingsRef.current = resetBg;
     setBgSettings(resetBg);
     // Reset timeline surgery
+    cutsRef.current = [];
     setCuts([]);
-    setTrim({ trimStartSec: 0, trimEndSec: 0 });
+    trimRef.current = { trimStartSec: 0, trimEndSec: 0 };
+    setTrim(trimRef.current);
     setRazorActive(false);
     setRazorStart(null);
     undoStackRef.current.clear();
@@ -647,31 +716,78 @@ export function SubtitleAlignmentEditor({
     });
   }
 
-  function save() {
-    const normalized = normalizeSegments(segments, clipDurationSec);
-    const savedFrameKeyframes = materializeFrameKeyframesForSave({
-      frameKeyframes,
+  function materializeFrameDraft(overrides: Partial<Pick<FrameKeyframe, 'x' | 'y' | 'zoom' | 'backgroundColor'>> = {}): FrameKeyframe[] {
+    const latestBg = bgSettingsRef.current;
+    return materializeFrameKeyframesForSave({
+      frameKeyframes: frameKeyframesRef.current,
       currentSec,
       clipDurationSec,
-      framePanX,
-      framePanY,
-      frameZoom,
-      backgroundColor: bgSettings.frameGuideColor ?? '#ffaa19',
+      framePanX: overrides.x ?? framePanXRef.current,
+      framePanY: overrides.y ?? framePanYRef.current,
+      frameZoom: overrides.zoom ?? frameZoomRef.current,
+      backgroundColor: overrides.backgroundColor ?? latestBg.frameGuideColor ?? '#ffaa19',
     });
+  }
+
+  function persistFrameControls(overrides: Partial<Pick<FrameKeyframe, 'x' | 'y' | 'zoom' | 'backgroundColor'>> = {}) {
+    if (typeof overrides.zoom === 'number') frameZoomRef.current = overrides.zoom;
+    if (typeof overrides.x === 'number') framePanXRef.current = overrides.x;
+    if (typeof overrides.y === 'number') framePanYRef.current = overrides.y;
+    if (overrides.backgroundColor) {
+      bgSettingsRef.current = { ...bgSettingsRef.current, frameGuideColor: overrides.backgroundColor };
+    }
+    const nextKeyframes = materializeFrameDraft(overrides);
+    frameKeyframesRef.current = nextKeyframes;
+    setFrameKeyframes(nextKeyframes);
+    onDraftFrameKeyframes?.(nextKeyframes);
+  }
+
+  function updateBackgroundSettings(updater: (prev: BackgroundSettings) => BackgroundSettings) {
+    setBgSettings((prev) => {
+      const next = updater(prev);
+      bgSettingsRef.current = next;
+      onSaveBackgroundSettings?.(next);
+      return next;
+    });
+  }
+
+  function persistEditorState(showFeedback = false) {
+    const normalized = normalizeSegments(segmentsRef.current, clipDurationSec);
+    const savedFrameKeyframes = materializeFrameDraft();
+    const savedBackgroundSettings = bgSettingsRef.current;
+    segmentsRef.current = normalized;
     setSegments(normalized);
+    frameKeyframesRef.current = savedFrameKeyframes;
     setFrameKeyframes(savedFrameKeyframes);
     onSave(normalized);
     onSaveFrameKeyframes?.(savedFrameKeyframes);
-    onSaveCuts?.(cuts);
-    onSaveTrim?.(trim);
-    onSaveBackgroundSettings?.(bgSettings);
+    onSaveCuts?.(cutsRef.current);
+    onSaveTrim?.(trimRef.current);
+    onSaveBackgroundSettings?.(savedBackgroundSettings);
     // Show green flash feedback, don't close the modal
-    setSavedFlash(true);
-    setTimeout(() => setSavedFlash(false), 2000);
+    if (showFeedback) {
+      setSavedFlash(true);
+      setTimeout(() => setSavedFlash(false), 2000);
+    }
+  }
+
+  function save() {
+    persistEditorState(true);
+  }
+
+  function switchLanguage(language: 'source' | 'target') {
+    if (language === currentLanguage) return;
+    persistEditorState(false);
+    onSwitchLanguage?.(language);
   }
 
   function getCurrentUndoState(): UndoableState {
-    return { segments, frameKeyframes, cuts, trim };
+    return {
+      segments: segmentsRef.current,
+      frameKeyframes: frameKeyframesRef.current,
+      cuts: cutsRef.current,
+      trim: trimRef.current,
+    };
   }
 
   function pushUndo() {
@@ -681,9 +797,13 @@ export function SubtitleAlignmentEditor({
   function performUndo() {
     const restored = undoStackRef.current.undo(getCurrentUndoState());
     if (!restored) return;
+    segmentsRef.current = restored.segments;
     setSegments(restored.segments);
+    frameKeyframesRef.current = restored.frameKeyframes;
     setFrameKeyframes(restored.frameKeyframes);
+    cutsRef.current = restored.cuts;
     setCuts(restored.cuts);
+    trimRef.current = restored.trim;
     setTrim(restored.trim);
     setUndoTick((t) => t + 1);
   }
@@ -691,9 +811,13 @@ export function SubtitleAlignmentEditor({
   function performRedo() {
     const restored = undoStackRef.current.redo(getCurrentUndoState());
     if (!restored) return;
+    segmentsRef.current = restored.segments;
     setSegments(restored.segments);
+    frameKeyframesRef.current = restored.frameKeyframes;
     setFrameKeyframes(restored.frameKeyframes);
+    cutsRef.current = restored.cuts;
     setCuts(restored.cuts);
+    trimRef.current = restored.trim;
     setTrim(restored.trim);
     setUndoTick((t) => t + 1);
   }
@@ -702,11 +826,14 @@ export function SubtitleAlignmentEditor({
     if (endSec <= startSec + 0.1) return;
     pushUndo();
     const newCut: TimelineCut = { startSec, endSec };
-    const nextCuts = addCut(cuts, newCut, clipDurationSec);
-    const nextSegments = retimeSubtitlesAfterCut(segments, newCut, clipDurationSec, 'trim');
-    const nextKeyframes = retimeKeyframesAfterCut(frameKeyframes, newCut);
+    const nextCuts = addCut(cutsRef.current, newCut, clipDurationSec);
+    const nextSegments = retimeSubtitlesAfterCut(segmentsRef.current, newCut, clipDurationSec, 'trim');
+    const nextKeyframes = retimeKeyframesAfterCut(frameKeyframesRef.current, newCut);
+    cutsRef.current = nextCuts;
     setCuts(nextCuts);
+    segmentsRef.current = nextSegments;
     setSegments(nextSegments);
+    frameKeyframesRef.current = nextKeyframes;
     setFrameKeyframes(nextKeyframes);
     setRazorActive(false);
     setRazorStart(null);
@@ -727,12 +854,12 @@ export function SubtitleAlignmentEditor({
                 <button
                   type="button"
                   className={`btn-dl btn-dl-lang ${currentLanguage === 'source' ? 'active' : ''}`}
-                  onClick={() => onSwitchLanguage('source')}
+                  onClick={() => switchLanguage('source')}
                 >Source</button>
                 <button
                   type="button"
                   className={`btn-dl btn-dl-lang ${currentLanguage === 'target' ? 'active' : ''}`}
-                  onClick={() => onSwitchLanguage('target')}
+                  onClick={() => switchLanguage('target')}
                 >Target</button>
               </div>
             )}
@@ -741,7 +868,10 @@ export function SubtitleAlignmentEditor({
               <button
                 type="button"
                 className={`btn-dl btn-dl-sync ${syncEnabled ? 'sync-on' : 'sync-off'}`}
-                onClick={onToggleSync}
+                onClick={() => {
+                  persistEditorState(false);
+                  onToggleSync();
+                }}
                 title={syncEnabled ? 'Sync ON — edits propagate to linked clip' : 'Sync OFF — click to enable sync'}
               >
                 {syncEnabled ? <Link2 size={14} /> : <Unlink2 size={14} />}
@@ -980,7 +1110,11 @@ export function SubtitleAlignmentEditor({
                   onContextMenu={(e) => {
                     e.preventDefault();
                     pushUndo();
-                    setCuts((prev) => removeCut(prev, i));
+                    setCuts((prev) => {
+                      const next = removeCut(prev, i);
+                      cutsRef.current = next;
+                      return next;
+                    });
                   }}
                   onClick={() => {
                     seek(cut.startSec);
@@ -1034,7 +1168,11 @@ export function SubtitleAlignmentEditor({
                   onContextMenu={(e) => {
                     e.preventDefault();
                     pushUndo();
-                    setCuts((prev) => removeCut(prev, i));
+                    setCuts((prev) => {
+                      const next = removeCut(prev, i);
+                      cutsRef.current = next;
+                      return next;
+                    });
                   }}
                 />
               ))}
@@ -1079,7 +1217,11 @@ export function SubtitleAlignmentEditor({
                 onContextMenu={(e) => {
                   e.preventDefault();
                   pushUndo();
-                  setCuts((prev) => removeCut(prev, i));
+                  setCuts((prev) => {
+                    const next = removeCut(prev, i);
+                    cutsRef.current = next;
+                    return next;
+                  });
                 }}
               />
             ))}
@@ -1112,13 +1254,31 @@ export function SubtitleAlignmentEditor({
             {selected ? (
               <>
                 <div className="alignment-editor-toolbar">
-                  <button type="button" onClick={() => { pushUndo(); setSegments((prev) => splitSegment(prev, selected.id, clipDurationSec)); }}><SplitSquareHorizontal size={14} /> Split</button>
-                  <button type="button" onClick={() => { pushUndo(); setSegments((prev) => mergeSegmentWithNext(prev, selected.id, clipDurationSec)); }}><Scissors size={14} /> Merge next</button>
+                  <button type="button" onClick={() => {
+                    pushUndo();
+                    setSegments((prev) => {
+                      const next = splitSegment(prev, selected.id, clipDurationSec);
+                      segmentsRef.current = next;
+                      return next;
+                    });
+                  }}><SplitSquareHorizontal size={14} /> Split</button>
+                  <button type="button" onClick={() => {
+                    pushUndo();
+                    setSegments((prev) => {
+                      const next = mergeSegmentWithNext(prev, selected.id, clipDurationSec);
+                      segmentsRef.current = next;
+                      return next;
+                    });
+                  }}><Scissors size={14} /> Merge next</button>
                   <button
                     type="button"
                     onClick={() => {
                       pushUndo();
-                      setSegments((prev) => prev.filter((segment) => segment.id !== selected.id));
+                      setSegments((prev) => {
+                        const next = prev.filter((segment) => segment.id !== selected.id);
+                        segmentsRef.current = next;
+                        return next;
+                      });
                       setSelectedId('');
                     }}
                   >
@@ -1128,14 +1288,29 @@ export function SubtitleAlignmentEditor({
                 <textarea
                   value={selected.text}
                   onFocus={() => pushUndo()}
-                  onChange={(event) => setSegments((prev) => updateSegmentText(prev, selected.id, event.currentTarget.value, clipDurationSec))}
+                  onChange={(event) => {
+                    const text = event.currentTarget.value;
+                    setSegments((prev) => {
+                      const next = updateSegmentText(prev, selected.id, text, clipDurationSec);
+                      segmentsRef.current = next;
+                      return next;
+                    });
+                  }}
                 />
                 <div className="alignment-word-row">
                   {selected.text.match(/\S+/g)?.map((word, index) => (
                     <span key={`${word}-${index}`}>
-                      <button type="button" onClick={() => setSegments((prev) => moveWordToAdjacentSegment(prev, selected.id, index, 'previous', clipDurationSec))}>←</button>
+                      <button type="button" onClick={() => setSegments((prev) => {
+                        const next = moveWordToAdjacentSegment(prev, selected.id, index, 'previous', clipDurationSec);
+                        segmentsRef.current = next;
+                        return next;
+                      })}>←</button>
                       {word}
-                      <button type="button" onClick={() => setSegments((prev) => moveWordToAdjacentSegment(prev, selected.id, index, 'next', clipDurationSec))}>→</button>
+                      <button type="button" onClick={() => setSegments((prev) => {
+                        const next = moveWordToAdjacentSegment(prev, selected.id, index, 'next', clipDurationSec);
+                        segmentsRef.current = next;
+                        return next;
+                      })}>→</button>
                     </span>
                   ))}
                 </div>
@@ -1163,50 +1338,66 @@ export function SubtitleAlignmentEditor({
                 <span>Guide</span>
                 <input type="color"
                   value={bgSettings.frameGuideColor ?? '#ffaa19'}
-                  onChange={(e) => setBgSettings((prev) => ({ ...prev, frameGuideColor: e.currentTarget.value }))} />
+                  onChange={(e) => {
+                    const backgroundColor = e.currentTarget.value;
+                    updateBackgroundSettings((prev) => ({ ...prev, frameGuideColor: backgroundColor }));
+                    persistFrameControls({ backgroundColor });
+                  }} />
                 <b>{bgSettings.frameGuideColor ?? '#ffaa19'}</b>
               </label>
               <label>
                 <span>Dim</span>
                 <input type="range" min={0} max={1} step={0.05}
                   value={bgSettings.frameGuideOpacity ?? 0.75}
-                  onChange={(e) => setBgSettings((prev) => ({ ...prev, frameGuideOpacity: Number(e.currentTarget.value) }))} />
+                  onChange={(e) => updateBackgroundSettings((prev) => ({ ...prev, frameGuideOpacity: Number(e.currentTarget.value) }))} />
                 <b>{Math.round((bgSettings.frameGuideOpacity ?? 0.75) * 100)}%</b>
               </label>
               <label>
                 <span>Border</span>
                 <input type="range" min={0} max={12} step={0.5}
                   value={bgSettings.frameGuideBorderWidth ?? 2}
-                  onChange={(e) => setBgSettings((prev) => ({ ...prev, frameGuideBorderWidth: Number(e.currentTarget.value) }))} />
+                  onChange={(e) => updateBackgroundSettings((prev) => ({ ...prev, frameGuideBorderWidth: Number(e.currentTarget.value) }))} />
                 <b>{bgSettings.frameGuideBorderWidth ?? 2}px</b>
               </label>
               <label>
                 <span>Opacity</span>
                 <input type="range" min={0} max={1} step={0.05}
                   value={bgSettings.frameGuideBorderOpacity ?? 1}
-                  onChange={(e) => setBgSettings((prev) => ({ ...prev, frameGuideBorderOpacity: Number(e.currentTarget.value) }))} />
+                  onChange={(e) => updateBackgroundSettings((prev) => ({ ...prev, frameGuideBorderOpacity: Number(e.currentTarget.value) }))} />
                 <b>{Math.round((bgSettings.frameGuideBorderOpacity ?? 1) * 100)}%</b>
               </label>
               <label>
                 <span>Glow</span>
                 <input type="range" min={0} max={30} step={1}
                   value={bgSettings.frameGuideBlur ?? 0}
-                  onChange={(e) => setBgSettings((prev) => ({ ...prev, frameGuideBlur: Number(e.currentTarget.value) }))} />
+                  onChange={(e) => updateBackgroundSettings((prev) => ({ ...prev, frameGuideBlur: Number(e.currentTarget.value) }))} />
                 <b>{bgSettings.frameGuideBlur ?? 0}px</b>
               </label>
               <label>
                 <span>Zoom</span>
-                <input type="range" min={0.5} max={2} step={0.01} value={frameZoom} onChange={(event) => setFrameZoom(Number(event.currentTarget.value))} />
+                <input type="range" min={0.5} max={2} step={0.01} value={frameZoom} onChange={(event) => {
+                  const zoom = Number(event.currentTarget.value);
+                  setFrameZoom(zoom);
+                  persistFrameControls({ zoom });
+                }} />
                 <b>{frameZoom.toFixed(2)}x</b>
               </label>
               <label>
                 <span>Pan X</span>
-                <input type="range" min={-50} max={50} step={1} value={framePanX} onChange={(event) => setFramePanX(Number(event.currentTarget.value))} />
+                <input type="range" min={-50} max={50} step={1} value={framePanX} onChange={(event) => {
+                  const x = Number(event.currentTarget.value);
+                  setFramePanX(x);
+                  persistFrameControls({ x });
+                }} />
                 <b>{framePanX}</b>
               </label>
               <label>
                 <span>Pan Y</span>
-                <input type="range" min={-30} max={30} step={1} value={framePanY} onChange={(event) => setFramePanY(Number(event.currentTarget.value))} />
+                <input type="range" min={-30} max={30} step={1} value={framePanY} onChange={(event) => {
+                  const y = Number(event.currentTarget.value);
+                  setFramePanY(y);
+                  persistFrameControls({ y });
+                }} />
                 <b>{framePanY}</b>
               </label>
               <div className="alignment-keyframe-actions">
@@ -1222,17 +1413,27 @@ export function SubtitleAlignmentEditor({
                       zoom: frameZoom,
                       backgroundColor: bgSettings.frameGuideColor ?? '#ffaa19',
                     };
-                    setFrameKeyframes((prev) => [
-                      ...prev.filter((point) => Math.abs(point.time - currentSec) > 0.15),
-                      nextPoint,
-                    ].sort((a, b) => a.time - b.time));
+                    setFrameKeyframes((prev) => {
+                      const next = [
+                        ...prev.filter((point) => Math.abs(point.time - currentSec) > 0.15),
+                        nextPoint,
+                      ].sort((a, b) => a.time - b.time);
+                      frameKeyframesRef.current = next;
+                      onDraftFrameKeyframes?.(next);
+                      return next;
+                    });
                   }}
                 >
                   Add point
                 </button>
                 <button
                   type="button"
-                  onClick={() => { pushUndo(); setFrameKeyframes([]); }}
+                  onClick={() => {
+                    pushUndo();
+                    frameKeyframesRef.current = [];
+                    setFrameKeyframes([]);
+                    onDraftFrameKeyframes?.([]);
+                  }}
                   disabled={frameKeyframes.length === 0}
                 >
                   Clear
@@ -1250,13 +1451,24 @@ export function SubtitleAlignmentEditor({
                         setFrameZoom(point.zoom);
                         setFramePanX(point.x);
                         setFramePanY(point.y);
-                        setBgSettings((prev) => ({ ...prev, frameGuideColor: point.backgroundColor || prev.frameGuideColor || '#ffaa19' }));
+                        frameZoomRef.current = point.zoom;
+                        framePanXRef.current = point.x;
+                        framePanYRef.current = point.y;
+                        updateBackgroundSettings((prev) => ({ ...prev, frameGuideColor: point.backgroundColor || prev.frameGuideColor || '#ffaa19' }));
                       }}
                     >
                       {index + 1}. {formatPlaybackClock(point.time)}
                     </button>
                     <span>{point.zoom.toFixed(2)}x · X {point.x} · Y {point.y}</span>
-                    <button type="button" onClick={() => { pushUndo(); setFrameKeyframes((prev) => prev.filter((item) => item.id !== point.id)); }}>×</button>
+                    <button type="button" onClick={() => {
+                      pushUndo();
+                      setFrameKeyframes((prev) => {
+                        const next = prev.filter((item) => item.id !== point.id);
+                        frameKeyframesRef.current = next;
+                        onDraftFrameKeyframes?.(next);
+                        return next;
+                      });
+                    }}>×</button>
                   </div>
                 ))}
               </div>
@@ -1271,13 +1483,13 @@ export function SubtitleAlignmentEditor({
               {/* ── Solid Color ── */}
               <div className="bg-section">
                 <label className="bg-toggle">
-                  <input type="checkbox" checked={bgSettings.solidEnabled} onChange={(e) => setBgSettings(prev => ({ ...prev, solidEnabled: e.target.checked }))} />
+                  <input type="checkbox" checked={bgSettings.solidEnabled} onChange={(e) => updateBackgroundSettings(prev => ({ ...prev, solidEnabled: e.target.checked }))} />
                   <span className="bg-toggle-label">Solid color</span>
                 </label>
                 {bgSettings.solidEnabled && (
                   <label>
                     <span>Color</span>
-                    <input type="color" value={bgSettings.solidColor} onChange={(e) => setBgSettings(prev => ({ ...prev, solidColor: e.target.value }))} />
+                    <input type="color" value={bgSettings.solidColor} onChange={(e) => updateBackgroundSettings(prev => ({ ...prev, solidColor: e.target.value }))} />
                     <b>{bgSettings.solidColor}</b>
                   </label>
                 )}
@@ -1286,19 +1498,19 @@ export function SubtitleAlignmentEditor({
               {/* ── Blur Background ── */}
               <div className="bg-section">
                 <label className="bg-toggle">
-                  <input type="checkbox" checked={bgSettings.blurEnabled} onChange={(e) => setBgSettings(prev => ({ ...prev, blurEnabled: e.target.checked }))} />
+                  <input type="checkbox" checked={bgSettings.blurEnabled} onChange={(e) => updateBackgroundSettings(prev => ({ ...prev, blurEnabled: e.target.checked }))} />
                   <span className="bg-toggle-label">Blur background</span>
                 </label>
                 {bgSettings.blurEnabled && (
                   <>
                     <label>
                       <span>Blur</span>
-                      <input type="range" min={1} max={80} step={1} value={bgSettings.blurStrength} onChange={(e) => setBgSettings(prev => ({ ...prev, blurStrength: Number(e.target.value) }))} />
+                      <input type="range" min={1} max={80} step={1} value={bgSettings.blurStrength} onChange={(e) => updateBackgroundSettings(prev => ({ ...prev, blurStrength: Number(e.target.value) }))} />
                       <b>{bgSettings.blurStrength}px</b>
                     </label>
                     <label>
                       <span>Scale</span>
-                      <input type="range" min={1} max={2} step={0.05} value={bgSettings.blurScale} onChange={(e) => setBgSettings(prev => ({ ...prev, blurScale: Number(e.target.value) }))} />
+                      <input type="range" min={1} max={2} step={0.05} value={bgSettings.blurScale} onChange={(e) => updateBackgroundSettings(prev => ({ ...prev, blurScale: Number(e.target.value) }))} />
                       <b>{bgSettings.blurScale.toFixed(2)}x</b>
                     </label>
                   </>
@@ -1308,38 +1520,38 @@ export function SubtitleAlignmentEditor({
               {/* ── Gradient ── */}
               <div className="bg-section">
                 <label className="bg-toggle">
-                  <input type="checkbox" checked={bgSettings.gradientEnabled} onChange={(e) => setBgSettings(prev => ({ ...prev, gradientEnabled: e.target.checked }))} />
+                  <input type="checkbox" checked={bgSettings.gradientEnabled} onChange={(e) => updateBackgroundSettings(prev => ({ ...prev, gradientEnabled: e.target.checked }))} />
                   <span className="bg-toggle-label">Gradient overlay</span>
                 </label>
                 {bgSettings.gradientEnabled && (
                   <>
                     <label className="bg-type-row">
                       <span>Type</span>
-                      <select value={bgSettings.gradientType} onChange={(e) => setBgSettings(prev => ({ ...prev, gradientType: e.target.value as 'linear' | 'radial' }))}>
+                      <select value={bgSettings.gradientType} onChange={(e) => updateBackgroundSettings(prev => ({ ...prev, gradientType: e.target.value as 'linear' | 'radial' }))}>
                         <option value="linear">Linear</option>
                         <option value="radial">Radial</option>
                       </select>
                     </label>
                     <label>
                       <span>Color A</span>
-                      <input type="color" value={bgSettings.gradientColorA} onChange={(e) => setBgSettings(prev => ({ ...prev, gradientColorA: e.target.value }))} />
+                      <input type="color" value={bgSettings.gradientColorA} onChange={(e) => updateBackgroundSettings(prev => ({ ...prev, gradientColorA: e.target.value }))} />
                       <b>{bgSettings.gradientColorA}</b>
                     </label>
                     <label>
                       <span>Color B</span>
-                      <input type="color" value={bgSettings.gradientColorB} onChange={(e) => setBgSettings(prev => ({ ...prev, gradientColorB: e.target.value }))} />
+                      <input type="color" value={bgSettings.gradientColorB} onChange={(e) => updateBackgroundSettings(prev => ({ ...prev, gradientColorB: e.target.value }))} />
                       <b>{bgSettings.gradientColorB}</b>
                     </label>
                     {bgSettings.gradientType === 'linear' && (
                       <label>
                         <span>Angle</span>
-                        <input type="range" min={0} max={360} step={1} value={bgSettings.gradientAngle} onChange={(e) => setBgSettings(prev => ({ ...prev, gradientAngle: Number(e.target.value) }))} />
+                        <input type="range" min={0} max={360} step={1} value={bgSettings.gradientAngle} onChange={(e) => updateBackgroundSettings(prev => ({ ...prev, gradientAngle: Number(e.target.value) }))} />
                         <b>{bgSettings.gradientAngle}°</b>
                       </label>
                     )}
                     <label>
                       <span>Opacity</span>
-                      <input type="range" min={0} max={1} step={0.05} value={bgSettings.gradientOpacity} onChange={(e) => setBgSettings(prev => ({ ...prev, gradientOpacity: Number(e.target.value) }))} />
+                      <input type="range" min={0} max={1} step={0.05} value={bgSettings.gradientOpacity} onChange={(e) => updateBackgroundSettings(prev => ({ ...prev, gradientOpacity: Number(e.target.value) }))} />
                       <b>{(bgSettings.gradientOpacity * 100).toFixed(0)}%</b>
                     </label>
                   </>
@@ -1349,19 +1561,19 @@ export function SubtitleAlignmentEditor({
               {/* ── Edge Feather ── */}
               <div className="bg-section">
                 <label className="bg-toggle">
-                  <input type="checkbox" checked={bgSettings.featherEnabled} onChange={(e) => setBgSettings(prev => ({ ...prev, featherEnabled: e.target.checked }))} />
+                  <input type="checkbox" checked={bgSettings.featherEnabled} onChange={(e) => updateBackgroundSettings(prev => ({ ...prev, featherEnabled: e.target.checked }))} />
                   <span className="bg-toggle-label">Edge feather</span>
                 </label>
                 {bgSettings.featherEnabled && (
                   <>
                     <label>
                       <span>Top</span>
-                      <input type="range" min={0} max={100} step={1} value={bgSettings.featherTop} onChange={(e) => setBgSettings(prev => ({ ...prev, featherTop: Number(e.target.value) }))} />
+                      <input type="range" min={0} max={100} step={1} value={bgSettings.featherTop} onChange={(e) => updateBackgroundSettings(prev => ({ ...prev, featherTop: Number(e.target.value) }))} />
                       <b>{bgSettings.featherTop}px</b>
                     </label>
                     <label>
                       <span>Bottom</span>
-                      <input type="range" min={0} max={100} step={1} value={bgSettings.featherBottom} onChange={(e) => setBgSettings(prev => ({ ...prev, featherBottom: Number(e.target.value) }))} />
+                      <input type="range" min={0} max={100} step={1} value={bgSettings.featherBottom} onChange={(e) => updateBackgroundSettings(prev => ({ ...prev, featherBottom: Number(e.target.value) }))} />
                       <b>{bgSettings.featherBottom}px</b>
                     </label>
                   </>
