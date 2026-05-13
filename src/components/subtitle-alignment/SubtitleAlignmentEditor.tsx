@@ -350,6 +350,12 @@ export function SubtitleAlignmentEditor({
   }, [audioTracks, isOpen, onSaveAudioTracks]);
 
   useEffect(() => {
+    if (!isOpen || !initializedRef.current || !onSaveBackgroundSettings) return;
+    const timer = window.setTimeout(() => onSaveBackgroundSettings(bgSettings), 150);
+    return () => window.clearTimeout(timer);
+  }, [bgSettings, isOpen, onSaveBackgroundSettings]);
+
+  useEffect(() => {
     if (!isOpen) return;
     const node = frameGuideRef.current;
     if (!node) return;
@@ -1060,12 +1066,9 @@ export function SubtitleAlignmentEditor({
   }
 
   function updateBackgroundSettings(updater: (prev: BackgroundSettings) => BackgroundSettings) {
-    setBgSettings((prev) => {
-      const next = updater(prev);
-      bgSettingsRef.current = next;
-      onSaveBackgroundSettings?.(next);
-      return next;
-    });
+    const next = updater(bgSettingsRef.current);
+    bgSettingsRef.current = next;
+    setBgSettings(next);
   }
 
   function patchCaptionSettings(partial: Partial<ShortsSettings>) {
