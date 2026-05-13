@@ -340,7 +340,7 @@ function buildCompositionHtml(project, relativeVideoPath) {
   <body>
     <div id="stage">
       <div id="background"></div>
-      ${blurEnabled ? `<video id="blur-bg" muted playsinline preload="auto" src="${escapeHtml(relativeVideoPath)}"></video>` : '<div id="blur-bg"></div>'}
+      ${blurEnabled ? `<video id="blur-bg" class="clip" data-start="0" data-duration="${project.durationSec}" data-track-index="2" data-media-start="${project.clipStartSec}" muted playsinline preload="auto" src="${escapeHtml(relativeVideoPath)}"></video>` : '<div id="blur-bg"></div>'}
       <div id="gradient-overlay"></div>
       <div id="video-stage">
         <video
@@ -377,7 +377,7 @@ function buildCompositionHtml(project, relativeVideoPath) {
         const c = String(hex || '#000000').replace('#', '').padEnd(6, '0').slice(0, 6);
         return 'rgba(' + parseInt(c.slice(0,2),16) + ',' + parseInt(c.slice(2,4),16) + ',' + parseInt(c.slice(4,6),16) + ',' + clamp(opacity,0,1) + ')';
       };
-      const titleCase = (t) => t.toLowerCase().replace(/(^|\\\\s)\\\\S/g, (m) => m.toUpperCase());
+      const titleCase = (t) => t.toLowerCase().replace(/(^|\\s)\\S/g, (m) => m.toUpperCase());
       const transformText = (t, mode) => mode === 'uppercase' ? t.toUpperCase() : mode === 'title' ? titleCase(t) : t;
       const activeCue = (ts) => project.subtitles.find((c) => ts >= c.startSec && ts < c.endSec) || null;
       const interpolateFrameState = (ts) => {
@@ -413,13 +413,28 @@ function buildCompositionHtml(project, relativeVideoPath) {
           : 'linear-gradient(' + (bgS.gradientAngle || 180) + 'deg,' + gA + ',' + gB + ')';
         gradientOverlay.style.opacity = String(bgS.gradientOpacity || 0.6);
       }
-      // Setup feathering mask (applied once, stays)
+      // Setup feathering mask (top/bottom + left/right)
       if (bgS.featherEnabled) {
         const fT = bgS.featherTop || 0;
         const fB = bgS.featherBottom || 0;
-        const mask = 'linear-gradient(to bottom, transparent 0px, black ' + fT + 'px, black calc(100% - ' + fB + 'px), transparent 100%)';
-        video.style.webkitMaskImage = mask;
-        video.style.maskImage = mask;
+        const fL = bgS.featherLeft || 0;
+        const fR = bgS.featherRight || 0;
+        const masks = [];
+        if (fT > 0 || fB > 0) {
+          masks.push('linear-gradient(to bottom, transparent 0px, black ' + fT + 'px, black calc(100% - ' + fB + 'px), transparent 100%)');
+        }
+        if (fL > 0 || fR > 0) {
+          masks.push('linear-gradient(to right, transparent 0px, black ' + fL + 'px, black calc(100% - ' + fR + 'px), transparent 100%)');
+        }
+        if (masks.length > 0) {
+          const combined = masks.join(', ');
+          video.style.maskImage = combined;
+          video.style.webkitMaskImage = combined;
+          if (masks.length > 1) {
+            video.style.maskComposite = 'intersect';
+            video.style.webkitMaskComposite = 'source-in';
+          }
+        }
       }
 
       function renderAt(timeSec) {

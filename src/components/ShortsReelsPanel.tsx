@@ -3,10 +3,9 @@ import { Edit3 } from 'lucide-react';
 import { formatPlaybackClock } from '../lib/karaoke';
 import type { ProviderOption } from '../lib/provider-registry';
 import { parseTimestampToSeconds, ShortsClipPlan, ShortsPlanLanguageMode } from '../lib/shorts-reels';
-import { ShortsFrameRatePreset, ShortsResolutionPreset, ShortsTextTransform, ShortsVideoFormat, ShortsVideoQuality } from '../lib/shorts-render';
+import { defaultBackgroundSettings, ShortsFrameRatePreset, ShortsResolutionPreset, ShortsTextTransform, ShortsVideoFormat, ShortsVideoQuality } from '../lib/shorts-render';
 import { SubtitleAlignmentEditor } from './subtitle-alignment/SubtitleAlignmentEditor';
 import { ReplaceClipModal } from './ReplaceClipModal';
-import { toggleSync } from '../lib/ClipSyncManager';
 
 export type ShortsExportMode = 'plan' | 'video';
 
@@ -205,6 +204,7 @@ export function ShortsReelsPanel({
 }: Props) {
   const [detailsIndex, setDetailsIndex] = useState<number | null>(null);
   const [editorIndex, setEditorIndex] = useState<number | null>(null);
+  const [editorSnapshot, setEditorSnapshot] = useState<ShortsClipPlan | null>(null);
   const [replaceIndex, setReplaceIndex] = useState<number | null>(null);
   const [previewCueIndex, setPreviewCueIndex] = useState(0);
   const [displayLanguage, setDisplayLanguage] = useState<ShortsDisplayLanguage>('target');
@@ -230,7 +230,7 @@ export function ShortsReelsPanel({
   const detailsCues = detailsPlan ? getPlanCues(detailsPlan, displayLanguage) : [];
   const canUseTarget = hasTranslation;
   const canSwitchLanguage = plans.some((plan) => plan.languageMode === 'bilingual');
-  const editorPlan = editorIndex === null ? null : plans[editorIndex] || null;
+  const editorPlan = editorIndex === null ? null : plans[editorIndex] || editorSnapshot;
   const detailsCaptionText = detailsPlan
     ? captionTextForLanguage(detailsPlan, displayLanguage) ?? detailsCues.map((cue) => `[${formatPlaybackClock(parseTimestampToSeconds(detailsPlan.start) + cue.startSec)}] ${cue.text}`).join('\n\n')
     : '';
@@ -244,6 +244,16 @@ export function ShortsReelsPanel({
   const previewBoxRadius = Math.max(0, (2 + settings.subtitleEdgeSoftness * 18) * previewScale);
   const previewBottomPercent = Math.min(92, Math.max(0, (settings.subtitleBottomMargin / previewBaseHeight) * 100));
 
+  const openEditor = (index: number) => {
+    setEditorIndex(index);
+    setEditorSnapshot(plans[index] || null);
+  };
+
+  const closeEditor = () => {
+    setEditorIndex(null);
+    setEditorSnapshot(null);
+  };
+
   useEffect(() => {
     const mode = plans[0]?.languageMode;
     setDisplayLanguage(mode === 'source' || mode === 'bilingual' ? 'source' : 'target');
@@ -253,6 +263,12 @@ export function ShortsReelsPanel({
   useEffect(() => {
     setPreviewCueIndex(0);
   }, [displayLanguage, selectedPlanIndex]);
+
+  useEffect(() => {
+    if (editorIndex === null) return;
+    const latest = plans[editorIndex];
+    if (latest) setEditorSnapshot(latest);
+  }, [editorIndex, plans]);
 
   const copyText = async (key: string, value: string) => {
     try {
@@ -358,7 +374,7 @@ export function ShortsReelsPanel({
                       onClick={() => {
                         if (!checked) onTogglePlan(index);
                         onFocusPlan(index);
-                        setEditorIndex(index);
+                        openEditor(index);
                       }}
                       disabled={!hasVideo || !previewVideoSrc}
                     >
@@ -515,7 +531,7 @@ export function ShortsReelsPanel({
               className="shorts-open-editor"
               disabled={!selectedPlan || !hasVideo || !previewVideoSrc}
               onClick={() => {
-                if (selectedPlanIndex !== null) setEditorIndex(selectedPlanIndex);
+                if (selectedPlanIndex !== null) openEditor(selectedPlanIndex);
               }}
             >
               <Edit3 size={13} /> Open in Visual Editor
@@ -646,7 +662,7 @@ export function ShortsReelsPanel({
                   if (detailsIndex !== null) {
                     if (!selectedPlanIndexes.includes(detailsIndex)) onTogglePlan(detailsIndex);
                     onFocusPlan(detailsIndex);
-                    setEditorIndex(detailsIndex);
+                    openEditor(detailsIndex);
                   }
                 }}
               >
@@ -660,6 +676,7 @@ export function ShortsReelsPanel({
 
       {editorPlan && (
         <SubtitleAlignmentEditor
+          key={`editor-${editorIndex}-${displayLanguage}`}
           isOpen={editorIndex !== null}
           title={displayedPlanText(editorPlan, displayLanguage).title || 'Clip editor'}
           languageLabel={displayLanguage === 'source' ? 'Source captions' : 'Target captions'}
@@ -677,7 +694,7 @@ export function ShortsReelsPanel({
           settings={settings}
           subtitleMaxCharsPerLine={subtitleMaxCharsPerLine}
           subtitleMaxLines={subtitleMaxLines}
-          onClose={() => setEditorIndex(null)}
+          onClose={closeEditor}
           onSave={(segments) => {
             if (editorIndex !== null) {
               onSavePlanAlignment(editorIndex, displayLanguage, segments);
@@ -708,16 +725,25 @@ export function ShortsReelsPanel({
           onSaveBackgroundSettings={(bg) => {
             if (editorIndex !== null) onUpdatePlan(editorIndex, { backgroundSettings: bg });
           }}
+          onResetAll={() => {
+            if (editorIndex !== null) {
+              onUpdatePlan(editorIndex, {
+                sourceAlignment: undefined,
+                targetAlignment: undefined,
+                sourceFrameKeyframes: [],
+                targetFrameKeyframes: [],
+                timelineCuts: [],
+                timelineTrim: { trimStartSec: 0, trimEndSec: 0 },
+                backgroundSettings: defaultBackgroundSettings(),
+              });
+            }
+          }}
           syncEnabled={editorIndex !== null ? plans[editorIndex]?.syncEnabled : false}
           hasLinkedPartner={editorIndex !== null ? !!plans[editorIndex]?.linkedClipGroupId : false}
           onToggleSync={() => { if (editorIndex !== null) onToggleClipSync?.(editorIndex); }}
           onImportMotion={() => { if (editorIndex !== null) onImportMotion?.(editorIndex); }}
           currentLanguage={displayLanguage}
           onSwitchLanguage={(lang) => {
-            // Save current alignment before switching
-            if (editorIndex !== null) {
-              onSavePlanAlignment(editorIndex, displayLanguage, [] /* will be populated by save callback */);
-            }
             setDisplayLanguage(lang);
           }}
         />

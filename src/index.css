@@ -2086,7 +2086,9 @@ html, body, #root {
   cursor: pointer;
   display: inline-grid; place-items: center;
   transition: background 0.15s, color 0.15s;
-  z-index: 10;
+  z-index: 60;
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
 }
 .alignment-close-x:hover {
   background: rgba(230,74,74,0.2);
@@ -2116,10 +2118,13 @@ html, body, #root {
   overflow: hidden;
 }
 .alignment-head {
+  position: relative;
+  z-index: 40;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
+  -webkit-app-region: no-drag;
 }
 .alignment-head h3 {
   margin: 0 0 4px;
@@ -2132,16 +2137,24 @@ html, body, #root {
   font: 12px/1.3 var(--font-mono);
 }
 .alignment-head-actions {
+  position: relative;
+  z-index: 45;
   display: flex;
   align-items: center;
   gap: 8px;
   padding-right: 40px; /* room for the X close button */
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
 }
 .alignment-head-actions button {
+  position: relative;
+  z-index: 46;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 7px;
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
 }
 .alignment-main {
   min-height: 0;
@@ -2172,9 +2185,9 @@ html, body, #root {
   height: 100%;
   aspect-ratio: 9 / 16;
   transform: translate(-50%, -50%);
-  border: var(--frame-guide-border-width, 2px) solid var(--frame-guide-color, rgba(255,170,25,0.85));
+  border: var(--frame-guide-border-width, 2px) solid var(--frame-guide-border-color, rgba(255,170,25,1));
   box-shadow:
-    0 0 var(--frame-guide-blur, 0px) var(--frame-guide-blur, 0px) var(--frame-guide-color, rgba(255,170,25,0.5)),
+    inset 0 0 var(--frame-guide-blur, 0px) calc(var(--frame-guide-blur, 0px) * 0.5) var(--frame-guide-border-color, rgba(255,170,25,0.5)),
     0 0 0 9999px rgba(0,0,0, var(--frame-guide-opacity, 0.75));
   overflow: hidden;
   pointer-events: none;

@@ -23,6 +23,12 @@ export type BackgroundSettings = {
   featherBottom: number;
   featherLeft: number;
   featherRight: number;
+  // Frame guide styling (synced between languages, persisted)
+  frameGuideColor?: string;
+  frameGuideOpacity?: number;      // 0–1 (outer dim)
+  frameGuideBorderWidth?: number;  // px
+  frameGuideBlur?: number;         // px inward glow
+  frameGuideBorderOpacity?: number; // 0–1
 };
 
 export function defaultBackgroundSettings(): BackgroundSettings {
@@ -43,6 +49,11 @@ export function defaultBackgroundSettings(): BackgroundSettings {
     featherBottom: 20,
     featherLeft: 10,
     featherRight: 10,
+    frameGuideColor: '#ffaa19',
+    frameGuideOpacity: 0.75,
+    frameGuideBorderWidth: 2,
+    frameGuideBlur: 0,
+    frameGuideBorderOpacity: 1,
   };
 }
 
