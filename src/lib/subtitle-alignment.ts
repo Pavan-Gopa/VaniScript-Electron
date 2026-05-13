@@ -29,6 +29,7 @@ export type AlignedSubtitleCue = {
 };
 
 const MIN_SEGMENT_DURATION = 0.25;
+const FRAME_KEYFRAME_SNAP_SECONDS = 0.15;
 type NormalizeOptions = { keepEmpty?: boolean };
 
 function makeId(prefix: string, index: number): string {
@@ -211,4 +212,50 @@ export function moveWordToAdjacentSegment(
     }
     return segment;
   }), clipDurationSec);
+}
+
+type MaterializeFrameKeyframesOptions = {
+  frameKeyframes: FrameKeyframe[];
+  currentSec: number;
+  clipDurationSec: number;
+  framePanX: number;
+  framePanY: number;
+  frameZoom: number;
+  backgroundColor?: string;
+};
+
+export function materializeFrameKeyframesForSave({
+  frameKeyframes,
+  currentSec,
+  clipDurationSec,
+  framePanX,
+  framePanY,
+  frameZoom,
+  backgroundColor,
+}: MaterializeFrameKeyframesOptions): FrameKeyframe[] {
+  const snapTarget = frameKeyframes.find((point) => Math.abs(point.time - currentSec) <= FRAME_KEYFRAME_SNAP_SECONDS);
+  const currentPoint: FrameKeyframe = {
+    id: snapTarget?.id || `frame_${Date.now()}`,
+    time: frameKeyframes.length > 0 ? currentSec : 0,
+    x: framePanX,
+    y: framePanY,
+    zoom: frameZoom,
+    backgroundColor,
+  };
+  const next = frameKeyframes.length === 0
+    ? [currentPoint]
+    : snapTarget
+      ? frameKeyframes.map((point) => point.id === snapTarget.id ? currentPoint : point)
+      : [...frameKeyframes, currentPoint];
+
+  return next
+    .map((point) => ({
+      ...point,
+      time: clampTime(point.time, clipDurationSec),
+      zoom: Math.min(Math.max(0.5, point.zoom), 2),
+      x: Math.min(Math.max(-50, point.x), 50),
+      y: Math.min(Math.max(-30, point.y), 30),
+      backgroundColor: point.backgroundColor || backgroundColor,
+    }))
+    .sort((a, b) => a.time - b.time);
 }

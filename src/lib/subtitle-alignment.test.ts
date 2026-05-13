@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   cuesToAlignedSegments,
+  materializeFrameKeyframesForSave,
   mergeSegmentWithNext,
   moveWordToAdjacentSegment,
   splitSegment,
@@ -49,4 +50,42 @@ test('updateSegmentText preserves deliberate line breaks while editing', () => {
 
   assert.equal(updated[0].text, 'Take shelter\nof Krishna');
   assert.deepEqual(updated[0].words.map((word) => word.text), ['Take', 'shelter', 'of', 'Krishna']);
+});
+
+test('materializeFrameKeyframesForSave persists current zoom and pan even without explicit keyframes', () => {
+  const saved = materializeFrameKeyframesForSave({
+    frameKeyframes: [],
+    currentSec: 8,
+    clipDurationSec: 20,
+    framePanX: 11,
+    framePanY: -7,
+    frameZoom: 1.42,
+    backgroundColor: '#ffaa19',
+  });
+
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].time, 0);
+  assert.equal(saved[0].x, 11);
+  assert.equal(saved[0].y, -7);
+  assert.equal(saved[0].zoom, 1.42);
+  assert.equal(saved[0].backgroundColor, '#ffaa19');
+});
+
+test('materializeFrameKeyframesForSave updates the nearby keyframe instead of losing current controls', () => {
+  const saved = materializeFrameKeyframesForSave({
+    frameKeyframes: [{ id: 'kf-1', time: 4, x: 0, y: 0, zoom: 1 }],
+    currentSec: 4.1,
+    clipDurationSec: 20,
+    framePanX: -12,
+    framePanY: 9,
+    frameZoom: 1.6,
+    backgroundColor: '#abcdef',
+  });
+
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].id, 'kf-1');
+  assert.equal(saved[0].time, 4.1);
+  assert.equal(saved[0].x, -12);
+  assert.equal(saved[0].y, 9);
+  assert.equal(saved[0].zoom, 1.6);
 });

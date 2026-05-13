@@ -32,7 +32,7 @@ import { formatDocumentExportLocally, formatDocumentExportWithGemini, formatDocu
 import { ShortsReelsPanel, ShortsSettings } from './components/ShortsReelsPanel';
 import { SourceMediaKind, sourceMediaKind } from './lib/media-source';
 import { buildShortsPrompt, parseShortsPlanResponse, parseTimestampToSeconds, secondsToShortsTimestamp, ShortsClipPlan, ShortsPlanLanguageMode } from './lib/shorts-reels';
-import { toggleSync, copyMotionFrom, findLinkedPartnerIndex, resolveClipLanguageRole } from './lib/ClipSyncManager';
+import { toggleSync, copyMotionFrom, findLinkedPartnerIndex, resolveClipLanguageRole, buildSyncPatch } from './lib/ClipSyncManager';
 import {
   buildShortsAssSubtitle,
   buildVerticalVideoFilter,
@@ -2550,7 +2550,15 @@ export default function App() {
                         setSelectedShortsPlanIndex(index);
                       }}
                       onUpdatePlan={(index, patch) => {
-                        setShortsPlans((prev) => prev.map((plan, itemIndex) => itemIndex === index ? { ...plan, ...patch } : plan));
+                        setShortsPlans((prev) => {
+                          const next = prev.map((plan, i) => i === index ? { ...plan, ...patch } : plan);
+                          // Auto-sync to linked partner when sync is enabled
+                          const syncResult = buildSyncPatch(next, index, patch);
+                          if (syncResult) {
+                            return next.map((plan, i) => i === syncResult.partnerIndex ? { ...plan, ...syncResult.patch } : plan);
+                          }
+                          return next;
+                        });
                       }}
                       onRemovePlan={(index) => {
                         setShortsPlans((prev) => prev.filter((_, itemIndex) => itemIndex !== index));
@@ -2565,20 +2573,31 @@ export default function App() {
                         });
                       }}
                       onSavePlanAlignment={(index, language, segments) => {
-                        setShortsPlans((prev) => prev.map((plan, itemIndex) => {
-                          if (itemIndex !== index) return plan;
-                          return language === 'source'
-                            ? { ...plan, sourceAlignment: segments as AlignedSubtitleSegment[] }
-                            : { ...plan, targetAlignment: segments as AlignedSubtitleSegment[] };
-                        }));
+                        const patch: Partial<ShortsClipPlan> = language === 'source'
+                          ? { sourceAlignment: segments as AlignedSubtitleSegment[] }
+                          : { targetAlignment: segments as AlignedSubtitleSegment[] };
+                        setShortsPlans((prev) => {
+                          const next = prev.map((plan, itemIndex) => itemIndex === index ? { ...plan, ...patch } : plan);
+                          const syncResult = buildSyncPatch(next, index, patch);
+                          if (syncResult) {
+                            return next.map((plan, itemIndex) => itemIndex === syncResult.partnerIndex ? { ...plan, ...syncResult.patch } : plan);
+                          }
+                          return next;
+                        });
                       }}
                       onSavePlanFrameKeyframes={(index, language, keyframes) => {
-                        setShortsPlans((prev) => prev.map((plan, itemIndex) => {
-                          if (itemIndex !== index) return plan;
-                          return language === 'source'
-                            ? { ...plan, sourceFrameKeyframes: keyframes }
-                            : { ...plan, targetFrameKeyframes: keyframes };
-                        }));
+                        const patch: Partial<ShortsClipPlan> = language === 'source'
+                          ? { sourceFrameKeyframes: keyframes }
+                          : { targetFrameKeyframes: keyframes };
+                        setShortsPlans((prev) => {
+                          const next = prev.map((plan, i) => i === index ? { ...plan, ...patch } : plan);
+                          // Auto-sync frame keyframes to linked partner
+                          const syncResult = buildSyncPatch(next, index, patch);
+                          if (syncResult) {
+                            return next.map((plan, i) => i === syncResult.partnerIndex ? { ...plan, ...syncResult.patch } : plan);
+                          }
+                          return next;
+                        });
                       }}
                       getPlanCues={buildShortsCues}
                       getPlanDetailText={buildShortsDetailText}

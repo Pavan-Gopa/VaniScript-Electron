@@ -43,6 +43,49 @@ export type SyncableMotionPatch = {
   timelineTrim?: TimelineTrim;
 };
 
+function retimeWords(
+  words: AlignedSubtitleSegment['words'],
+  text: string,
+  start: number,
+  end: number,
+): AlignedSubtitleSegment['words'] {
+  const sourceWords = words.length > 0
+    ? words
+    : (text.match(/\S+/g) || []).map((word, index) => ({
+        id: `word_${index}`,
+        text: word,
+        start,
+        end,
+      }));
+  if (sourceWords.length === 0) return [];
+  const duration = Math.max(0.05, end - start);
+  const step = duration / sourceWords.length;
+  return sourceWords.map((word, index) => ({
+    ...word,
+    start: start + (step * index),
+    end: index === sourceWords.length - 1 ? end : start + (step * (index + 1)),
+  }));
+}
+
+function mirrorAlignmentTiming(
+  sourceSegments: AlignedSubtitleSegment[] | undefined,
+  targetSegments: AlignedSubtitleSegment[] | undefined,
+): AlignedSubtitleSegment[] | undefined {
+  if (!sourceSegments) return undefined;
+  if (!targetSegments?.length) return structuredClone(sourceSegments);
+  return sourceSegments.map((sourceSegment, index) => {
+    const targetSegment = targetSegments[index] || targetSegments[targetSegments.length - 1];
+    const text = targetSegment?.text ?? sourceSegment.text;
+    return {
+      ...(targetSegment ? structuredClone(targetSegment) : structuredClone(sourceSegment)),
+      start: sourceSegment.start,
+      end: sourceSegment.end,
+      text,
+      words: retimeWords(targetSegment?.words || [], text, sourceSegment.start, sourceSegment.end),
+    };
+  });
+}
+
 /**
  * Given a list of plans, find the linked partner of `planIndex`.
  * Returns -1 if not found or not linked.
@@ -145,9 +188,6 @@ export function buildSyncPatch(
   const plan = plans[changedIndex];
   if (!plan?.syncEnabled || !plan.linkedClipGroupId) return null;
 
-  const partnerIndex = findLinkedPartnerIndex(plans, changedIndex);
-  if (partnerIndex < 0) return null;
-
   const mirror: Partial<ShortsClipPlan> = {};
   let hasChanges = false;
 
@@ -158,6 +198,16 @@ export function buildSyncPatch(
   }
   if (appliedPatch.targetFrameKeyframes) {
     mirror.sourceFrameKeyframes = structuredClone(appliedPatch.targetFrameKeyframes);
+    hasChanges = true;
+  }
+
+  // Mirror subtitle timing/layout, but never replace translated/source text.
+  if (appliedPatch.sourceAlignment) {
+    mirror.targetAlignment = mirrorAlignmentTiming(appliedPatch.sourceAlignment, plan.targetAlignment);
+    hasChanges = true;
+  }
+  if (appliedPatch.targetAlignment) {
+    mirror.sourceAlignment = mirrorAlignmentTiming(appliedPatch.targetAlignment, plan.sourceAlignment);
     hasChanges = true;
   }
 
@@ -177,7 +227,50 @@ export function buildSyncPatch(
     hasChanges = true;
   }
 
-  return hasChanges ? { partnerIndex, patch: mirror } : null;
+  if (!hasChanges) return null;
+
+  // ── Bilingual single-plan sync ──────────────────────────────────────────
+  // For bilingual plans, Source and Target live inside the SAME plan object.
+  // findLinkedPartnerIndex won't find a separate partner (index !== planIndex),
+  // so we apply the mirror patch to the SAME plan (self-sync).
+  const partnerIndex = findLinkedPartnerIndex(plans, changedIndex);
+  if (partnerIndex >= 0) {
+    // Inter-plan sync: two separate plans linked together
+    return { partnerIndex, patch: mirror };
+  }
+
+  // No external partner found — try intra-plan sync (bilingual single plan)
+  if (plan.languageMode === 'bilingual') {
+    return { partnerIndex: changedIndex, patch: mirror };
+  }
+
+  return null;
+}
+
+function syncBilingualPlanOnEnable(plan: ShortsClipPlan): ShortsClipPlan {
+  const updated: ShortsClipPlan = { ...plan, syncEnabled: true };
+
+  // Frame motion: if source has data it wins; otherwise target seeds source.
+  const srcKf = plan.sourceFrameKeyframes;
+  const tgtKf = plan.targetFrameKeyframes;
+  if (srcKf?.length) {
+    updated.targetFrameKeyframes = structuredClone(srcKf);
+  } else if (tgtKf?.length) {
+    updated.sourceFrameKeyframes = structuredClone(tgtKf);
+  }
+
+  // Subtitle block timing/layout: mirror timings while preserving language text.
+  const srcAlignment = plan.sourceAlignment;
+  const tgtAlignment = plan.targetAlignment;
+  if (srcAlignment?.length) {
+    updated.targetAlignment = mirrorAlignmentTiming(srcAlignment, tgtAlignment);
+  } else if (tgtAlignment?.length) {
+    updated.sourceAlignment = mirrorAlignmentTiming(tgtAlignment, srcAlignment);
+  }
+
+  // Timeline trim/cuts and background settings are single clip-level fields, so
+  // they are already shared inside one bilingual plan and only need preserving.
+  return updated;
 }
 
 // ── Group assignment ──────────────────────────────────────────────────────────
@@ -210,7 +303,12 @@ export function toggleSync(
   if (!plan) return plans;
   const newState = !plan.syncEnabled;
   return plans.map((p, i) => {
-    if (i === planIndex) return { ...p, syncEnabled: newState };
+    if (i === planIndex) {
+      if (newState && p.languageMode === 'bilingual') {
+        return syncBilingualPlanOnEnable(p);
+      }
+      return { ...p, syncEnabled: newState };
+    }
     if (p.linkedClipGroupId && p.linkedClipGroupId === plan.linkedClipGroupId) {
       return { ...p, syncEnabled: newState };
     }

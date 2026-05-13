@@ -6,6 +6,7 @@ import {
   AlignedSubtitleSegment,
   cuesToAlignedSegments,
   FrameKeyframe,
+  materializeFrameKeyframesForSave,
   mergeSegmentWithNext,
   moveWordToAdjacentSegment,
   normalizeSegments,
@@ -62,6 +63,7 @@ type Props = {
   onSaveCuts?: (cuts: TimelineCut[]) => void;
   onSaveTrim?: (trim: TimelineTrim) => void;
   onSaveBackgroundSettings?: (bg: import('../../lib/shorts-render').BackgroundSettings) => void;
+  onResetAll?: () => void;
   /** Switch between source/target language inside the editor */
   onSwitchLanguage?: (lang: 'source' | 'target') => void;
 };
@@ -131,6 +133,7 @@ export function SubtitleAlignmentEditor({
   onSaveCuts,
   onSaveTrim,
   onSaveBackgroundSettings,
+  onResetAll,
   currentLanguage,
   onSwitchLanguage,
 }: Props) {
@@ -144,10 +147,11 @@ export function SubtitleAlignmentEditor({
   const [frameZoom, setFrameZoom] = useState(settings.zoom);
   const [framePanX, setFramePanX] = useState(0);
   const [framePanY, setFramePanY] = useState(0);
-  const [frameGuideColor, setFrameGuideColor] = useState('#ffaa19');
-  const [frameGuideOpacity, setFrameGuideOpacity] = useState(0.75);
-  const [frameGuideBorderWidth, setFrameGuideBorderWidth] = useState(2);
-  const [frameGuideBlur, setFrameGuideBlur] = useState(0);
+  const [frameGuideColor, setFrameGuideColor] = useState(initialBackgroundSettings?.frameGuideColor ?? '#ffaa19');
+  const [frameGuideOpacity, setFrameGuideOpacity] = useState(initialBackgroundSettings?.frameGuideOpacity ?? 0.75);
+  const [frameGuideBorderWidth, setFrameGuideBorderWidth] = useState(initialBackgroundSettings?.frameGuideBorderWidth ?? 2);
+  const [frameGuideBlur, setFrameGuideBlur] = useState(initialBackgroundSettings?.frameGuideBlur ?? 0);
+  const [frameGuideBorderOpacity, setFrameGuideBorderOpacity] = useState(initialBackgroundSettings?.frameGuideBorderOpacity ?? 1);
   const [frameKeyframes, setFrameKeyframes] = useState<FrameKeyframe[]>([]);
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [timelineZoom, setTimelineZoom] = useState(1);
@@ -217,7 +221,13 @@ export function SubtitleAlignmentEditor({
     setFrameZoom(settings.zoom);
     setFramePanX(0);
     setFramePanY(0);
-    setFrameGuideColor(initialFrameKeyframes?.[0]?.backgroundColor || '#000000');
+    const nextBg = initialBackgroundSettings || defaultBackgroundSettings();
+    setBgSettings(nextBg);
+    setFrameGuideColor(initialFrameKeyframes?.[0]?.backgroundColor || nextBg.frameGuideColor || '#ffaa19');
+    setFrameGuideOpacity(nextBg.frameGuideOpacity ?? 0.75);
+    setFrameGuideBorderWidth(nextBg.frameGuideBorderWidth ?? 2);
+    setFrameGuideBlur(nextBg.frameGuideBlur ?? 0);
+    setFrameGuideBorderOpacity(nextBg.frameGuideBorderOpacity ?? 1);
     setTimelineZoom(1);
      setFrameKeyframes((initialFrameKeyframes || []).map((keyframe) => ({
       ...keyframe,
@@ -233,7 +243,7 @@ export function SubtitleAlignmentEditor({
     setRazorStart(null);
     undoStackRef.current.clear();
     window.setTimeout(() => { initializedRef.current = true; }, 0);
-  }, [clipDurationSec, clipEndSec, clipStartSec, initialCues, initialCuts, initialFrameKeyframes, initialSegments, initialTrim, isOpen, languageLabel, settings.zoom, title]);
+  }, [clipDurationSec, clipEndSec, clipStartSec, initialBackgroundSettings, initialCues, initialCuts, initialFrameKeyframes, initialSegments, initialTrim, isOpen, languageLabel, settings.zoom, title]);
 
   useEffect(() => {
     if (!isOpen || !initializedRef.current || !onDraftChange) return;
@@ -268,8 +278,15 @@ export function SubtitleAlignmentEditor({
   useEffect(() => {
     if (!isOpen) return;
     const keydown = (event: KeyboardEvent) => {
+      if (
+        event.target instanceof HTMLInputElement
+        || event.target instanceof HTMLTextAreaElement
+        || event.target instanceof HTMLSelectElement
+        || (event.target instanceof HTMLElement && event.target.isContentEditable)
+      ) {
+        return;
+      }
       if (event.key === 'Escape') onClose();
-      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
       if (event.code === 'Space') {
         event.preventDefault();
         void togglePlayback();
@@ -558,9 +575,16 @@ export function SubtitleAlignmentEditor({
         await audio.play().catch(() => undefined);
       }
       video.currentTime = clipStartSec + startAt;
-      await video.play();
-      blurVideoRef.current?.play().catch(() => undefined);
-      setPlaying(true);
+      try {
+        await video.play();
+        blurVideoRef.current?.play().catch(() => undefined);
+        setPlaying(true);
+      } catch (error) {
+        console.warn('Visual editor video playback failed.', error);
+        audio?.pause();
+        blurVideoRef.current?.pause();
+        setPlaying(false);
+      }
     } else {
       video.pause();
       audio?.pause();
@@ -589,17 +613,34 @@ export function SubtitleAlignmentEditor({
     setSelectedId(next[0]?.id || '');
     setCurrentSec(0);
     setPlaying(false);
+    // Reset frame animation
     setFrameZoom(settings.zoom);
     setFramePanX(0);
     setFramePanY(0);
-    setFrameGuideColor('#000000');
     setFrameKeyframes([]);
+    // Reset frame guide styling to defaults
+    setFrameGuideColor('#ffaa19');
+    setFrameGuideOpacity(0.75);
+    setFrameGuideBorderWidth(2);
+    setFrameGuideBlur(0);
+    setFrameGuideBorderOpacity(1);
+    // Reset background settings to defaults
+    const resetBg = defaultBackgroundSettings();
+    setBgSettings(resetBg);
+    // Reset timeline surgery
     setCuts([]);
     setTrim({ trimStartSec: 0, trimEndSec: 0 });
     setRazorActive(false);
     setRazorStart(null);
     undoStackRef.current.clear();
     syncMedia(0);
+    // ── Persist the reset immediately (save callbacks use the computed defaults) ──
+    onSave(next);
+    onSaveFrameKeyframes?.([]);
+    onSaveCuts?.([]);
+    onSaveTrim?.({ trimStartSec: 0, trimEndSec: 0 });
+    onSaveBackgroundSettings?.(resetBg);
+    onResetAll?.();
   }
 
   function startDrag(event: React.PointerEvent, segment: AlignedSubtitleSegment, mode: 'move' | 'start' | 'end') {
@@ -621,12 +662,32 @@ export function SubtitleAlignmentEditor({
 
   function save() {
     const normalized = normalizeSegments(segments, clipDurationSec);
+    const savedFrameKeyframes = materializeFrameKeyframesForSave({
+      frameKeyframes,
+      currentSec,
+      clipDurationSec,
+      framePanX,
+      framePanY,
+      frameZoom,
+      backgroundColor: frameGuideColor,
+    });
     setSegments(normalized);
+    setFrameKeyframes(savedFrameKeyframes);
     onSave(normalized);
-    onSaveFrameKeyframes?.(effectiveFrameKeyframes);
+    onSaveFrameKeyframes?.(savedFrameKeyframes);
     onSaveCuts?.(cuts);
     onSaveTrim?.(trim);
-    onSaveBackgroundSettings?.(bgSettings);
+    // Merge frame guide state into bgSettings for persistence & sync
+    const mergedBg: BackgroundSettings = {
+      ...bgSettings,
+      frameGuideColor,
+      frameGuideOpacity,
+      frameGuideBorderWidth,
+      frameGuideBlur,
+      frameGuideBorderOpacity,
+    };
+    setBgSettings(mergedBg);
+    onSaveBackgroundSettings?.(mergedBg);
     // Show green flash feedback, don't close the modal
     setSavedFlash(true);
     setTimeout(() => setSavedFlash(false), 2000);
@@ -821,10 +882,16 @@ export function SubtitleAlignmentEditor({
               onTimeUpdate={handleTimeUpdate}
             />
             <div className="alignment-frame-guide" ref={frameGuideRef} style={{
-              '--frame-guide-color': frameGuideColor,
               '--frame-guide-opacity': frameGuideOpacity,
               '--frame-guide-border-width': `${frameGuideBorderWidth}px`,
               '--frame-guide-blur': `${frameGuideBlur}px`,
+              '--frame-guide-border-color': (() => {
+                const c = frameGuideColor.replace('#', '');
+                const r = parseInt(c.slice(0, 2), 16);
+                const g = parseInt(c.slice(2, 4), 16);
+                const b = parseInt(c.slice(4, 6), 16);
+                return `rgba(${r},${g},${b},${frameGuideBorderOpacity})`;
+              })(),
             } as React.CSSProperties}>
             {previewCaption && (
               <div
@@ -1128,6 +1195,11 @@ export function SubtitleAlignmentEditor({
                 <span>Border</span>
                 <input type="range" min={0} max={8} step={0.5} value={frameGuideBorderWidth} onChange={(e) => setFrameGuideBorderWidth(Number(e.currentTarget.value))} />
                 <b>{frameGuideBorderWidth}px</b>
+              </label>
+              <label>
+                <span>Border Opacity</span>
+                <input type="range" min={0} max={1} step={0.05} value={frameGuideBorderOpacity} onChange={(e) => setFrameGuideBorderOpacity(Number(e.currentTarget.value))} />
+                <b>{Math.round(frameGuideBorderOpacity * 100)}%</b>
               </label>
               <label>
                 <span>Glow</span>
