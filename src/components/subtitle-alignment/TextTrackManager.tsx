@@ -1,12 +1,9 @@
 import React from 'react';
 import { Plus, Trash2 } from 'lucide-react';
-import type { TextOverlayBlock, TextOverlayTrack } from '../../lib/shorts-reels';
-import { formatPlaybackClock } from '../../lib/karaoke';
+import type { TextOverlayTrack } from '../../lib/shorts-reels';
 
 type Props = {
   tracks: TextOverlayTrack[];
-  currentSec: number;
-  durationSec: number;
   onChange: (tracks: TextOverlayTrack[]) => void;
 };
 
@@ -18,17 +15,7 @@ function makeTrack(index: number): TextOverlayTrack {
   };
 }
 
-function makeBlock(currentSec: number, durationSec: number): TextOverlayBlock {
-  const startSec = Math.min(Math.max(0, currentSec), Math.max(0, durationSec - 2));
-  return {
-    id: `text_block_${Date.now()}`,
-    startSec,
-    endSec: Math.min(durationSec, startSec + 3),
-    text: '',
-  };
-}
-
-export function TextTrackManager({ tracks, currentSec, durationSec, onChange }: Props) {
+export function TextTrackManager({ tracks, onChange }: Props) {
   const canAddTrack = tracks.length < 3;
   return (
     <section className="alignment-layer-section">
@@ -67,71 +54,8 @@ export function TextTrackManager({ tracks, currentSec, durationSec, onChange }: 
               />
               Visible
             </label>
-            <button
-              type="button"
-              onClick={() => onChange(tracks.map((item) => item.id === track.id ? { ...item, blocks: [...item.blocks, makeBlock(currentSec, durationSec)] } : item))}
-            >
-              <Plus size={13} /> Add Text Block
-            </button>
           </div>
-          {track.blocks.length === 0 ? (
-            <em className="alignment-layer-empty">No blocks on this track.</em>
-          ) : track.blocks.map((block) => (
-            <div className="alignment-text-block-editor" key={block.id}>
-              <textarea
-                placeholder="[ Empty Text Block ]"
-                value={block.text}
-                onChange={(event) => onChange(tracks.map((item) => item.id === track.id ? {
-                  ...item,
-                  blocks: item.blocks.map((candidate) => candidate.id === block.id ? { ...candidate, text: event.currentTarget.value } : candidate),
-                } : item))}
-              />
-              <div className="alignment-layer-time-row">
-                <label>
-                  <span>Start</span>
-                  <input
-                    type="number"
-                    min={0}
-                    max={durationSec}
-                    step={0.05}
-                    value={block.startSec.toFixed(2)}
-                    onChange={(event) => {
-                      const startSec = Math.min(Math.max(0, Number(event.currentTarget.value)), Math.max(0, block.endSec - 0.1));
-                      onChange(tracks.map((item) => item.id === track.id ? {
-                        ...item,
-                        blocks: item.blocks.map((candidate) => candidate.id === block.id ? { ...candidate, startSec } : candidate),
-                      } : item));
-                    }}
-                  />
-                </label>
-                <label>
-                  <span>End</span>
-                  <input
-                    type="number"
-                    min={0}
-                    max={durationSec}
-                    step={0.05}
-                    value={block.endSec.toFixed(2)}
-                    onChange={(event) => {
-                      const endSec = Math.min(durationSec, Math.max(block.startSec + 0.1, Number(event.currentTarget.value)));
-                      onChange(tracks.map((item) => item.id === track.id ? {
-                        ...item,
-                        blocks: item.blocks.map((candidate) => candidate.id === block.id ? { ...candidate, endSec } : candidate),
-                      } : item));
-                    }}
-                  />
-                </label>
-                <span>{formatPlaybackClock(block.startSec)} → {formatPlaybackClock(block.endSec)}</span>
-                <button type="button" onClick={() => onChange(tracks.map((item) => item.id === track.id ? {
-                  ...item,
-                  blocks: item.blocks.filter((candidate) => candidate.id !== block.id),
-                } : item))}>
-                  <Trash2 size={13} />
-                </button>
-              </div>
-            </div>
-          ))}
-          <small>Track {trackIndex + 1} uses the current subtitle style unless a future preset overrides it.</small>
+          <small>Track {trackIndex + 1}. Add and edit its blocks from the center timeline editor.</small>
         </div>
       ))}
     </section>

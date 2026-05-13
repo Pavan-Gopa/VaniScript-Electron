@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Edit3 } from 'lucide-react';
 import { formatPlaybackClock } from '../lib/karaoke';
 import type { ProviderOption } from '../lib/provider-registry';
@@ -94,20 +94,6 @@ function clipDurationLabel(plan: ShortsClipPlan): string {
   return duration > 0 ? `${duration}s` : '';
 }
 
-function previewText(text: string): string {
-  return text.length > 76 ? `${text.slice(0, 73)}...` : text;
-}
-
-function titleCase(text: string): string {
-  return text.toLowerCase().replace(/(^|\s)\S/g, (match) => match.toUpperCase());
-}
-
-function transformCaptionText(text: string, mode: ShortsTextTransform): string {
-  if (mode === 'uppercase') return text.toUpperCase();
-  if (mode === 'title') return titleCase(text);
-  return text;
-}
-
 type ShortsDisplayLanguage = 'source' | 'target';
 
 function displayedPlanText(plan: ShortsClipPlan, language: ShortsDisplayLanguage) {
@@ -181,21 +167,16 @@ export function ShortsReelsPanel({
   plans,
   isBusy,
   busyLabel,
-  selectedPlanIndex,
   selectedPlanIndexes,
   planningProviders,
   planningProvider,
   onPlanningProviderChange,
   previewAudioSrc,
   previewAudioPath,
-  previewAudioStatus,
-  previewAudioError,
   previewVideoSrc,
-  previewOutputSize,
   subtitleMaxCharsPerLine,
   subtitleMaxLines,
   onChange,
-  onSubtitleLayoutChange,
   onFindMoments,
   onFocusPlan,
   onTogglePlan,
@@ -219,24 +200,11 @@ export function ShortsReelsPanel({
   const [editorIndex, setEditorIndex] = useState<number | null>(null);
   const [editorSnapshot, setEditorSnapshot] = useState<ShortsClipPlan | null>(null);
   const [replaceIndex, setReplaceIndex] = useState<number | null>(null);
-  const [previewCueIndex, setPreviewCueIndex] = useState(0);
   const [displayLanguage, setDisplayLanguage] = useState<ShortsDisplayLanguage>('target');
   const [copiedKey, setCopiedKey] = useState<string>('');
   const patch = (partial: Partial<ShortsSettings>) => onChange({ ...settings, ...partial });
-  const selectedPlan = selectedPlanIndex === null ? null : plans[selectedPlanIndex] || null;
   const selectedCount = selectedPlanIndexes.length;
   const selectedExportCount = selectedPlanIndexes.reduce((sum, index) => sum + (plans[index] ? exportUnitsForPlan(plans[index]) : 0), 0);
-  const previewCues = useMemo(() => selectedPlan ? getPlanCues(selectedPlan, displayLanguage) : [], [displayLanguage, getPlanCues, selectedPlan]);
-  const safePreviewCueIndex = Math.min(Math.max(previewCueIndex, 0), Math.max(0, previewCues.length - 1));
-  const previewCue = previewCues[safePreviewCueIndex] || null;
-  const selectedClipStartSec = selectedPlan ? parseTimestampToSeconds(selectedPlan.start) : 0;
-  const selectedClipEndSec = selectedPlan ? parseTimestampToSeconds(selectedPlan.end) : selectedClipStartSec;
-  const boxAlpha = Math.round(settings.subtitleBoxOpacity * 255).toString(16).padStart(2, '0');
-  const fallbackCaption = selectedPlan ? displayedPlanText(selectedPlan, displayLanguage).hook || displayedPlanText(selectedPlan, displayLanguage).title : '';
-  const caption = transformCaptionText(
-    previewCue?.text || previewText(fallbackCaption || 'SHORT CAPTION PREVIEW'),
-    settings.subtitleTextTransform
-  );
   const detailsPlan = detailsIndex === null ? null : plans[detailsIndex] || null;
   const detailsDisplay = detailsPlan ? displayedPlanText(detailsPlan, displayLanguage) : null;
   const detailsText = detailsPlan ? getPlanDetailText(detailsPlan) : null;
@@ -247,15 +215,6 @@ export function ShortsReelsPanel({
   const detailsCaptionText = detailsPlan
     ? captionTextForLanguage(detailsPlan, displayLanguage) ?? detailsCues.map((cue) => `[${formatPlaybackClock(parseTimestampToSeconds(detailsPlan.start) + cue.startSec)}] ${cue.text}`).join('\n\n')
     : '';
-  const previewWidth = 220;
-  const previewBaseWidth = 1080;
-  const previewBaseHeight = 1920;
-  const previewScale = previewWidth / previewBaseWidth;
-  const previewFontSize = Math.max(6, settings.subtitleFontSize * previewScale);
-  const previewBoxPadding = Math.max(1, settings.subtitleFontSize * 0.12 * settings.subtitleBoxHeight * previewScale);
-  const previewBoxBlur = Math.max(0, settings.subtitleBoxBlur * previewScale);
-  const previewBoxRadius = Math.max(0, (2 + settings.subtitleEdgeSoftness * 18) * previewScale);
-  const previewBottomPercent = Math.min(92, Math.max(0, (settings.subtitleBottomMargin / previewBaseHeight) * 100));
 
   const openEditor = (index: number) => {
     setEditorIndex(index);
@@ -270,12 +229,7 @@ export function ShortsReelsPanel({
   useEffect(() => {
     const mode = plans[0]?.languageMode;
     setDisplayLanguage(mode === 'source' || mode === 'bilingual' ? 'source' : 'target');
-    setPreviewCueIndex(0);
   }, [plans.length, plans[0]?.languageMode]);
-
-  useEffect(() => {
-    setPreviewCueIndex(0);
-  }, [displayLanguage, selectedPlanIndex]);
 
   useEffect(() => {
     if (editorIndex === null) return;
@@ -400,161 +354,8 @@ export function ShortsReelsPanel({
           </div>
         </div>
 
-        <div className="shorts-card-section shorts-caption-section">
-          <div className="shorts-caption-controls">
-            <div className="shorts-step-head"><span>3</span><strong>Caption style</strong></div>
-            <div className="shorts-style-grid">
-              <div className="shorts-style-column shorts-text-control">
-                <label>
-                  Font
-                  <select value={settings.subtitleFontFamily} onChange={(event) => patch({ subtitleFontFamily: event.currentTarget.value })}>
-                    <option value="Cuprum">Cuprum</option>
-                    <option value="Oswald">Oswald</option>
-                    <option value="Roboto Condensed">Roboto Condensed</option>
-                    <option value="Inter">Inter</option>
-                    <option value="Arial">Arial</option>
-                  </select>
-                </label>
-                <label>
-                  Size
-                  <input type="range" min={70} max={200} step={1} value={settings.subtitleFontSize} onChange={(event) => patch({ subtitleFontSize: Number(event.currentTarget.value) })} />
-                  <b>{settings.subtitleFontSize}</b>
-                </label>
-                <label>
-                  Text color
-                  <input type="color" value={settings.subtitleTextColor} onChange={(event) => patch({ subtitleTextColor: event.currentTarget.value })} />
-                </label>
-                <label>
-                  Letter spacing
-                  <input type="range" min={-2} max={8} step={0.25} value={settings.subtitleLetterSpacing} onChange={(event) => patch({ subtitleLetterSpacing: Number(event.currentTarget.value) })} />
-                  <b>{settings.subtitleLetterSpacing.toFixed(1)}</b>
-                </label>
-                <label>
-                  Line spacing
-                  <input type="range" min={0.8} max={1.6} step={0.05} value={settings.subtitleLineSpacing} onChange={(event) => patch({ subtitleLineSpacing: Number(event.currentTarget.value) })} />
-                  <b>{settings.subtitleLineSpacing.toFixed(2)}x</b>
-                </label>
-                <div className={`shorts-layout-control ${settings.subtitleUseCharsPerLine ? '' : 'disabled'}`}>
-                  <div className="shorts-layout-control-head">
-                    <span>Characters per line</span>
-                    <label><input type="checkbox" checked={settings.subtitleUseCharsPerLine} onChange={(event) => patch({ subtitleUseCharsPerLine: event.currentTarget.checked })} /> Limit</label>
-                  </div>
-                  <input type="range" min={16} max={64} step={1} value={subtitleMaxCharsPerLine} disabled={!settings.subtitleUseCharsPerLine} onChange={(event) => onSubtitleLayoutChange({ maxCharsPerLine: Number(event.currentTarget.value), maxLines: subtitleMaxLines })} />
-                  <b>{subtitleMaxCharsPerLine}</b>
-                </div>
-                <div className={`shorts-layout-control ${settings.subtitleUseLinesPerCue ? '' : 'disabled'}`}>
-                  <div className="shorts-layout-control-head">
-                    <span>Lines per cue</span>
-                    <label><input type="checkbox" checked={settings.subtitleUseLinesPerCue} onChange={(event) => patch({ subtitleUseLinesPerCue: event.currentTarget.checked })} /> Limit</label>
-                  </div>
-                  <input type="range" min={1} max={3} step={1} value={subtitleMaxLines} disabled={!settings.subtitleUseLinesPerCue} onChange={(event) => onSubtitleLayoutChange({ maxCharsPerLine: subtitleMaxCharsPerLine, maxLines: Number(event.currentTarget.value) })} />
-                  <b>{subtitleMaxLines}</b>
-                </div>
-                <div className="shorts-inline-toggles">
-                  <label><input type="checkbox" checked={settings.subtitleBold} onChange={(event) => patch({ subtitleBold: event.currentTarget.checked })} /> Bold</label>
-                  <select value={settings.subtitleTextTransform} onChange={(event) => patch({ subtitleTextTransform: event.currentTarget.value as ShortsTextTransform })}>
-                    <option value="uppercase">Uppercase</option>
-                    <option value="title">Title Case</option>
-                    <option value="none">Original Case</option>
-                  </select>
-                </div>
-              </div>
-              <div className="shorts-style-column shorts-box-control">
-                <label>
-                  Box color
-                  <input type="color" value={settings.subtitleBoxColor} onChange={(event) => patch({ subtitleBoxColor: event.currentTarget.value })} />
-                </label>
-                <label>
-                  Box opacity
-                  <input type="range" min={0} max={1} step={0.02} value={settings.subtitleBoxOpacity} onChange={(event) => patch({ subtitleBoxOpacity: Number(event.currentTarget.value) })} />
-                  <b>{Math.round(settings.subtitleBoxOpacity * 100)}%</b>
-                </label>
-                <label>
-                  Box width
-                  <input type="range" min={48} max={96} step={1} value={settings.subtitleBoxWidth} onChange={(event) => patch({ subtitleBoxWidth: Number(event.currentTarget.value) })} />
-                  <b>{settings.subtitleBoxWidth}%</b>
-                </label>
-                <label>
-                  Box height
-                  <input type="range" min={0.8} max={2} step={0.05} value={settings.subtitleBoxHeight} onChange={(event) => patch({ subtitleBoxHeight: Number(event.currentTarget.value) })} />
-                  <b>{settings.subtitleBoxHeight.toFixed(2)}x</b>
-                </label>
-                <label>
-                  Edge softness
-                  <input type="range" min={0} max={1} step={0.05} value={settings.subtitleEdgeSoftness} onChange={(event) => patch({ subtitleEdgeSoftness: Number(event.currentTarget.value) })} />
-                  <b>{Math.round(settings.subtitleEdgeSoftness * 100)}%</b>
-                </label>
-                <label>
-                  Edge blur
-                  <input type="range" min={0} max={18} step={1} value={settings.subtitleBoxBlur} onChange={(event) => patch({ subtitleBoxBlur: Number(event.currentTarget.value) })} />
-                  <b>{settings.subtitleBoxBlur}px</b>
-                </label>
-                <label>
-                  Caption position
-                  <input type="range" min={0} max={1800} step={10} value={settings.subtitleBottomMargin} onChange={(event) => patch({ subtitleBottomMargin: Number(event.currentTarget.value) })} />
-                  <b>{settings.subtitleBottomMargin}</b>
-                </label>
-                <label>
-                  Zoom
-                  <input type="range" min={1} max={2} step={0.02} value={settings.zoom} onChange={(event) => patch({ zoom: Number(event.currentTarget.value) })} />
-                  <b>{settings.zoom.toFixed(2)}x</b>
-                </label>
-              </div>
-            </div>
-          </div>
-
-          <div className="shorts-live-preview-wrap">
-            <div className="shorts-preview-label">Live preview</div>
-            <div className="shorts-preview-time">
-              {selectedPlan && previewCue
-                ? `${formatPlaybackClock(parseTimestampToSeconds(selectedPlan.start) + previewCue.startSec)} -> ${formatPlaybackClock(parseTimestampToSeconds(selectedPlan.start) + previewCue.endSec)}`
-                : '00:00 -> 00:00'}
-            </div>
-            <div className="shorts-live-preview">
-              <div
-                className="shorts-live-caption"
-                style={{
-                  background: `${settings.subtitleBoxColor}${boxAlpha}`,
-                  color: settings.subtitleTextColor,
-                  fontFamily: settings.subtitleFontFamily,
-                  fontSize: `${previewFontSize}px`,
-                  fontWeight: settings.subtitleBold ? 800 : 500,
-                  borderRadius: `${previewBoxRadius}px`,
-                  width: `${settings.subtitleBoxWidth}%`,
-                  bottom: `${previewBottomPercent}%`,
-                  padding: `${previewBoxPadding}px ${Math.max(2, previewBoxPadding * 1.45)}px`,
-                  letterSpacing: `${settings.subtitleLetterSpacing * previewScale}px`,
-                  lineHeight: settings.subtitleLineSpacing,
-                  boxShadow: previewBoxBlur > 0
-                    ? `0 0 ${previewBoxBlur * 2}px ${previewBoxBlur}px ${settings.subtitleBoxColor}${boxAlpha}, 0 ${Math.max(1, previewScale * 18)}px ${Math.max(3, previewScale * 48)}px rgba(0,0,0,0.25)`
-                    : `0 ${Math.max(1, previewScale * 18)}px ${Math.max(3, previewScale * 48)}px rgba(0,0,0,0.25)`,
-                }}
-              >
-                {caption}
-              </div>
-            </div>
-            <div className="shorts-preview-nav">
-              <button type="button" onClick={() => setPreviewCueIndex(Math.max(0, safePreviewCueIndex - 1))} disabled={safePreviewCueIndex <= 0}>←</button>
-              <span>{previewCues.length ? `${safePreviewCueIndex + 1}/${previewCues.length}` : '0/0'}</span>
-              <button type="button" onClick={() => setPreviewCueIndex(Math.min(previewCues.length - 1, safePreviewCueIndex + 1))} disabled={safePreviewCueIndex >= previewCues.length - 1}>→</button>
-            </div>
-            <input className="shorts-scrubber" type="range" min={0} max={Math.max(0, previewCues.length - 1)} value={safePreviewCueIndex} onChange={(event) => setPreviewCueIndex(Number(event.currentTarget.value))} />
-            <button
-              type="button"
-              className="shorts-open-editor"
-              disabled={!selectedPlan || !hasVideo || !previewVideoSrc}
-              onClick={() => {
-                if (selectedPlanIndex !== null) openEditor(selectedPlanIndex);
-              }}
-            >
-              <Edit3 size={13} /> Open in Visual Editor
-            </button>
-            {previewAudioStatus === 'error' && <div className="shorts-preview-audio-error">{previewAudioError || 'Preview audio unavailable.'}</div>}
-          </div>
-        </div>
-
         <div className="shorts-card-section">
-          <div className="shorts-step-head"><span>4</span><strong>Export</strong></div>
+          <div className="shorts-step-head"><span>3</span><strong>Export</strong></div>
           <div className="shorts-export-row">
             <label>
               Format

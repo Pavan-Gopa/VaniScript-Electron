@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BackgroundSettings, defaultBackgroundSettings } from '../../lib/shorts-render';
+import { BackgroundSettings, defaultBackgroundSettings, type ShortsSubtitleStyle } from '../../lib/shorts-render';
 import { Download, Pause, Play, Save, Scissors, SplitSquareHorizontal, Trash2, Link2, Unlink2, Undo2, Redo2, Languages, Repeat, RotateCcw, CheckCheck, X } from 'lucide-react';
 import { formatPlaybackClock } from '../../lib/karaoke';
 import {
@@ -26,7 +26,7 @@ import {
   type BoundaryResolution,
 } from '../../lib/TimelineCutEngine';
 import { ShortsSettings } from '../ShortsReelsPanel';
-import type { ExtraAudioTrack, LogoOverlaySettings, TextOverlayTrack } from '../../lib/shorts-reels';
+import type { ExtraAudioTrack, LogoOverlaySettings, TextOverlayBlock, TextOverlayTrack } from '../../lib/shorts-reels';
 import { AudioTrackManager } from './AudioTrackManager';
 import { LogoManager } from './LogoManager';
 import { TextTrackManager } from './TextTrackManager';
@@ -202,6 +202,8 @@ export function SubtitleAlignmentEditor({
   const [logo, setLogo] = useState<LogoOverlaySettings | undefined>(initialLogo);
   const [textTracks, setTextTracks] = useState<TextOverlayTrack[]>(initialTextTracks || []);
   const [audioTracks, setAudioTracks] = useState<ExtraAudioTrack[]>(initialAudioTracks || []);
+  const [selectedTextBlock, setSelectedTextBlock] = useState<{ trackId: string; blockId: string } | null>(null);
+  const [styleTarget, setStyleTarget] = useState<string>('subtitles');
   const blurVideoRef = useRef<HTMLVideoElement>(null);
   const undoStackRef = useRef(new UndoRedoStack());
   const [undoTick, setUndoTick] = useState(0); // force re-render on undo/redo
@@ -565,7 +567,36 @@ export function SubtitleAlignmentEditor({
     .filter((track) => !track.hidden && !track.muted)
     .flatMap((track, trackIndex) => track.blocks
       .filter((block) => !block.hidden && block.text.trim() && currentSec >= block.startSec && currentSec < block.endSec)
-      .map((block) => ({ ...block, trackIndex }))), [currentSec, textTracks]);
+      .map((block) => ({ ...block, trackIndex, style: track.style }))), [currentSec, textTracks]);
+  const selectedTextTrack = useMemo(
+    () => textTracks.find((track) => track.id === selectedTextBlock?.trackId) || null,
+    [selectedTextBlock?.trackId, textTracks],
+  );
+  const selectedTextOverlay = useMemo(() => (
+    selectedTextTrack?.blocks.find((block) => block.id === selectedTextBlock?.blockId) || null
+  ), [selectedTextBlock?.blockId, selectedTextTrack]);
+  const subtitleStyle = useMemo<ShortsSubtitleStyle>(() => ({
+    fontFamily: settings.subtitleFontFamily,
+    fontSize: settings.subtitleFontSize,
+    bold: settings.subtitleBold,
+    textTransform: settings.subtitleTextTransform,
+    textColor: settings.subtitleTextColor,
+    boxColor: settings.subtitleBoxColor,
+    boxOpacity: settings.subtitleBoxOpacity,
+    boxWidth: settings.subtitleBoxWidth,
+    boxHeight: settings.subtitleBoxHeight,
+    edgeBlur: settings.subtitleBoxBlur,
+    letterSpacing: settings.subtitleLetterSpacing,
+    lineSpacing: settings.subtitleLineSpacing,
+    edgeSoftness: settings.subtitleEdgeSoftness,
+    outline: 2,
+    shadow: 7,
+  }), [settings]);
+  const styleTargetTrack = styleTarget === 'subtitles' ? null : textTracks.find((track) => track.id === styleTarget) || null;
+  const activeStyle: ShortsSubtitleStyle = {
+    ...subtitleStyle,
+    ...(styleTargetTrack?.style || {}),
+  };
   const boxAlpha = Math.round(settings.subtitleBoxOpacity * 255).toString(16).padStart(2, '0');
   const previewCaption = active?.text || '';
   const captionLineClamp = settings.subtitleUseLinesPerCue ? Math.max(1, subtitleMaxLines) : undefined;
@@ -579,6 +610,30 @@ export function SubtitleAlignmentEditor({
   const captionBottom = Math.max(0, settings.subtitleBottomMargin * frameScale);
   const captionLetterSpacing = settings.subtitleLetterSpacing * frameScale;
   const captionTextShadow = `0 ${Math.max(1, 2 * frameScale)}px ${Math.max(1, 3 * frameScale)}px rgba(0,0,0,0.72)`;
+  function captionPreviewStyleFor(style: ShortsSubtitleStyle, bottomPx: number, fontFactor = 1): React.CSSProperties {
+    const alpha = Math.round(Math.min(Math.max(style.boxOpacity ?? 0.5, 0), 1) * 255).toString(16).padStart(2, '0');
+    const fontSize = Math.max(10, style.fontSize * frameScale * fontFactor);
+    const paddingY = Math.max(1, fontSize * 0.12 * style.boxHeight);
+    const paddingX = Math.max(1, paddingY * 1.45);
+    const radius = Math.max(0, (4 + (style.edgeSoftness * 18)) * frameScale);
+    const blur = Math.max(0, style.edgeBlur * frameScale);
+    return {
+      background: `${style.boxColor}${alpha}`,
+      color: style.textColor,
+      fontFamily: style.fontFamily,
+      fontSize: `${fontSize}px`,
+      fontWeight: style.bold ? 850 : 600,
+      letterSpacing: `${style.letterSpacing * frameScale}px`,
+      lineHeight: style.lineSpacing,
+      width: `${style.boxWidth}%`,
+      maxWidth: captionMaxWidth,
+      bottom: `${bottomPx}px`,
+      padding: `${paddingY}px ${paddingX}px`,
+      borderRadius: `${radius}px`,
+      boxShadow: blur > 0 ? `0 0 ${blur}px ${style.boxColor}${alpha}` : undefined,
+      textShadow: captionTextShadow,
+    };
+  }
   const logoSafeMargin = Math.max(8, 40 * frameScale);
   const logoPosition = logo?.position ?? 'top-left';
   const logoPlacementStyle: React.CSSProperties = {
@@ -592,9 +647,15 @@ export function SubtitleAlignmentEditor({
 
   useEffect(() => {
     if (!isOpen) return;
+    if (selectedTextBlock) return;
     const nextSelectedId = active?.id || '';
     setSelectedId((current) => current === nextSelectedId ? current : nextSelectedId);
-  }, [active?.id, isOpen]);
+  }, [active?.id, isOpen, selectedTextBlock]);
+
+  useEffect(() => {
+    if (styleTarget === 'subtitles') return;
+    if (!textTracks.some((track) => track.id === styleTarget)) setStyleTarget('subtitles');
+  }, [styleTarget, textTracks]);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -925,6 +986,7 @@ export function SubtitleAlignmentEditor({
     event.stopPropagation();
     pushUndo();
     setSelectedId(segment.id);
+    setSelectedTextBlock(null);
     setDragState({
       id: segment.id,
       mode,
@@ -940,6 +1002,9 @@ export function SubtitleAlignmentEditor({
     if (!rect) return;
     event.preventDefault();
     event.stopPropagation();
+    setSelectedTextBlock({ trackId, blockId: block.id });
+    setSelectedId('');
+    setStyleTarget(trackId);
     setOverlayDragState({
       kind: 'text',
       trackId,
@@ -1007,6 +1072,81 @@ export function SubtitleAlignmentEditor({
     onSettingsChange?.({ ...settings, ...partial });
   }
 
+  function stylePatchToSettings(partial: Partial<ShortsSubtitleStyle>): Partial<ShortsSettings> {
+    const next: Partial<ShortsSettings> = {};
+    if (partial.fontFamily !== undefined) next.subtitleFontFamily = partial.fontFamily;
+    if (partial.fontSize !== undefined) next.subtitleFontSize = partial.fontSize;
+    if (partial.bold !== undefined) next.subtitleBold = partial.bold;
+    if (partial.textTransform !== undefined) next.subtitleTextTransform = partial.textTransform;
+    if (partial.textColor !== undefined) next.subtitleTextColor = partial.textColor;
+    if (partial.boxColor !== undefined) next.subtitleBoxColor = partial.boxColor;
+    if (partial.boxOpacity !== undefined) next.subtitleBoxOpacity = partial.boxOpacity;
+    if (partial.boxWidth !== undefined) next.subtitleBoxWidth = partial.boxWidth;
+    if (partial.boxHeight !== undefined) next.subtitleBoxHeight = partial.boxHeight;
+    if (partial.edgeBlur !== undefined) next.subtitleBoxBlur = partial.edgeBlur;
+    if (partial.letterSpacing !== undefined) next.subtitleLetterSpacing = partial.letterSpacing;
+    if (partial.lineSpacing !== undefined) next.subtitleLineSpacing = partial.lineSpacing;
+    if (partial.edgeSoftness !== undefined) next.subtitleEdgeSoftness = partial.edgeSoftness;
+    return next;
+  }
+
+  function patchActiveStyle(partial: Partial<ShortsSubtitleStyle>) {
+    if (styleTarget === 'subtitles') {
+      patchCaptionSettings(stylePatchToSettings(partial));
+      return;
+    }
+    setTextTracks((prev) => prev.map((track) => (
+      track.id === styleTarget
+        ? { ...track, style: { ...(track.style || {}), ...partial } }
+        : track
+    )));
+  }
+
+  function addTextOverlayBlock() {
+    pushUndo();
+    const startSec = Math.min(Math.max(0, currentSec), Math.max(0, clipDurationSec - 1));
+    const block: TextOverlayBlock = {
+      id: `text_block_${Date.now()}`,
+      startSec,
+      endSec: Math.min(clipDurationSec, startSec + 3),
+      text: '',
+    };
+    setTextTracks((prev) => {
+      const trackId = styleTarget !== 'subtitles' && prev.some((track) => track.id === styleTarget)
+        ? styleTarget
+        : prev[0]?.id || `text_track_${Date.now()}_0`;
+      const next = prev.length === 0
+        ? [{ id: trackId, name: 'Text Track 1', blocks: [block] }]
+        : prev.map((track) => track.id === trackId ? { ...track, blocks: [...track.blocks, block] } : track);
+      setSelectedTextBlock({ trackId, blockId: block.id });
+      setSelectedId('');
+      setStyleTarget(trackId);
+      return next;
+    });
+  }
+
+  function updateSelectedTextBlock(partial: Partial<TextOverlayBlock>) {
+    if (!selectedTextBlock) return;
+    setTextTracks((prev) => prev.map((track) => (
+      track.id === selectedTextBlock.trackId
+        ? {
+          ...track,
+          blocks: track.blocks.map((block) => block.id === selectedTextBlock.blockId ? { ...block, ...partial } : block),
+        }
+        : track
+    )));
+  }
+
+  function deleteSelectedTextBlock() {
+    if (!selectedTextBlock) return;
+    setTextTracks((prev) => prev.map((track) => (
+      track.id === selectedTextBlock.trackId
+        ? { ...track, blocks: track.blocks.filter((block) => block.id !== selectedTextBlock.blockId) }
+        : track
+    )));
+    setSelectedTextBlock(null);
+  }
+
   function persistEditorState(showFeedback = false) {
     const normalized = normalizeSegments(segmentsRef.current, clipDurationSec, { keepEmpty: true });
     const savedFrameKeyframes = materializeFrameDraft();
@@ -1050,6 +1190,7 @@ export function SubtitleAlignmentEditor({
       return next;
     });
     setSelectedId(segment.id);
+    setSelectedTextBlock(null);
   }
 
   function switchLanguage(language: 'source' | 'target') {
@@ -1306,24 +1447,13 @@ export function SubtitleAlignmentEditor({
               <div
                 key={block.id}
                 className="alignment-caption-preview alignment-text-overlay-preview"
-                style={{
-                  background: `${settings.subtitleBoxColor}${boxAlpha}`,
-                  color: settings.subtitleTextColor,
-                  fontFamily: settings.subtitleFontFamily,
-                  fontSize: `${Math.max(10, captionFontSize * 0.82)}px`,
-                  fontWeight: settings.subtitleBold ? 850 : 600,
-                  letterSpacing: `${captionLetterSpacing}px`,
-                  lineHeight: settings.subtitleLineSpacing,
-                  width: `${Math.min(92, settings.subtitleBoxWidth)}%`,
-                  maxWidth: captionMaxWidth,
-                  bottom: `${captionBottom + ((block.trackIndex + 1) * (captionFontSize * 1.65))}px`,
-                  padding: `${captionPaddingY}px ${captionPaddingX}px`,
-                  borderRadius: `${captionRadius}px`,
-                  boxShadow: captionBlur > 0 ? `0 0 ${captionBlur}px ${settings.subtitleBoxColor}${boxAlpha}` : undefined,
-                  textShadow: captionTextShadow,
-                }}
+                style={captionPreviewStyleFor(
+                  { ...subtitleStyle, ...(block.style || {}) },
+                  captionBottom + ((block.trackIndex + 1) * (captionFontSize * 1.65)),
+                  0.82,
+                )}
               >
-                {settings.subtitleTextTransform === 'uppercase' ? block.text.toUpperCase() : block.text}
+                {(block.style?.textTransform || settings.subtitleTextTransform) === 'uppercase' ? block.text.toUpperCase() : block.text}
               </div>
             ))}
             {logo?.src && !logo.hidden && (
@@ -1593,7 +1723,7 @@ export function SubtitleAlignmentEditor({
               {track.blocks.map((block) => (
                 <div
                   key={block.id}
-                  className={`alignment-overlay-block ${track.hidden || block.hidden ? 'muted' : ''}`}
+                  className={`alignment-overlay-block ${track.hidden || block.hidden ? 'muted' : ''} ${selectedTextBlock?.blockId === block.id ? 'selected' : ''}`}
                   style={{
                     left: `${pct(block.startSec, clipDurationSec)}%`,
                     width: `${Math.max(0.8, pct(block.endSec - block.startSec, clipDurationSec))}%`,
@@ -1620,7 +1750,7 @@ export function SubtitleAlignmentEditor({
               if (node) extraAudioRefs.current.set(track.id, node);
               else extraAudioRefs.current.delete(track.id);
             }}
-            src={track.src}
+            src={track.previewSrc || track.src}
             preload="auto"
             className="review-audio-player-hidden"
           />
@@ -1637,15 +1767,77 @@ export function SubtitleAlignmentEditor({
                   else segmentButtonRefs.current.delete(segment.id);
                 }}
                 className={segment.id === selected?.id ? 'active' : ''}
-                onClick={() => { setSelectedId(segment.id); seek(segment.start); }}
+                onClick={() => { setSelectedId(segment.id); setSelectedTextBlock(null); seek(segment.start); }}
               >
                 <span>{formatPlaybackClock(segment.start)} → {formatPlaybackClock(segment.end)}</span>
                 {segment.text}
               </button>
             ))}
+            {textTracks.length > 0 && (
+              <div className="alignment-text-track-list">
+                <strong>Text overlays</strong>
+                {textTracks.flatMap((track) => track.blocks.map((block) => (
+                  <button
+                    type="button"
+                    key={`${track.id}-${block.id}`}
+                    className={selectedTextBlock?.blockId === block.id ? 'active' : ''}
+                    onClick={() => {
+                      setSelectedTextBlock({ trackId: track.id, blockId: block.id });
+                      setSelectedId('');
+                      setStyleTarget(track.id);
+                      seek(block.startSec);
+                    }}
+                  >
+                    <span>{track.name}: {formatPlaybackClock(block.startSec)} → {formatPlaybackClock(block.endSec)}</span>
+                    {block.text || '[ Empty Text Block ]'}
+                  </button>
+                )))}
+              </div>
+            )}
           </div>
           <div className="alignment-text-editor">
-            {selected ? (
+            {selectedTextOverlay ? (
+              <>
+                <div className="alignment-editor-toolbar">
+                  <button type="button" onClick={addTextOverlayBlock}><SplitSquareHorizontal size={14} /> Add Text Block</button>
+                  <button type="button" onClick={deleteSelectedTextBlock}><Trash2 size={14} /> Delete</button>
+                </div>
+                <textarea
+                  placeholder="[ Empty Text Block ]"
+                  value={selectedTextOverlay.text}
+                  onChange={(event) => updateSelectedTextBlock({ text: event.currentTarget.value })}
+                />
+                <div className="alignment-layer-time-row">
+                  <label>
+                    <span>Start</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={clipDurationSec}
+                      step={0.05}
+                      value={selectedTextOverlay.startSec.toFixed(2)}
+                      onChange={(event) => updateSelectedTextBlock({
+                        startSec: Math.min(Math.max(0, Number(event.currentTarget.value)), Math.max(0, selectedTextOverlay.endSec - MIN_DURATION)),
+                      })}
+                    />
+                  </label>
+                  <label>
+                    <span>End</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={clipDurationSec}
+                      step={0.05}
+                      value={selectedTextOverlay.endSec.toFixed(2)}
+                      onChange={(event) => updateSelectedTextBlock({
+                        endSec: Math.min(clipDurationSec, Math.max(selectedTextOverlay.startSec + MIN_DURATION, Number(event.currentTarget.value))),
+                      })}
+                    />
+                  </label>
+                  <span>{formatPlaybackClock(selectedTextOverlay.startSec)} → {formatPlaybackClock(selectedTextOverlay.endSec)}</span>
+                </div>
+              </>
+            ) : selected ? (
               <>
                 <div className="alignment-editor-toolbar">
                   <button type="button" onClick={() => {
@@ -1657,6 +1849,7 @@ export function SubtitleAlignmentEditor({
                     });
                   }}><SplitSquareHorizontal size={14} /> Split</button>
                   <button type="button" onClick={addEmptySubtitleBlock}><SplitSquareHorizontal size={14} /> Add Subtitle Block</button>
+                  <button type="button" onClick={addTextOverlayBlock}><SplitSquareHorizontal size={14} /> Add Text Block</button>
                   <button type="button" onClick={() => {
                     pushUndo();
                     setSegments((prev) => {
@@ -1711,7 +1904,10 @@ export function SubtitleAlignmentEditor({
                 </div>
               </>
             ) : (
-              <div className="alignment-empty-editor">Select a subtitle block to edit text and word placement.</div>
+              <div className="alignment-empty-editor">
+                Select a subtitle or text block to edit.
+                <button type="button" onClick={addTextOverlayBlock}><SplitSquareHorizontal size={14} /> Add Text Block</button>
+              </div>
             )}
           </div>
         </div>
@@ -1729,11 +1925,19 @@ export function SubtitleAlignmentEditor({
 
             {inspectorTab === 'style' && (
             <div className="alignment-frame-panel alignment-style-panel">
-              <h4>Caption style</h4>
-              <p>Shared styling for subtitles and text overlays. Changes update the preview immediately.</p>
+              <h4>Style</h4>
+              <p>Subtitles and each text overlay track can have its own style.</p>
+              <div className="alignment-style-target-tabs">
+                <button type="button" className={styleTarget === 'subtitles' ? 'active' : ''} onClick={() => setStyleTarget('subtitles')}>Subtitles</button>
+                {textTracks.map((track) => (
+                  <button type="button" key={track.id} className={styleTarget === track.id ? 'active' : ''} onClick={() => setStyleTarget(track.id)}>
+                    {track.name || 'Text Track'}
+                  </button>
+                ))}
+              </div>
               <label>
                 <span>Font</span>
-                <select value={settings.subtitleFontFamily} onChange={(event) => patchCaptionSettings({ subtitleFontFamily: event.currentTarget.value })}>
+                <select value={activeStyle.fontFamily} onChange={(event) => patchActiveStyle({ fontFamily: event.currentTarget.value })}>
                   <option value="Cuprum">Cuprum</option>
                   <option value="Oswald">Oswald</option>
                   <option value="Roboto Condensed">Roboto Condensed</option>
@@ -1743,62 +1947,64 @@ export function SubtitleAlignmentEditor({
               </label>
               <label>
                 <span>Size</span>
-                <input type="range" min={70} max={200} step={1} value={settings.subtitleFontSize} onChange={(event) => patchCaptionSettings({ subtitleFontSize: Number(event.currentTarget.value) })} />
-                <b>{settings.subtitleFontSize}</b>
+                <input type="range" min={70} max={200} step={1} value={activeStyle.fontSize} onChange={(event) => patchActiveStyle({ fontSize: Number(event.currentTarget.value) })} />
+                <b>{activeStyle.fontSize}</b>
               </label>
               <label>
                 <span>Text color</span>
-                <input type="color" value={settings.subtitleTextColor} onChange={(event) => patchCaptionSettings({ subtitleTextColor: event.currentTarget.value })} />
-                <b>{settings.subtitleTextColor}</b>
+                <input type="color" value={activeStyle.textColor} onChange={(event) => patchActiveStyle({ textColor: event.currentTarget.value })} />
+                <b>{activeStyle.textColor}</b>
               </label>
               <label>
                 <span>Letter spacing</span>
-                <input type="range" min={-2} max={8} step={0.25} value={settings.subtitleLetterSpacing} onChange={(event) => patchCaptionSettings({ subtitleLetterSpacing: Number(event.currentTarget.value) })} />
-                <b>{settings.subtitleLetterSpacing.toFixed(1)}</b>
+                <input type="range" min={-2} max={8} step={0.25} value={activeStyle.letterSpacing} onChange={(event) => patchActiveStyle({ letterSpacing: Number(event.currentTarget.value) })} />
+                <b>{activeStyle.letterSpacing.toFixed(1)}</b>
               </label>
               <label>
                 <span>Line spacing</span>
-                <input type="range" min={0.8} max={1.6} step={0.05} value={settings.subtitleLineSpacing} onChange={(event) => patchCaptionSettings({ subtitleLineSpacing: Number(event.currentTarget.value) })} />
-                <b>{settings.subtitleLineSpacing.toFixed(2)}x</b>
+                <input type="range" min={0.8} max={1.6} step={0.05} value={activeStyle.lineSpacing} onChange={(event) => patchActiveStyle({ lineSpacing: Number(event.currentTarget.value) })} />
+                <b>{activeStyle.lineSpacing.toFixed(2)}x</b>
               </label>
               <label>
                 <span>Box color</span>
-                <input type="color" value={settings.subtitleBoxColor} onChange={(event) => patchCaptionSettings({ subtitleBoxColor: event.currentTarget.value })} />
-                <b>{settings.subtitleBoxColor}</b>
+                <input type="color" value={activeStyle.boxColor} onChange={(event) => patchActiveStyle({ boxColor: event.currentTarget.value })} />
+                <b>{activeStyle.boxColor}</b>
               </label>
               <label>
                 <span>Box opacity</span>
-                <input type="range" min={0} max={1} step={0.02} value={settings.subtitleBoxOpacity} onChange={(event) => patchCaptionSettings({ subtitleBoxOpacity: Number(event.currentTarget.value) })} />
-                <b>{Math.round(settings.subtitleBoxOpacity * 100)}%</b>
+                <input type="range" min={0} max={1} step={0.02} value={activeStyle.boxOpacity} onChange={(event) => patchActiveStyle({ boxOpacity: Number(event.currentTarget.value) })} />
+                <b>{Math.round(activeStyle.boxOpacity * 100)}%</b>
               </label>
               <label>
                 <span>Box width</span>
-                <input type="range" min={48} max={96} step={1} value={settings.subtitleBoxWidth} onChange={(event) => patchCaptionSettings({ subtitleBoxWidth: Number(event.currentTarget.value) })} />
-                <b>{settings.subtitleBoxWidth}%</b>
+                <input type="range" min={48} max={96} step={1} value={activeStyle.boxWidth} onChange={(event) => patchActiveStyle({ boxWidth: Number(event.currentTarget.value) })} />
+                <b>{activeStyle.boxWidth}%</b>
               </label>
               <label>
                 <span>Box height</span>
-                <input type="range" min={0.8} max={2} step={0.05} value={settings.subtitleBoxHeight} onChange={(event) => patchCaptionSettings({ subtitleBoxHeight: Number(event.currentTarget.value) })} />
-                <b>{settings.subtitleBoxHeight.toFixed(2)}x</b>
+                <input type="range" min={0.8} max={2} step={0.05} value={activeStyle.boxHeight} onChange={(event) => patchActiveStyle({ boxHeight: Number(event.currentTarget.value) })} />
+                <b>{activeStyle.boxHeight.toFixed(2)}x</b>
               </label>
               <label>
                 <span>Edge softness</span>
-                <input type="range" min={0} max={1} step={0.05} value={settings.subtitleEdgeSoftness} onChange={(event) => patchCaptionSettings({ subtitleEdgeSoftness: Number(event.currentTarget.value) })} />
-                <b>{Math.round(settings.subtitleEdgeSoftness * 100)}%</b>
+                <input type="range" min={0} max={1} step={0.05} value={activeStyle.edgeSoftness} onChange={(event) => patchActiveStyle({ edgeSoftness: Number(event.currentTarget.value) })} />
+                <b>{Math.round(activeStyle.edgeSoftness * 100)}%</b>
               </label>
               <label>
                 <span>Edge blur</span>
-                <input type="range" min={0} max={18} step={1} value={settings.subtitleBoxBlur} onChange={(event) => patchCaptionSettings({ subtitleBoxBlur: Number(event.currentTarget.value) })} />
-                <b>{settings.subtitleBoxBlur}px</b>
+                <input type="range" min={0} max={18} step={1} value={activeStyle.edgeBlur} onChange={(event) => patchActiveStyle({ edgeBlur: Number(event.currentTarget.value) })} />
+                <b>{activeStyle.edgeBlur}px</b>
               </label>
-              <label>
-                <span>Caption position</span>
-                <input type="range" min={0} max={1800} step={10} value={settings.subtitleBottomMargin} onChange={(event) => patchCaptionSettings({ subtitleBottomMargin: Number(event.currentTarget.value) })} />
-                <b>{settings.subtitleBottomMargin}</b>
-              </label>
+              {styleTarget === 'subtitles' && (
+                <label>
+                  <span>Caption position</span>
+                  <input type="range" min={0} max={1800} step={10} value={settings.subtitleBottomMargin} onChange={(event) => patchCaptionSettings({ subtitleBottomMargin: Number(event.currentTarget.value) })} />
+                  <b>{settings.subtitleBottomMargin}</b>
+                </label>
+              )}
               <div className="alignment-layer-actions">
-                <label><input type="checkbox" checked={settings.subtitleBold} onChange={(event) => patchCaptionSettings({ subtitleBold: event.currentTarget.checked })} /> Bold</label>
-                <select value={settings.subtitleTextTransform} onChange={(event) => patchCaptionSettings({ subtitleTextTransform: event.currentTarget.value as ShortsSettings['subtitleTextTransform'] })}>
+                <label><input type="checkbox" checked={activeStyle.bold} onChange={(event) => patchActiveStyle({ bold: event.currentTarget.checked })} /> Bold</label>
+                <select value={activeStyle.textTransform} onChange={(event) => patchActiveStyle({ textTransform: event.currentTarget.value as ShortsSettings['subtitleTextTransform'] })}>
                   <option value="uppercase">Uppercase</option>
                   <option value="title">Title Case</option>
                   <option value="none">Original Case</option>
@@ -2064,8 +2270,6 @@ export function SubtitleAlignmentEditor({
               <LogoManager logo={logo} onChange={setLogo} />
               <TextTrackManager
                 tracks={textTracks}
-                currentSec={currentSec}
-                durationSec={clipDurationSec}
                 onChange={setTextTracks}
               />
               <AudioTrackManager

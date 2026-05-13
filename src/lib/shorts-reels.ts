@@ -48,6 +48,8 @@ export type ExtraAudioTrack = {
   id: string;
   name: string;
   src: string;
+  /** Browser-only preview URL. Export continues to use src. */
+  previewSrc?: string;
   startSec: number;
   trimStartSec: number;
   trimEndSec: number;

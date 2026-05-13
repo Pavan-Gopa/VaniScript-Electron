@@ -20,6 +20,7 @@ function makeTrack(file: File, index: number, durationSec: number): ExtraAudioTr
     id: `audio_track_${Date.now()}_${index}`,
     name: file.name || `Audio Track ${index + 1}`,
     src: fileSource(file),
+    previewSrc: URL.createObjectURL(file),
     startSec: 0,
     trimStartSec: 0,
     trimEndSec: 0,

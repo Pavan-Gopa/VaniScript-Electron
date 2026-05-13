@@ -235,6 +235,7 @@ function copyProjectLayerAssets(project, assetsDir) {
 
   copied.audioTracks = (copied.audioTracks || []).map((track, index) => ({
     ...track,
+    previewSrc: undefined,
     src: copyOne(track.src, `extra_audio_${index + 1}`),
   }));
 

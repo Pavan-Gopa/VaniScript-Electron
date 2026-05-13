@@ -2,16 +2,18 @@ import React, { useRef } from 'react';
 import { ImagePlus, Trash2 } from 'lucide-react';
 import type { LogoOverlaySettings } from '../../lib/shorts-reels';
 
-type FileWithPath = File & { path?: string };
-
 type Props = {
   logo?: LogoOverlaySettings;
   onChange: (logo?: LogoOverlaySettings) => void;
 };
 
-function fileSource(file: File): string {
-  const diskPath = (file as FileWithPath).path;
-  return diskPath ? encodeURI(`file://${diskPath}`) : URL.createObjectURL(file);
+function readLogoDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('Logo could not be read.'));
+    reader.readAsDataURL(file);
+  });
 }
 
 export function LogoManager({ logo, onChange }: Props) {
@@ -33,13 +35,15 @@ export function LogoManager({ logo, onChange }: Props) {
         type="file"
         accept="image/png,image/svg+xml,image/webp"
         hidden
-        onChange={(event) => {
+        onChange={async (event) => {
           const file = event.currentTarget.files?.[0];
           event.currentTarget.value = '';
           if (!file) return;
+          const src = await readLogoDataUrl(file);
+          if (!src) return;
           onChange({
             id: logo?.id || `logo_${Date.now()}`,
-            src: fileSource(file),
+            src,
             name: file.name,
             size: logo?.size ?? 1,
             opacity: logo?.opacity ?? 1,
