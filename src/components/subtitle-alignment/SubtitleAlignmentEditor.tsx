@@ -147,11 +147,6 @@ export function SubtitleAlignmentEditor({
   const [frameZoom, setFrameZoom] = useState(settings.zoom);
   const [framePanX, setFramePanX] = useState(0);
   const [framePanY, setFramePanY] = useState(0);
-  const [frameGuideColor, setFrameGuideColor] = useState(initialBackgroundSettings?.frameGuideColor ?? '#ffaa19');
-  const [frameGuideOpacity, setFrameGuideOpacity] = useState(initialBackgroundSettings?.frameGuideOpacity ?? 0.75);
-  const [frameGuideBorderWidth, setFrameGuideBorderWidth] = useState(initialBackgroundSettings?.frameGuideBorderWidth ?? 2);
-  const [frameGuideBlur, setFrameGuideBlur] = useState(initialBackgroundSettings?.frameGuideBlur ?? 0);
-  const [frameGuideBorderOpacity, setFrameGuideBorderOpacity] = useState(initialBackgroundSettings?.frameGuideBorderOpacity ?? 1);
   const [frameKeyframes, setFrameKeyframes] = useState<FrameKeyframe[]>([]);
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [timelineZoom, setTimelineZoom] = useState(1);
@@ -201,9 +196,9 @@ export function SubtitleAlignmentEditor({
       x: framePanX,
       y: framePanY,
       zoom: frameZoom,
-      backgroundColor: frameGuideColor,
+      backgroundColor: bgSettings.frameGuideColor ?? '#ffaa19',
     }];
-  }, [frameGuideColor, frameKeyframes, framePanX, framePanY, frameZoom]);
+  }, [bgSettings.frameGuideColor, frameKeyframes, framePanX, framePanY, frameZoom]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -222,12 +217,10 @@ export function SubtitleAlignmentEditor({
     setFramePanX(0);
     setFramePanY(0);
     const nextBg = initialBackgroundSettings || defaultBackgroundSettings();
-    setBgSettings(nextBg);
-    setFrameGuideColor(initialFrameKeyframes?.[0]?.backgroundColor || nextBg.frameGuideColor || '#ffaa19');
-    setFrameGuideOpacity(nextBg.frameGuideOpacity ?? 0.75);
-    setFrameGuideBorderWidth(nextBg.frameGuideBorderWidth ?? 2);
-    setFrameGuideBlur(nextBg.frameGuideBlur ?? 0);
-    setFrameGuideBorderOpacity(nextBg.frameGuideBorderOpacity ?? 1);
+    setBgSettings({
+      ...nextBg,
+      frameGuideColor: initialFrameKeyframes?.[0]?.backgroundColor || nextBg.frameGuideColor || '#ffaa19',
+    });
     setTimelineZoom(1);
      setFrameKeyframes((initialFrameKeyframes || []).map((keyframe) => ({
       ...keyframe,
@@ -423,7 +416,7 @@ export function SubtitleAlignmentEditor({
     setFrameZoom(frame.zoom);
     setFramePanX(frame.x);
     setFramePanY(frame.y);
-    setFrameGuideColor(frame.backgroundColor || '#000000');
+    setBgSettings((prev) => ({ ...prev, frameGuideColor: frame.backgroundColor || prev.frameGuideColor || '#ffaa19' }));
   }, [currentSec, frameKeyframes, isOpen]);
 
   // Playback boundaries derived from trim
@@ -618,12 +611,6 @@ export function SubtitleAlignmentEditor({
     setFramePanX(0);
     setFramePanY(0);
     setFrameKeyframes([]);
-    // Reset frame guide styling to defaults
-    setFrameGuideColor('#ffaa19');
-    setFrameGuideOpacity(0.75);
-    setFrameGuideBorderWidth(2);
-    setFrameGuideBlur(0);
-    setFrameGuideBorderOpacity(1);
     // Reset background settings to defaults
     const resetBg = defaultBackgroundSettings();
     setBgSettings(resetBg);
@@ -669,7 +656,7 @@ export function SubtitleAlignmentEditor({
       framePanX,
       framePanY,
       frameZoom,
-      backgroundColor: frameGuideColor,
+      backgroundColor: bgSettings.frameGuideColor ?? '#ffaa19',
     });
     setSegments(normalized);
     setFrameKeyframes(savedFrameKeyframes);
@@ -677,17 +664,7 @@ export function SubtitleAlignmentEditor({
     onSaveFrameKeyframes?.(savedFrameKeyframes);
     onSaveCuts?.(cuts);
     onSaveTrim?.(trim);
-    // Merge frame guide state into bgSettings for persistence & sync
-    const mergedBg: BackgroundSettings = {
-      ...bgSettings,
-      frameGuideColor,
-      frameGuideOpacity,
-      frameGuideBorderWidth,
-      frameGuideBlur,
-      frameGuideBorderOpacity,
-    };
-    setBgSettings(mergedBg);
-    onSaveBackgroundSettings?.(mergedBg);
+    onSaveBackgroundSettings?.(bgSettings);
     // Show green flash feedback, don't close the modal
     setSavedFlash(true);
     setTimeout(() => setSavedFlash(false), 2000);
@@ -882,15 +859,16 @@ export function SubtitleAlignmentEditor({
               onTimeUpdate={handleTimeUpdate}
             />
             <div className="alignment-frame-guide" ref={frameGuideRef} style={{
-              '--frame-guide-opacity': frameGuideOpacity,
-              '--frame-guide-border-width': `${frameGuideBorderWidth}px`,
-              '--frame-guide-blur': `${frameGuideBlur}px`,
+              '--frame-guide-opacity': bgSettings.frameGuideOpacity ?? 0.75,
+              '--frame-guide-border-width': `${bgSettings.frameGuideBorderWidth ?? 2}px`,
+              '--frame-guide-blur': `${bgSettings.frameGuideBlur ?? 0}px`,
               '--frame-guide-border-color': (() => {
-                const c = frameGuideColor.replace('#', '');
+                const c = (bgSettings.frameGuideColor ?? '#ffaa19').replace('#', '');
                 const r = parseInt(c.slice(0, 2), 16);
                 const g = parseInt(c.slice(2, 4), 16);
                 const b = parseInt(c.slice(4, 6), 16);
-                return `rgba(${r},${g},${b},${frameGuideBorderOpacity})`;
+                const a = bgSettings.frameGuideBorderOpacity ?? 1;
+                return `rgba(${r},${g},${b},${a})`;
               })(),
             } as React.CSSProperties}>
             {previewCaption && (
@@ -1183,28 +1161,38 @@ export function SubtitleAlignmentEditor({
               <p>Adjust the frame, then press Add point. Transitions between points are smooth.</p>
               <label>
                 <span>Guide</span>
-                <input type="color" value={frameGuideColor} onChange={(event) => setFrameGuideColor(event.currentTarget.value)} />
-                <b>{frameGuideColor}</b>
+                <input type="color"
+                  value={bgSettings.frameGuideColor ?? '#ffaa19'}
+                  onChange={(e) => setBgSettings((prev) => ({ ...prev, frameGuideColor: e.currentTarget.value }))} />
+                <b>{bgSettings.frameGuideColor ?? '#ffaa19'}</b>
               </label>
               <label>
                 <span>Dim</span>
-                <input type="range" min={0} max={1} step={0.05} value={frameGuideOpacity} onChange={(e) => setFrameGuideOpacity(Number(e.currentTarget.value))} />
-                <b>{Math.round(frameGuideOpacity * 100)}%</b>
+                <input type="range" min={0} max={1} step={0.05}
+                  value={bgSettings.frameGuideOpacity ?? 0.75}
+                  onChange={(e) => setBgSettings((prev) => ({ ...prev, frameGuideOpacity: Number(e.currentTarget.value) }))} />
+                <b>{Math.round((bgSettings.frameGuideOpacity ?? 0.75) * 100)}%</b>
               </label>
               <label>
                 <span>Border</span>
-                <input type="range" min={0} max={8} step={0.5} value={frameGuideBorderWidth} onChange={(e) => setFrameGuideBorderWidth(Number(e.currentTarget.value))} />
-                <b>{frameGuideBorderWidth}px</b>
+                <input type="range" min={0} max={12} step={0.5}
+                  value={bgSettings.frameGuideBorderWidth ?? 2}
+                  onChange={(e) => setBgSettings((prev) => ({ ...prev, frameGuideBorderWidth: Number(e.currentTarget.value) }))} />
+                <b>{bgSettings.frameGuideBorderWidth ?? 2}px</b>
               </label>
               <label>
-                <span>Border Opacity</span>
-                <input type="range" min={0} max={1} step={0.05} value={frameGuideBorderOpacity} onChange={(e) => setFrameGuideBorderOpacity(Number(e.currentTarget.value))} />
-                <b>{Math.round(frameGuideBorderOpacity * 100)}%</b>
+                <span>Opacity</span>
+                <input type="range" min={0} max={1} step={0.05}
+                  value={bgSettings.frameGuideBorderOpacity ?? 1}
+                  onChange={(e) => setBgSettings((prev) => ({ ...prev, frameGuideBorderOpacity: Number(e.currentTarget.value) }))} />
+                <b>{Math.round((bgSettings.frameGuideBorderOpacity ?? 1) * 100)}%</b>
               </label>
               <label>
                 <span>Glow</span>
-                <input type="range" min={0} max={20} step={1} value={frameGuideBlur} onChange={(e) => setFrameGuideBlur(Number(e.currentTarget.value))} />
-                <b>{frameGuideBlur}px</b>
+                <input type="range" min={0} max={30} step={1}
+                  value={bgSettings.frameGuideBlur ?? 0}
+                  onChange={(e) => setBgSettings((prev) => ({ ...prev, frameGuideBlur: Number(e.currentTarget.value) }))} />
+                <b>{bgSettings.frameGuideBlur ?? 0}px</b>
               </label>
               <label>
                 <span>Zoom</span>
@@ -1232,7 +1220,7 @@ export function SubtitleAlignmentEditor({
                       x: framePanX,
                       y: framePanY,
                       zoom: frameZoom,
-                      backgroundColor: frameGuideColor,
+                      backgroundColor: bgSettings.frameGuideColor ?? '#ffaa19',
                     };
                     setFrameKeyframes((prev) => [
                       ...prev.filter((point) => Math.abs(point.time - currentSec) > 0.15),
@@ -1262,7 +1250,7 @@ export function SubtitleAlignmentEditor({
                         setFrameZoom(point.zoom);
                         setFramePanX(point.x);
                         setFramePanY(point.y);
-                        setFrameGuideColor(point.backgroundColor || frameGuideColor);
+                        setBgSettings((prev) => ({ ...prev, frameGuideColor: point.backgroundColor || prev.frameGuideColor || '#ffaa19' }));
                       }}
                     >
                       {index + 1}. {formatPlaybackClock(point.time)}

@@ -23,12 +23,12 @@ export type BackgroundSettings = {
   featherBottom: number;
   featherLeft: number;
   featherRight: number;
-  // Frame guide styling (synced between languages, persisted)
-  frameGuideColor?: string;
-  frameGuideOpacity?: number;      // 0–1 (outer dim)
-  frameGuideBorderWidth?: number;  // px
-  frameGuideBlur?: number;         // px inward glow
-  frameGuideBorderOpacity?: number; // 0–1
+  // Frame guide styling (preview only, synced between languages)
+  frameGuideColor: string;
+  frameGuideOpacity: number;      // 0–1 (outer dim)
+  frameGuideBorderWidth: number;  // px
+  frameGuideBlur: number;         // px inward glow
+  frameGuideBorderOpacity: number; // 0–1
 };
 
 export function defaultBackgroundSettings(): BackgroundSettings {

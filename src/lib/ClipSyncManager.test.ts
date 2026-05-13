@@ -142,6 +142,11 @@ test('toggleSync enables bilingual sync by copying existing source editor parame
       featherBottom: 0,
       featherLeft: 0,
       featherRight: 0,
+      frameGuideColor: '#ffaa19',
+      frameGuideOpacity: 0.75,
+      frameGuideBorderWidth: 2,
+      frameGuideBlur: 0,
+      frameGuideBorderOpacity: 1,
     },
   }];
 
