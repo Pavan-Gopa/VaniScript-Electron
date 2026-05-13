@@ -166,6 +166,7 @@ export function SubtitleAlignmentEditor({
   const [razorActive, setRazorActive] = useState(false);
   const [razorStart, setRazorStart] = useState<number | null>(null);
   const [trimDragState, setTrimDragState] = useState<{ edge: 'start' | 'end'; pointerX: number; original: number } | null>(null);
+  const [timelinePanDrag, setTimelinePanDrag] = useState<{ pointerX: number; scrollLeft: number } | null>(null);
   const [looping, setLooping] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false); // green ✓ feedback after save
   const [bgSettings, setBgSettings] = useState<BackgroundSettings>(initialBackgroundSettings || defaultBackgroundSettings());
@@ -194,6 +195,7 @@ export function SubtitleAlignmentEditor({
   bgSettingsRef.current = bgSettings;
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const multitrackRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
   const waveformTrackRef = useRef<HTMLDivElement>(null);
   const frameGuideRef = useRef<HTMLDivElement>(null);
@@ -436,6 +438,23 @@ export function SubtitleAlignmentEditor({
     };
   }, [clipDurationSec, dragState]);
 
+  useEffect(() => {
+    if (!timelinePanDrag) return;
+    const move = (event: PointerEvent) => {
+      const container = multitrackRef.current;
+      if (!container) return;
+      event.preventDefault();
+      container.scrollLeft = timelinePanDrag.scrollLeft - (event.clientX - timelinePanDrag.pointerX);
+    };
+    const up = () => setTimelinePanDrag(null);
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up, { once: true });
+    return () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+  }, [timelinePanDrag]);
+
   const selected = useMemo(() => segments.find((segment) => segment.id === selectedId) || selectedSegmentAt(segments, currentSec), [currentSec, segments, selectedId]);
   const active = useMemo(() => selectedSegmentAt(segments, currentSec), [currentSec, segments]);
   const boxAlpha = Math.round(settings.subtitleBoxOpacity * 255).toString(16).padStart(2, '0');
@@ -605,10 +624,34 @@ export function SubtitleAlignmentEditor({
   }
 
   function handleTimelineWheel(event: React.WheelEvent) {
-    if (!event.metaKey && !event.ctrlKey) return;
-    event.preventDefault();
-    const factor = event.deltaY > 0 ? 0.88 : 1.14;
-    setTimelineZoom((current) => Math.min(8, Math.max(1, current * factor)));
+    const container = multitrackRef.current;
+    if (!container) return;
+
+    if (event.altKey) {
+      event.preventDefault();
+      const rect = container.getBoundingClientRect();
+      const cursorX = event.clientX - rect.left;
+      const contentX = container.scrollLeft + cursorX;
+      const oldScrollWidth = Math.max(container.clientWidth, container.scrollWidth);
+      const anchorRatio = oldScrollWidth > 0 ? contentX / oldScrollWidth : 0;
+      const factor = event.deltaY > 0 ? 0.88 : 1.14;
+
+      setTimelineZoom((current) => {
+        const next = Math.min(12, Math.max(1, current * factor));
+        window.requestAnimationFrame(() => {
+          const nextScrollWidth = Math.max(container.clientWidth, container.scrollWidth);
+          container.scrollLeft = Math.max(0, (anchorRatio * nextScrollWidth) - cursorX);
+        });
+        return next;
+      });
+      return;
+    }
+
+    if (event.metaKey || event.ctrlKey) {
+      event.preventDefault();
+      const primaryDelta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+      container.scrollLeft += primaryDelta;
+    }
   }
 
   async function togglePlayback() {
@@ -1029,7 +1072,7 @@ export function SubtitleAlignmentEditor({
           </div>
         </div>
 
-        <div className="alignment-scrub-row" onWheel={handleTimelineWheel}>
+        <div className="alignment-scrub-row">
           <button
             type="button"
             className="alignment-inline-play"
@@ -1066,7 +1109,20 @@ export function SubtitleAlignmentEditor({
         </div>
 
         {/* ── Multi-track timeline ── */}
-        <div className="alignment-multitrack" onWheel={handleTimelineWheel}>
+        <div
+          className={`alignment-multitrack ${timelinePanDrag ? 'panning' : ''}`}
+          ref={multitrackRef}
+          onWheel={handleTimelineWheel}
+          onPointerDownCapture={(event) => {
+            if (event.button !== 1) return;
+            event.preventDefault();
+            event.stopPropagation();
+            setTimelinePanDrag({
+              pointerX: event.clientX,
+              scrollLeft: multitrackRef.current?.scrollLeft || 0,
+            });
+          }}
+        >
           {/* Video track label */}
           <div className="alignment-track-row alignment-track-video">
             <span className="alignment-track-label">Video</span>
