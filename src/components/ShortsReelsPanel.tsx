@@ -2,7 +2,14 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Edit3 } from 'lucide-react';
 import { formatPlaybackClock } from '../lib/karaoke';
 import type { ProviderOption } from '../lib/provider-registry';
-import { parseTimestampToSeconds, ShortsClipPlan, ShortsPlanLanguageMode } from '../lib/shorts-reels';
+import {
+  ExtraAudioTrack,
+  LogoOverlaySettings,
+  parseTimestampToSeconds,
+  ShortsClipPlan,
+  ShortsPlanLanguageMode,
+  TextOverlayTrack,
+} from '../lib/shorts-reels';
 import { defaultBackgroundSettings, ShortsFrameRatePreset, ShortsResolutionPreset, ShortsTextTransform, ShortsVideoFormat, ShortsVideoQuality } from '../lib/shorts-render';
 import { SubtitleAlignmentEditor } from './subtitle-alignment/SubtitleAlignmentEditor';
 import { ReplaceClipModal } from './ReplaceClipModal';
@@ -69,6 +76,9 @@ type Props = {
   onRemovePlan: (index: number) => void;
   onSavePlanAlignment: (index: number, language: ShortsDisplayLanguage, segments: ShortsClipPlan['sourceAlignment']) => void;
   onSavePlanFrameKeyframes: (index: number, language: ShortsDisplayLanguage, keyframes: ShortsClipPlan['sourceFrameKeyframes']) => void;
+  onSavePlanLogo?: (index: number, language: ShortsDisplayLanguage, logo?: LogoOverlaySettings) => void;
+  onSavePlanTextTracks?: (index: number, language: ShortsDisplayLanguage, tracks: TextOverlayTrack[]) => void;
+  onSavePlanAudioTracks?: (index: number, language: ShortsDisplayLanguage, tracks: ExtraAudioTrack[]) => void;
   getPlanCues: (plan: ShortsClipPlan, language?: ShortsDisplayLanguage) => { startSec: number; endSec: number; text: string }[];
   getPlanDetailText: (plan: ShortsClipPlan) => { source: string; target: string };
   onExportIdeas: () => void;
@@ -193,6 +203,9 @@ export function ShortsReelsPanel({
   onRemovePlan,
   onSavePlanAlignment,
   onSavePlanFrameKeyframes,
+  onSavePlanLogo,
+  onSavePlanTextTracks,
+  onSavePlanAudioTracks,
   getPlanCues,
   getPlanDetailText,
   onExportIdeas,
@@ -691,6 +704,9 @@ export function ShortsReelsPanel({
           initialCuts={editorPlan.timelineCuts}
           initialTrim={editorPlan.timelineTrim}
           initialBackgroundSettings={editorPlan.backgroundSettings}
+          initialLogo={displayLanguage === 'source' ? editorPlan.sourceLogo || editorPlan.logo : editorPlan.targetLogo || editorPlan.logo}
+          initialTextTracks={displayLanguage === 'source' ? editorPlan.sourceTextTracks || editorPlan.textTracks : editorPlan.targetTextTracks || editorPlan.textTracks}
+          initialAudioTracks={displayLanguage === 'source' ? editorPlan.sourceAudioTracks || editorPlan.audioTracks : editorPlan.targetAudioTracks || editorPlan.audioTracks}
           settings={settings}
           subtitleMaxCharsPerLine={subtitleMaxCharsPerLine}
           subtitleMaxLines={subtitleMaxLines}
@@ -725,6 +741,15 @@ export function ShortsReelsPanel({
           onSaveBackgroundSettings={(bg) => {
             if (editorIndex !== null) onUpdatePlan(editorIndex, { backgroundSettings: bg });
           }}
+          onSaveLogo={(logo) => {
+            if (editorIndex !== null) onSavePlanLogo?.(editorIndex, displayLanguage, logo);
+          }}
+          onSaveTextTracks={(tracks) => {
+            if (editorIndex !== null) onSavePlanTextTracks?.(editorIndex, displayLanguage, tracks);
+          }}
+          onSaveAudioTracks={(tracks) => {
+            if (editorIndex !== null) onSavePlanAudioTracks?.(editorIndex, displayLanguage, tracks);
+          }}
           onResetAll={() => {
             if (editorIndex !== null) {
               onUpdatePlan(editorIndex, {
@@ -735,6 +760,12 @@ export function ShortsReelsPanel({
                 timelineCuts: [],
                 timelineTrim: { trimStartSec: 0, trimEndSec: 0 },
                 backgroundSettings: defaultBackgroundSettings(),
+                sourceLogo: undefined,
+                targetLogo: undefined,
+                sourceTextTracks: [],
+                targetTextTracks: [],
+                sourceAudioTracks: [],
+                targetAudioTracks: [],
               });
             }
           }}

@@ -1,5 +1,5 @@
 import type { AlignedSubtitleSegment, FrameKeyframe } from './subtitle-alignment';
-import type { BackgroundSettings } from './shorts-render';
+import type { BackgroundSettings, ShortsSubtitleStyle } from './shorts-render';
 
 /** A cut region removed from the clip timeline via razor/delete. */
 export type TimelineCut = {
@@ -15,6 +15,45 @@ export type TimelineTrim = {
   trimStartSec: number;
   /** Seconds trimmed from the end. */
   trimEndSec: number;
+};
+
+export type LogoOverlaySettings = {
+  id: string;
+  src: string;
+  name?: string;
+  size: number;
+  opacity: number;
+  hidden?: boolean;
+};
+
+export type TextOverlayBlock = {
+  id: string;
+  startSec: number;
+  endSec: number;
+  text: string;
+  hidden?: boolean;
+};
+
+export type TextOverlayTrack = {
+  id: string;
+  name: string;
+  hidden?: boolean;
+  muted?: boolean;
+  blocks: TextOverlayBlock[];
+  style?: Partial<ShortsSubtitleStyle>;
+};
+
+export type ExtraAudioTrack = {
+  id: string;
+  name: string;
+  src: string;
+  startSec: number;
+  trimStartSec: number;
+  trimEndSec: number;
+  volume: number;
+  fadeInSec: number;
+  fadeOutSec: number;
+  muted?: boolean;
 };
 
 export type ShortsClipPlan = {
@@ -51,6 +90,17 @@ export type ShortsClipPlan = {
   timelineTrim?: TimelineTrim;
   /** Background compositor settings. */
   backgroundSettings?: BackgroundSettings;
+  /** Shared/fallback overlay state. */
+  logo?: LogoOverlaySettings;
+  textTracks?: TextOverlayTrack[];
+  audioTracks?: ExtraAudioTrack[];
+  /** Language-specific overlay state for bilingual clips. */
+  sourceLogo?: LogoOverlaySettings;
+  targetLogo?: LogoOverlaySettings;
+  sourceTextTracks?: TextOverlayTrack[];
+  targetTextTracks?: TextOverlayTrack[];
+  sourceAudioTracks?: ExtraAudioTrack[];
+  targetAudioTracks?: ExtraAudioTrack[];
 };
 
 export type ShortsPlanLanguageMode = 'source' | 'target' | 'bilingual';

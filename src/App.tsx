@@ -2044,6 +2044,9 @@ export default function App() {
           timelineCuts: plan.timelineCuts,
           timelineTrim: plan.timelineTrim,
           backgroundSettings: plan.backgroundSettings,
+          logo: language === 'source' ? plan.sourceLogo || plan.logo : plan.targetLogo || plan.logo,
+          textTracks: language === 'source' ? plan.sourceTextTracks || plan.textTracks || [] : plan.targetTextTracks || plan.textTracks || [],
+          audioTracks: language === 'source' ? plan.sourceAudioTracks || plan.audioTracks || [] : plan.targetAudioTracks || plan.audioTracks || [],
         });
         if (!window.electronAPI.hyperframesExportShortClip) {
           throw new Error('HyperFrames export is not available in this build.');
@@ -2592,6 +2595,45 @@ export default function App() {
                         setShortsPlans((prev) => {
                           const next = prev.map((plan, i) => i === index ? { ...plan, ...patch } : plan);
                           // Auto-sync frame keyframes to linked partner
+                          const syncResult = buildSyncPatch(next, index, patch);
+                          if (syncResult) {
+                            return next.map((plan, i) => i === syncResult.partnerIndex ? { ...plan, ...syncResult.patch } : plan);
+                          }
+                          return next;
+                        });
+                      }}
+                      onSavePlanLogo={(index, language, logo) => {
+                        const patch: Partial<ShortsClipPlan> = language === 'source'
+                          ? { sourceLogo: logo }
+                          : { targetLogo: logo };
+                        setShortsPlans((prev) => {
+                          const next = prev.map((plan, i) => i === index ? { ...plan, ...patch } : plan);
+                          const syncResult = buildSyncPatch(next, index, patch);
+                          if (syncResult) {
+                            return next.map((plan, i) => i === syncResult.partnerIndex ? { ...plan, ...syncResult.patch } : plan);
+                          }
+                          return next;
+                        });
+                      }}
+                      onSavePlanTextTracks={(index, language, tracks) => {
+                        const patch: Partial<ShortsClipPlan> = language === 'source'
+                          ? { sourceTextTracks: tracks }
+                          : { targetTextTracks: tracks };
+                        setShortsPlans((prev) => {
+                          const next = prev.map((plan, i) => i === index ? { ...plan, ...patch } : plan);
+                          const syncResult = buildSyncPatch(next, index, patch);
+                          if (syncResult) {
+                            return next.map((plan, i) => i === syncResult.partnerIndex ? { ...plan, ...syncResult.patch } : plan);
+                          }
+                          return next;
+                        });
+                      }}
+                      onSavePlanAudioTracks={(index, language, tracks) => {
+                        const patch: Partial<ShortsClipPlan> = language === 'source'
+                          ? { sourceAudioTracks: tracks }
+                          : { targetAudioTracks: tracks };
+                        setShortsPlans((prev) => {
+                          const next = prev.map((plan, i) => i === index ? { ...plan, ...patch } : plan);
                           const syncResult = buildSyncPatch(next, index, patch);
                           if (syncResult) {
                             return next.map((plan, i) => i === syncResult.partnerIndex ? { ...plan, ...syncResult.patch } : plan);

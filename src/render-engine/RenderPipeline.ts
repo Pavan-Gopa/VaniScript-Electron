@@ -205,5 +205,8 @@ export function buildShortsRenderProject(input: ShortsRenderProjectInput): Short
     timelineCuts: cuts,
     timelineTrim: trim,
     backgroundSettings: input.backgroundSettings,
+    logo: input.logo,
+    textTracks: input.textTracks || [],
+    audioTracks: input.audioTracks || [],
   };
 }

@@ -4,7 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
-const { pathToFileURL } = require('url');
+const { fileURLToPath, pathToFileURL } = require('url');
 
 function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
@@ -123,6 +123,40 @@ function normalizeProject(project) {
         text: String(cue.text || ''),
       }))
       .filter((cue) => cue.text.trim() && cue.endSec > cue.startSec),
+    logo: project.logo?.src ? {
+      id: project.logo.id || 'logo',
+      src: String(project.logo.src),
+      name: String(project.logo.name || 'Logo'),
+      size: clamp(Number(project.logo.size) || 1, 0.5, 2),
+      opacity: clamp(Number.isFinite(Number(project.logo.opacity)) ? Number(project.logo.opacity) : 1, 0, 1),
+      hidden: !!project.logo.hidden,
+    } : undefined,
+    textTracks: (project.textTracks || []).slice(0, 3).map((track, trackIndex) => ({
+      id: track.id || `text_track_${trackIndex}`,
+      name: String(track.name || `Text Track ${trackIndex + 1}`),
+      hidden: !!track.hidden,
+      muted: !!track.muted,
+      blocks: (track.blocks || []).map((block, blockIndex) => ({
+        id: block.id || `text_block_${trackIndex}_${blockIndex}`,
+        startSec: Math.max(0, Number(block.startSec) || 0),
+        endSec: Math.max(0.05, Number(block.endSec) || 0.05),
+        text: String(block.text || ''),
+        hidden: !!block.hidden,
+      })).filter((block) => block.text.trim() && block.endSec > block.startSec),
+      style: track.style || {},
+    })),
+    audioTracks: (project.audioTracks || []).slice(0, 3).map((track, trackIndex) => ({
+      id: track.id || `audio_track_${trackIndex}`,
+      name: String(track.name || `Audio Track ${trackIndex + 1}`),
+      src: String(track.src || ''),
+      startSec: Math.max(0, Number(track.startSec) || 0),
+      trimStartSec: Math.max(0, Number(track.trimStartSec) || 0),
+      trimEndSec: Math.max(0, Number(track.trimEndSec) || 0),
+      volume: clamp(Number.isFinite(Number(track.volume)) ? Number(track.volume) : 0.5, 0, 1),
+      fadeInSec: Math.max(0, Number(track.fadeInSec) || 0),
+      fadeOutSec: Math.max(0, Number(track.fadeOutSec) || 0),
+      muted: !!track.muted,
+    })).filter((track) => track.src),
   };
 }
 
@@ -168,6 +202,42 @@ function safeSymlinkOrCopy(srcPath, destPath) {
   } catch (_error) {
     fs.copyFileSync(srcPath, destPath);
   }
+}
+
+function localAssetPath(src) {
+  if (!src) return '';
+  if (String(src).startsWith('file://')) {
+    try {
+      return fileURLToPath(src);
+    } catch (_error) {
+      return '';
+    }
+  }
+  return path.isAbsolute(String(src)) ? String(src) : '';
+}
+
+function copyProjectLayerAssets(project, assetsDir) {
+  const copied = { ...project };
+  const copyOne = (src, prefix) => {
+    const sourcePath = localAssetPath(src);
+    if (!sourcePath || !fs.existsSync(sourcePath)) return src;
+    const ext = path.extname(sourcePath) || '';
+    const name = `${prefix}_${toSafeFilePart(path.basename(sourcePath, ext))}${ext}`;
+    const dest = path.join(assetsDir, name);
+    safeSymlinkOrCopy(sourcePath, dest);
+    return `./assets/${name}`;
+  };
+
+  if (copied.logo?.src) {
+    copied.logo = { ...copied.logo, src: copyOne(copied.logo.src, 'logo') };
+  }
+
+  copied.audioTracks = (copied.audioTracks || []).map((track, index) => ({
+    ...track,
+    src: copyOne(track.src, `extra_audio_${index + 1}`),
+  }));
+
+  return copied;
 }
 
 function runFfmpeg(ffmpegPath, args, log) {
@@ -335,6 +405,23 @@ function buildCompositionHtml(project, relativeVideoPath) {
         display: block; margin: 0;
         white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal;
       }
+      #logo-overlay {
+        position: absolute; top: 40px; left: 40px; z-index: 4;
+        transform-origin: top left; pointer-events: none;
+        max-width: 28%; max-height: 18%; object-fit: contain;
+      }
+      #text-overlays {
+        position: absolute; inset: 0; z-index: 4; pointer-events: none;
+      }
+      .text-overlay-layer {
+        position: absolute; left: 50%; transform: translateX(-50%);
+        max-width: 100%; box-sizing: border-box; text-align: center;
+        overflow: hidden; display: none;
+      }
+      .text-overlay-layer span {
+        display: block; margin: 0;
+        white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal;
+      }
     </style>
   </head>
   <body>
@@ -359,6 +446,20 @@ function buildCompositionHtml(project, relativeVideoPath) {
         ></audio>
       </div>
       <div id="subtitle-layer"><span id="subtitle-text"></span></div>
+      ${project.logo?.src && !project.logo.hidden ? `<img id="logo-overlay" src="${escapeHtml(project.logo.src)}" alt="${escapeHtml(project.logo.name || 'Logo')}" />` : ''}
+      <div id="text-overlays"></div>
+      ${(project.audioTracks || []).filter((track) => !track.muted).map((track, index) => `<audio
+          class="extra-audio"
+          data-start="${track.startSec}"
+          data-duration="${Math.max(0.05, project.durationSec - track.startSec - (track.trimEndSec || 0))}"
+          data-track-index="${10 + index}"
+          data-media-start="${track.trimStartSec || 0}"
+          data-volume="${track.volume}"
+          data-fade-in="${track.fadeInSec || 0}"
+          data-fade-out="${track.fadeOutSec || 0}"
+          preload="auto"
+          src="${escapeHtml(track.src)}"
+        ></audio>`).join('\n')}
     </div>
     <script>
       const project = ${asJsonScript(project)};
@@ -369,6 +470,9 @@ function buildCompositionHtml(project, relativeVideoPath) {
       const video = document.getElementById('source-video');
       const subtitleLayer = document.getElementById('subtitle-layer');
       const subtitleText = document.getElementById('subtitle-text');
+      const logoOverlay = document.getElementById('logo-overlay');
+      const textOverlays = document.getElementById('text-overlays');
+      const extraAudio = Array.from(document.querySelectorAll('.extra-audio'));
       const bgS = project.backgroundSettings || {};
 
       const clamp = (v, mn, mx) => Math.min(Math.max(v, mn), mx);
@@ -380,6 +484,11 @@ function buildCompositionHtml(project, relativeVideoPath) {
       const titleCase = (t) => t.toLowerCase().replace(/(^|\\s)\\S/g, (m) => m.toUpperCase());
       const transformText = (t, mode) => mode === 'uppercase' ? t.toUpperCase() : mode === 'title' ? titleCase(t) : t;
       const activeCue = (ts) => project.subtitles.find((c) => ts >= c.startSec && ts < c.endSec) || null;
+      const activeTextBlocks = (ts) => (project.textTracks || [])
+        .filter((track) => !track.hidden && !track.muted)
+        .flatMap((track, trackIndex) => (track.blocks || [])
+          .filter((block) => !block.hidden && block.text && ts >= block.startSec && ts < block.endSec)
+          .map((block) => ({ ...block, trackIndex, style: track.style || {} })));
       const interpolateFrameState = (ts) => {
         const kf = project.frameKeyframes || [];
         if (!kf.length) return { x: 0, y: 0, zoom: 1, backgroundColor: '#000000' };
@@ -437,6 +546,61 @@ function buildCompositionHtml(project, relativeVideoPath) {
         }
       }
 
+      if (logoOverlay && project.logo) {
+        logoOverlay.style.width = (120 * (project.logo.size || 1)) + 'px';
+        logoOverlay.style.opacity = String(project.logo.opacity ?? 1);
+      }
+
+      function styleOverlayBox(layer, textEl, style, text, bottomPx, scale, fontSizeFactor) {
+        const fontSize = (style.fontSize || 74) * scale * fontSizeFactor;
+        const paddingY = fontSize * 0.12 * (style.boxHeight || 1);
+        const paddingX = paddingY * 1.45;
+        const blurPx = Math.max(0, style.edgeBlur || 0) * scale;
+        const radiusPx = (4 + (Math.max(0, Math.min(1, style.edgeSoftness ?? 0.25)) * 18)) * scale;
+        const textShadowDepth = Math.max(0, style.shadow || 0) * scale;
+        const textStroke = Math.max(0, style.outline || 0) * scale;
+        layer.style.display = 'block';
+        layer.style.bottom = bottomPx + 'px';
+        layer.style.width = Math.max(10, Math.min(100, style.boxWidth || 86)) + '%';
+        layer.style.padding = paddingY + 'px ' + paddingX + 'px';
+        layer.style.borderRadius = radiusPx + 'px';
+        layer.style.backgroundColor = hexToRgba(style.boxColor || '#FF8C00', style.boxOpacity ?? 0.5);
+        layer.style.boxShadow = blurPx > 0 ? ('0 0 ' + blurPx + 'px ' + hexToRgba(style.boxColor || '#FF8C00', style.boxOpacity ?? 0.5)) : 'none';
+        layer.style.color = style.textColor || '#FFFFFF';
+        layer.style.fontFamily = style.fontFamily || 'Cuprum';
+        layer.style.fontSize = fontSize + 'px';
+        layer.style.fontWeight = style.bold ? '850' : '600';
+        layer.style.letterSpacing = ((style.letterSpacing || 0) * scale) + 'px';
+        layer.style.lineHeight = String(style.lineSpacing || 1);
+        layer.style.textShadow = textShadowDepth > 0
+          ? ('0 ' + (textShadowDepth * 0.5) + 'px ' + textShadowDepth + 'px rgba(0,0,0,0.82)')
+          : 'none';
+        layer.style.webkitTextStroke = textStroke > 0 ? (textStroke + 'px rgba(0,0,0,0.58)') : '0 transparent';
+        textEl.textContent = transformText(text, style.textTransform || 'none');
+      }
+
+      function renderTextOverlays(timeSec, baseBottomPx, scale) {
+        if (!textOverlays) return;
+        const blocks = activeTextBlocks(timeSec);
+        textOverlays.innerHTML = '';
+        blocks.forEach((block) => {
+          const layer = document.createElement('div');
+          layer.className = 'text-overlay-layer';
+          const span = document.createElement('span');
+          layer.appendChild(span);
+          textOverlays.appendChild(layer);
+          styleOverlayBox(
+            layer,
+            span,
+            { ...project.captionStyle, ...(block.style || {}) },
+            block.text,
+            baseBottomPx + ((block.trackIndex + 1) * (project.captionStyle.fontSize || 74) * scale * 1.65),
+            scale,
+            0.82,
+          );
+        });
+      }
+
       function renderAt(timeSec) {
         const frame = interpolateFrameState(timeSec);
         const style = project.captionStyle;
@@ -454,6 +618,18 @@ function buildCompositionHtml(project, relativeVideoPath) {
         background.style.background = bgColor;
         stage.style.background = bgColor;
         video.style.transform = 'translate(' + frame.x + '%,' + frame.y + '%) scale(' + frame.zoom + ')';
+        extraAudio.forEach((audio) => {
+          const start = Number(audio.dataset.start || 0);
+          const duration = Number(audio.dataset.duration || 0);
+          const baseVolume = Number(audio.dataset.volume || 1);
+          const fadeIn = Number(audio.dataset.fadeIn || 0);
+          const fadeOut = Number(audio.dataset.fadeOut || 0);
+          const local = timeSec - start;
+          let gain = local >= 0 && local <= duration ? 1 : 0;
+          if (gain > 0 && fadeIn > 0) gain = Math.min(gain, clamp(local / fadeIn, 0, 1));
+          if (gain > 0 && fadeOut > 0) gain = Math.min(gain, clamp((duration - local) / fadeOut, 0, 1));
+          audio.volume = clamp(baseVolume * gain, 0, 1);
+        });
 
         // Sync blur bg time
         if (bgS.blurEnabled && blurBg && blurBg.tagName === 'VIDEO') {
@@ -466,25 +642,9 @@ function buildCompositionHtml(project, relativeVideoPath) {
         if (!cue) {
           subtitleLayer.style.display = 'none';
         } else {
-          subtitleLayer.style.display = 'block';
-          subtitleLayer.style.bottom = bottomPx + 'px';
-          subtitleLayer.style.width = Math.max(10, Math.min(100, style.boxWidth)) + '%';
-          subtitleLayer.style.padding = paddingY + 'px ' + paddingX + 'px';
-          subtitleLayer.style.borderRadius = radiusPx + 'px';
-          subtitleLayer.style.backgroundColor = hexToRgba(style.boxColor, style.boxOpacity);
-          subtitleLayer.style.boxShadow = blurPx > 0 ? ('0 0 ' + blurPx + 'px ' + hexToRgba(style.boxColor, style.boxOpacity)) : 'none';
-          subtitleLayer.style.color = style.textColor;
-          subtitleLayer.style.fontFamily = style.fontFamily;
-          subtitleLayer.style.fontSize = fontSize + 'px';
-          subtitleLayer.style.fontWeight = style.bold ? '850' : '600';
-          subtitleLayer.style.letterSpacing = (style.letterSpacing * scale) + 'px';
-          subtitleLayer.style.lineHeight = String(style.lineSpacing);
-          subtitleLayer.style.textShadow = textShadowDepth > 0
-            ? ('0 ' + (textShadowDepth * 0.5) + 'px ' + textShadowDepth + 'px rgba(0,0,0,0.82)')
-            : 'none';
-          subtitleLayer.style.webkitTextStroke = textStroke > 0 ? (textStroke + 'px rgba(0,0,0,0.58)') : '0 transparent';
-          subtitleText.textContent = transformText(cue.text, style.textTransform);
+          styleOverlayBox(subtitleLayer, subtitleText, style, cue.text, bottomPx, scale, 1);
         }
+        renderTextOverlays(timeSec, bottomPx, scale);
       }
       window.__timelines = window.__timelines || {};
       const tl = gsap.timeline({ paused: true });
@@ -525,7 +685,7 @@ async function renderShortClipWithHyperFrames({
     log,
   });
   const renderProject = {
-    ...normalizedProject,
+    ...copyProjectLayerAssets(normalizedProject, assetsDir),
     clipStartSec: 0,
     clipEndSec: normalizedProject.durationSec,
   };

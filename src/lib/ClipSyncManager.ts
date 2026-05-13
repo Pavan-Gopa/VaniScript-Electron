@@ -11,6 +11,9 @@
  * - Subtitle styling (font, background, shadows, borders, blur, radius)
  * - Background settings
  * - Timeline cuts & trims
+ * - Logo overlays
+ * - Text overlay tracks
+ * - Extra audio tracks
  *
  * **What never syncs:**
  * - subtitle language text
@@ -18,7 +21,14 @@
  */
 
 import type { FrameKeyframe, AlignedSubtitleSegment } from './subtitle-alignment';
-import type { ShortsClipPlan, TimelineCut, TimelineTrim } from './shorts-reels';
+import type {
+  ExtraAudioTrack,
+  LogoOverlaySettings,
+  ShortsClipPlan,
+  TextOverlayTrack,
+  TimelineCut,
+  TimelineTrim,
+} from './shorts-reels';
 
 // ── Group ID generator ────────────────────────────────────────────────────────
 
@@ -41,6 +51,12 @@ export type SyncableMotionPatch = {
   targetAlignment?: AlignedSubtitleSegment[];
   timelineCuts?: TimelineCut[];
   timelineTrim?: TimelineTrim;
+  sourceLogo?: LogoOverlaySettings;
+  targetLogo?: LogoOverlaySettings;
+  sourceTextTracks?: TextOverlayTrack[];
+  targetTextTracks?: TextOverlayTrack[];
+  sourceAudioTracks?: ExtraAudioTrack[];
+  targetAudioTracks?: ExtraAudioTrack[];
 };
 
 function retimeWords(
@@ -229,6 +245,33 @@ export function buildSyncPatch(
     hasChanges = true;
   }
 
+  // Mirror language-aware overlay layers. Sync ON means Source and Target share
+  // the same visual/audio structure while preserving their subtitle text.
+  if (appliedPatch.sourceLogo) {
+    mirror.targetLogo = structuredClone(appliedPatch.sourceLogo);
+    hasChanges = true;
+  }
+  if (appliedPatch.targetLogo) {
+    mirror.sourceLogo = structuredClone(appliedPatch.targetLogo);
+    hasChanges = true;
+  }
+  if (appliedPatch.sourceTextTracks) {
+    mirror.targetTextTracks = structuredClone(appliedPatch.sourceTextTracks);
+    hasChanges = true;
+  }
+  if (appliedPatch.targetTextTracks) {
+    mirror.sourceTextTracks = structuredClone(appliedPatch.targetTextTracks);
+    hasChanges = true;
+  }
+  if (appliedPatch.sourceAudioTracks) {
+    mirror.targetAudioTracks = structuredClone(appliedPatch.sourceAudioTracks);
+    hasChanges = true;
+  }
+  if (appliedPatch.targetAudioTracks) {
+    mirror.sourceAudioTracks = structuredClone(appliedPatch.targetAudioTracks);
+    hasChanges = true;
+  }
+
   if (!hasChanges) return null;
 
   // ── Bilingual single-plan sync ──────────────────────────────────────────
@@ -271,6 +314,12 @@ function syncBilingualPlanOnEnable(plan: ShortsClipPlan): ShortsClipPlan {
 
   // Timeline trim/cuts and background settings are single clip-level fields, so
   // they are already shared inside one bilingual plan and only need preserving.
+  if (plan.sourceLogo && !plan.targetLogo) updated.targetLogo = structuredClone(plan.sourceLogo);
+  else if (plan.targetLogo && !plan.sourceLogo) updated.sourceLogo = structuredClone(plan.targetLogo);
+  if (plan.sourceTextTracks && !plan.targetTextTracks) updated.targetTextTracks = structuredClone(plan.sourceTextTracks);
+  else if (plan.targetTextTracks && !plan.sourceTextTracks) updated.sourceTextTracks = structuredClone(plan.targetTextTracks);
+  if (plan.sourceAudioTracks && !plan.targetAudioTracks) updated.targetAudioTracks = structuredClone(plan.sourceAudioTracks);
+  else if (plan.targetAudioTracks && !plan.sourceAudioTracks) updated.sourceAudioTracks = structuredClone(plan.targetAudioTracks);
   return updated;
 }
 

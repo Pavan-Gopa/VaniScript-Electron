@@ -26,6 +26,10 @@ import {
   type BoundaryResolution,
 } from '../../lib/TimelineCutEngine';
 import { ShortsSettings } from '../ShortsReelsPanel';
+import type { ExtraAudioTrack, LogoOverlaySettings, TextOverlayTrack } from '../../lib/shorts-reels';
+import { AudioTrackManager } from './AudioTrackManager';
+import { LogoManager } from './LogoManager';
+import { TextTrackManager } from './TextTrackManager';
 
 type AlignmentCue = { startSec: number; endSec: number; text: string };
 
@@ -44,6 +48,9 @@ type Props = {
   initialCuts?: TimelineCut[];
   initialTrim?: TimelineTrim;
   initialBackgroundSettings?: import('../../lib/shorts-render').BackgroundSettings;
+  initialLogo?: LogoOverlaySettings;
+  initialTextTracks?: TextOverlayTrack[];
+  initialAudioTracks?: ExtraAudioTrack[];
   settings: ShortsSettings;
   subtitleMaxCharsPerLine: number;
   subtitleMaxLines: number;
@@ -63,6 +70,9 @@ type Props = {
   onSaveCuts?: (cuts: TimelineCut[]) => void;
   onSaveTrim?: (trim: TimelineTrim) => void;
   onSaveBackgroundSettings?: (bg: import('../../lib/shorts-render').BackgroundSettings) => void;
+  onSaveLogo?: (logo?: LogoOverlaySettings) => void;
+  onSaveTextTracks?: (tracks: TextOverlayTrack[]) => void;
+  onSaveAudioTracks?: (tracks: ExtraAudioTrack[]) => void;
   onResetAll?: () => void;
   /** Switch between source/target language inside the editor */
   onSwitchLanguage?: (lang: 'source' | 'target') => void;
@@ -118,6 +128,9 @@ export function SubtitleAlignmentEditor({
   initialCuts,
   initialTrim,
   initialBackgroundSettings,
+  initialLogo,
+  initialTextTracks,
+  initialAudioTracks,
   settings,
   subtitleMaxCharsPerLine,
   subtitleMaxLines,
@@ -133,6 +146,9 @@ export function SubtitleAlignmentEditor({
   onSaveCuts,
   onSaveTrim,
   onSaveBackgroundSettings,
+  onSaveLogo,
+  onSaveTextTracks,
+  onSaveAudioTracks,
   onResetAll,
   currentLanguage,
   onSwitchLanguage,
@@ -160,6 +176,16 @@ export function SubtitleAlignmentEditor({
     originalEnd: number;
     pixelsPerSecond: number;
   } | null>(null);
+  const [overlayDragState, setOverlayDragState] = useState<{
+    kind: 'text' | 'audio';
+    trackId: string;
+    blockId?: string;
+    mode: 'move' | 'start' | 'end';
+    pointerX: number;
+    originalStart: number;
+    originalEnd: number;
+    pixelsPerSecond: number;
+  } | null>(null);
   // ── New state for timeline surgery ──
   const [cuts, setCuts] = useState<TimelineCut[]>([]);
   const [trim, setTrim] = useState<TimelineTrim>({ trimStartSec: 0, trimEndSec: 0 });
@@ -170,7 +196,10 @@ export function SubtitleAlignmentEditor({
   const [looping, setLooping] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false); // green ✓ feedback after save
   const [bgSettings, setBgSettings] = useState<BackgroundSettings>(initialBackgroundSettings || defaultBackgroundSettings());
-  const [inspectorTab, setInspectorTab] = useState<'frame' | 'background'>('frame');
+  const [inspectorTab, setInspectorTab] = useState<'frame' | 'background' | 'layers'>('frame');
+  const [logo, setLogo] = useState<LogoOverlaySettings | undefined>(initialLogo);
+  const [textTracks, setTextTracks] = useState<TextOverlayTrack[]>(initialTextTracks || []);
+  const [audioTracks, setAudioTracks] = useState<ExtraAudioTrack[]>(initialAudioTracks || []);
   const blurVideoRef = useRef<HTMLVideoElement>(null);
   const undoStackRef = useRef(new UndoRedoStack());
   const [undoTick, setUndoTick] = useState(0); // force re-render on undo/redo
@@ -258,9 +287,12 @@ export function SubtitleAlignmentEditor({
     setTrim(trimRef.current);
     setRazorActive(false);
     setRazorStart(null);
+    setLogo(initialLogo ? structuredClone(initialLogo) : undefined);
+    setTextTracks(initialTextTracks ? structuredClone(initialTextTracks) : []);
+    setAudioTracks(initialAudioTracks ? structuredClone(initialAudioTracks) : []);
     undoStackRef.current.clear();
     window.setTimeout(() => { initializedRef.current = true; }, 0);
-  }, [clipDurationSec, clipEndSec, clipStartSec, initialBackgroundSettings, initialCues, initialCuts, initialFrameKeyframes, initialSegments, initialTrim, isOpen, languageLabel, settings.zoom, title]);
+  }, [clipDurationSec, clipEndSec, clipStartSec, initialAudioTracks, initialBackgroundSettings, initialCues, initialCuts, initialFrameKeyframes, initialLogo, initialSegments, initialTextTracks, initialTrim, isOpen, languageLabel, settings.zoom, title]);
 
   useEffect(() => {
     if (!isOpen || !initializedRef.current || !onDraftChange) return;
@@ -293,6 +325,24 @@ export function SubtitleAlignmentEditor({
     }, 150);
     return () => window.clearTimeout(timer);
   }, [isOpen, onSaveTrim, trim]);
+
+  useEffect(() => {
+    if (!isOpen || !initializedRef.current || !onSaveLogo) return;
+    const timer = window.setTimeout(() => onSaveLogo(logo), 150);
+    return () => window.clearTimeout(timer);
+  }, [isOpen, logo, onSaveLogo]);
+
+  useEffect(() => {
+    if (!isOpen || !initializedRef.current || !onSaveTextTracks) return;
+    const timer = window.setTimeout(() => onSaveTextTracks(textTracks), 150);
+    return () => window.clearTimeout(timer);
+  }, [isOpen, onSaveTextTracks, textTracks]);
+
+  useEffect(() => {
+    if (!isOpen || !initializedRef.current || !onSaveAudioTracks) return;
+    const timer = window.setTimeout(() => onSaveAudioTracks(audioTracks), 150);
+    return () => window.clearTimeout(timer);
+  }, [audioTracks, isOpen, onSaveAudioTracks]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -439,6 +489,50 @@ export function SubtitleAlignmentEditor({
   }, [clipDurationSec, dragState]);
 
   useEffect(() => {
+    if (!overlayDragState) return;
+    const move = (event: PointerEvent) => {
+      const deltaSec = (event.clientX - overlayDragState.pointerX) / overlayDragState.pixelsPerSecond;
+
+      if (overlayDragState.kind === 'audio') {
+        setAudioTracks((prev) => prev.map((track) => {
+          if (track.id !== overlayDragState.trackId) return track;
+          return {
+            ...track,
+            startSec: Math.min(Math.max(0, overlayDragState.originalStart + deltaSec), Math.max(0, clipDurationSec - 0.05)),
+          };
+        }));
+        return;
+      }
+
+      setTextTracks((prev) => prev.map((track) => {
+        if (track.id !== overlayDragState.trackId) return track;
+        return {
+          ...track,
+          blocks: track.blocks.map((block) => {
+            if (block.id !== overlayDragState.blockId) return block;
+            if (overlayDragState.mode === 'move') {
+              const duration = overlayDragState.originalEnd - overlayDragState.originalStart;
+              const startSec = Math.min(Math.max(0, overlayDragState.originalStart + deltaSec), Math.max(0, clipDurationSec - duration));
+              return { ...block, startSec, endSec: startSec + duration };
+            }
+            if (overlayDragState.mode === 'start') {
+              return { ...block, startSec: Math.min(Math.max(0, overlayDragState.originalStart + deltaSec), block.endSec - MIN_DURATION) };
+            }
+            return { ...block, endSec: Math.max(block.startSec + MIN_DURATION, Math.min(clipDurationSec, overlayDragState.originalEnd + deltaSec)) };
+          }),
+        };
+      }));
+    };
+    const up = () => setOverlayDragState(null);
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up, { once: true });
+    return () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+  }, [clipDurationSec, overlayDragState]);
+
+  useEffect(() => {
     if (!timelinePanDrag) return;
     const move = (event: PointerEvent) => {
       const container = multitrackRef.current;
@@ -457,6 +551,11 @@ export function SubtitleAlignmentEditor({
 
   const selected = useMemo(() => segments.find((segment) => segment.id === selectedId) || selectedSegmentAt(segments, currentSec), [currentSec, segments, selectedId]);
   const active = useMemo(() => selectedSegmentAt(segments, currentSec), [currentSec, segments]);
+  const activeTextBlocks = useMemo(() => textTracks
+    .filter((track) => !track.hidden && !track.muted)
+    .flatMap((track, trackIndex) => track.blocks
+      .filter((block) => !block.hidden && block.text.trim() && currentSec >= block.startSec && currentSec < block.endSec)
+      .map((block) => ({ ...block, trackIndex }))), [currentSec, textTracks]);
   const boxAlpha = Math.round(settings.subtitleBoxOpacity * 255).toString(16).padStart(2, '0');
   const previewCaption = active?.text || '';
   const captionLineClamp = settings.subtitleUseLinesPerCue ? Math.max(1, subtitleMaxLines) : undefined;
@@ -731,6 +830,9 @@ export function SubtitleAlignmentEditor({
     setTrim(trimRef.current);
     setRazorActive(false);
     setRazorStart(null);
+    setLogo(undefined);
+    setTextTracks([]);
+    setAudioTracks([]);
     undoStackRef.current.clear();
     syncMedia(0);
     // ── Persist the reset immediately (save callbacks use the computed defaults) ──
@@ -739,6 +841,9 @@ export function SubtitleAlignmentEditor({
     onSaveCuts?.([]);
     onSaveTrim?.({ trimStartSec: 0, trimEndSec: 0 });
     onSaveBackgroundSettings?.(resetBg);
+    onSaveLogo?.(undefined);
+    onSaveTextTracks?.([]);
+    onSaveAudioTracks?.([]);
     onResetAll?.();
   }
 
@@ -755,6 +860,39 @@ export function SubtitleAlignmentEditor({
       pointerX: event.clientX,
       originalStart: segment.start,
       originalEnd: segment.end,
+      pixelsPerSecond: Math.max(1, rect.width / clipDurationSec),
+    });
+  }
+
+  function startTextBlockDrag(event: React.PointerEvent, trackId: string, block: TextOverlayTrack['blocks'][number], mode: 'move' | 'start' | 'end') {
+    const rect = (event.currentTarget.parentElement as HTMLElement | null)?.getBoundingClientRect();
+    if (!rect) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setOverlayDragState({
+      kind: 'text',
+      trackId,
+      blockId: block.id,
+      mode,
+      pointerX: event.clientX,
+      originalStart: block.startSec,
+      originalEnd: block.endSec,
+      pixelsPerSecond: Math.max(1, rect.width / clipDurationSec),
+    });
+  }
+
+  function startAudioTrackDrag(event: React.PointerEvent, track: ExtraAudioTrack) {
+    const rect = (event.currentTarget.parentElement as HTMLElement | null)?.getBoundingClientRect();
+    if (!rect) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setOverlayDragState({
+      kind: 'audio',
+      trackId: track.id,
+      mode: 'move',
+      pointerX: event.clientX,
+      originalStart: track.startSec,
+      originalEnd: track.startSec,
       pixelsPerSecond: Math.max(1, rect.width / clipDurationSec),
     });
   }
@@ -807,6 +945,9 @@ export function SubtitleAlignmentEditor({
     onSaveCuts?.(cutsRef.current);
     onSaveTrim?.(trimRef.current);
     onSaveBackgroundSettings?.(savedBackgroundSettings);
+    onSaveLogo?.(logo);
+    onSaveTextTracks?.(textTracks);
+    onSaveAudioTracks?.(audioTracks);
     // Show green flash feedback, don't close the modal
     if (showFeedback) {
       setSavedFlash(true);
@@ -816,6 +957,24 @@ export function SubtitleAlignmentEditor({
 
   function save() {
     persistEditorState(true);
+  }
+
+  function addEmptySubtitleBlock() {
+    pushUndo();
+    const start = Math.min(Math.max(0, currentSec), Math.max(0, clipDurationSec - 1));
+    const segment: AlignedSubtitleSegment = {
+      id: `manual_sub_${Date.now()}`,
+      start,
+      end: Math.min(clipDurationSec, start + 2),
+      text: '',
+      words: [],
+    };
+    setSegments((prev) => {
+      const next = normalizeSegments([...prev, segment], clipDurationSec, { keepEmpty: true });
+      segmentsRef.current = next;
+      return next;
+    });
+    setSelectedId(segment.id);
   }
 
   function switchLanguage(language: 'source' | 'target') {
@@ -1068,7 +1227,42 @@ export function SubtitleAlignmentEditor({
                 {settings.subtitleTextTransform === 'uppercase' ? previewCaption.toUpperCase() : previewCaption}
               </div>
             )}
+            {activeTextBlocks.map((block) => (
+              <div
+                key={block.id}
+                className="alignment-caption-preview alignment-text-overlay-preview"
+                style={{
+                  background: `${settings.subtitleBoxColor}${boxAlpha}`,
+                  color: settings.subtitleTextColor,
+                  fontFamily: settings.subtitleFontFamily,
+                  fontSize: `${Math.max(10, captionFontSize * 0.82)}px`,
+                  fontWeight: settings.subtitleBold ? 850 : 600,
+                  letterSpacing: `${captionLetterSpacing}px`,
+                  lineHeight: settings.subtitleLineSpacing,
+                  width: `${Math.min(92, settings.subtitleBoxWidth)}%`,
+                  maxWidth: captionMaxWidth,
+                  bottom: `${captionBottom + ((block.trackIndex + 1) * (captionFontSize * 1.65))}px`,
+                  padding: `${captionPaddingY}px ${captionPaddingX}px`,
+                  borderRadius: `${captionRadius}px`,
+                  boxShadow: captionBlur > 0 ? `0 0 ${captionBlur}px ${settings.subtitleBoxColor}${boxAlpha}` : undefined,
+                  textShadow: captionTextShadow,
+                }}
+              >
+                {settings.subtitleTextTransform === 'uppercase' ? block.text.toUpperCase() : block.text}
+              </div>
+            ))}
             </div>
+            {logo?.src && !logo.hidden && (
+              <img
+                className="alignment-logo-overlay-preview"
+                src={logo.src}
+                alt={logo.name || 'Logo'}
+                style={{
+                  width: `${Math.round(72 * logo.size)}px`,
+                  opacity: logo.opacity,
+                }}
+              />
+            )}
           </div>
         </div>
 
@@ -1236,6 +1430,26 @@ export function SubtitleAlignmentEditor({
             </div>
           </div>
 
+          {audioTracks.map((track, trackIndex) => (
+          <div className="alignment-track-row alignment-track-extra-audio" key={track.id}>
+            <span className="alignment-track-label">Audio {trackIndex + 1}</span>
+            <div className="alignment-track-content" style={{ width: `${timelineZoom * 100}%` }}>
+              <div
+                className={`alignment-overlay-block ${track.muted ? 'muted' : ''}`}
+                style={{
+                  left: `${pct(track.startSec, clipDurationSec)}%`,
+                  width: `${Math.max(1, pct(Math.max(1, clipDurationSec - track.startSec - track.trimEndSec), clipDurationSec))}%`,
+                }}
+                onPointerDown={(event) => startAudioTrackDrag(event, track)}
+                onDoubleClick={() => seek(track.startSec)}
+              >
+                {track.name}
+              </div>
+              <b className="alignment-track-playhead" style={{ left: `${pct(currentSec, clipDurationSec)}%` }} />
+            </div>
+          </div>
+          ))}
+
           {/* Subtitle blocks track */}
           <div className="alignment-track-row alignment-track-subtitles">
             <span className="alignment-track-label">Subs</span>
@@ -1284,6 +1498,31 @@ export function SubtitleAlignmentEditor({
             <b className="alignment-track-playhead" style={{ left: `${pct(currentSec, clipDurationSec)}%` }} />
             </div>
           </div>
+
+          {textTracks.map((track, trackIndex) => (
+          <div className="alignment-track-row alignment-track-text-overlay" key={track.id}>
+            <span className="alignment-track-label">Text {trackIndex + 1}</span>
+            <div className="alignment-track-content alignment-timeline-track" style={{ width: `${timelineZoom * 100}%` }}>
+              {track.blocks.map((block) => (
+                <div
+                  key={block.id}
+                  className={`alignment-overlay-block ${track.hidden || block.hidden ? 'muted' : ''}`}
+                  style={{
+                    left: `${pct(block.startSec, clipDurationSec)}%`,
+                    width: `${Math.max(0.8, pct(block.endSec - block.startSec, clipDurationSec))}%`,
+                  }}
+                  onPointerDown={(event) => startTextBlockDrag(event, track.id, block, 'move')}
+                  onDoubleClick={() => seek(block.startSec)}
+                >
+                  <span className="alignment-resize left" onPointerDown={(event) => startTextBlockDrag(event, track.id, block, 'start')} />
+                  {block.text || '[ Empty Text Block ]'}
+                  <span className="alignment-resize right" onPointerDown={(event) => startTextBlockDrag(event, track.id, block, 'end')} />
+                </div>
+              ))}
+              <b className="alignment-track-playhead" style={{ left: `${pct(currentSec, clipDurationSec)}%` }} />
+            </div>
+          </div>
+          ))}
         </div>
 
         <audio ref={audioRef} src={audioSrc} className="review-audio-player-hidden" />
@@ -1318,6 +1557,7 @@ export function SubtitleAlignmentEditor({
                       return next;
                     });
                   }}><SplitSquareHorizontal size={14} /> Split</button>
+                  <button type="button" onClick={addEmptySubtitleBlock}><SplitSquareHorizontal size={14} /> Add Subtitle Block</button>
                   <button type="button" onClick={() => {
                     pushUndo();
                     setSegments((prev) => {
@@ -1384,6 +1624,7 @@ export function SubtitleAlignmentEditor({
             <div className="alignment-inspector-tabs">
               <button type="button" className={inspectorTab === 'frame' ? 'active' : ''} onClick={() => setInspectorTab('frame')}>Frame</button>
               <button type="button" className={inspectorTab === 'background' ? 'active' : ''} onClick={() => setInspectorTab('background')}>Background</button>
+              <button type="button" className={inspectorTab === 'layers' ? 'active' : ''} onClick={() => setInspectorTab('layers')}>Layers</button>
             </div>
 
             {inspectorTab === 'frame' && (
@@ -1635,6 +1876,23 @@ export function SubtitleAlignmentEditor({
                   </>
                 )}
               </div>
+            </div>
+            )}
+
+            {inspectorTab === 'layers' && (
+            <div className="alignment-frame-panel alignment-layers-panel">
+              <LogoManager logo={logo} onChange={setLogo} />
+              <TextTrackManager
+                tracks={textTracks}
+                currentSec={currentSec}
+                durationSec={clipDurationSec}
+                onChange={setTextTracks}
+              />
+              <AudioTrackManager
+                tracks={audioTracks}
+                durationSec={clipDurationSec}
+                onChange={setAudioTracks}
+              />
             </div>
             )}
           </div>

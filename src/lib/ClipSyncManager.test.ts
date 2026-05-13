@@ -54,6 +54,23 @@ test('buildSyncPatch mirrors every clip-level synced editor parameter', () => {
   const sourceAlignment = [{ id: 'source-1', start: 1.2, end: 2.8, text: 'Source text', words: [] }];
   const timelineCuts = [{ startSec: 3, endSec: 4.25 }];
   const timelineTrim = { trimStartSec: 0.5, trimEndSec: 1.5 };
+  const sourceLogo = { id: 'logo-1', src: '/tmp/logo.png', size: 1.2, opacity: 0.7 };
+  const sourceTextTracks = [{
+    id: 'text-track-1',
+    name: 'CTA',
+    blocks: [{ id: 'text-block-1', startSec: 1, endSec: 3, text: 'Subscribe' }],
+  }];
+  const sourceAudioTracks = [{
+    id: 'audio-track-1',
+    name: 'Music',
+    src: '/tmp/music.mp3',
+    startSec: 0,
+    trimStartSec: 0,
+    trimEndSec: 0,
+    volume: 0.4,
+    fadeInSec: 1,
+    fadeOutSec: 1,
+  }];
   const backgroundSettings = {
     solidEnabled: true,
     solidColor: '#334455',
@@ -98,6 +115,9 @@ test('buildSyncPatch mirrors every clip-level synced editor parameter', () => {
     timelineCuts,
     timelineTrim,
     backgroundSettings,
+    sourceLogo,
+    sourceTextTracks,
+    sourceAudioTracks,
   };
   const result = buildSyncPatch([{ ...plans[0], ...patch }], 0, patch);
 
@@ -108,6 +128,9 @@ test('buildSyncPatch mirrors every clip-level synced editor parameter', () => {
   assert.deepEqual(result?.patch.timelineCuts, timelineCuts);
   assert.deepEqual(result?.patch.timelineTrim, timelineTrim);
   assert.deepEqual(result?.patch.backgroundSettings, backgroundSettings);
+  assert.deepEqual(result?.patch.targetLogo, sourceLogo);
+  assert.deepEqual(result?.patch.targetTextTracks, sourceTextTracks);
+  assert.deepEqual(result?.patch.targetAudioTracks, sourceAudioTracks);
 });
 
 test('buildSyncPatch syncs a bilingual source/target plan even without a linked group id', () => {
