@@ -11,7 +11,8 @@ type Props = {
 };
 
 function fileSource(file: File): string {
-  return (file as FileWithPath).path || URL.createObjectURL(file);
+  const diskPath = (file as FileWithPath).path;
+  return diskPath ? encodeURI(`file://${diskPath}`) : URL.createObjectURL(file);
 }
 
 function makeTrack(file: File, index: number, durationSec: number): ExtraAudioTrack {

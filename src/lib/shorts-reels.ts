@@ -23,6 +23,7 @@ export type LogoOverlaySettings = {
   name?: string;
   size: number;
   opacity: number;
+  position?: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
   hidden?: boolean;
 };
 

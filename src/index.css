@@ -2218,12 +2218,11 @@ html, body, #root {
 }
 .alignment-logo-overlay-preview {
   position: absolute;
-  top: 20px;
-  left: 20px;
   z-index: 8;
   max-width: 28%;
   max-height: 18%;
   object-fit: contain;
+  background: transparent;
   pointer-events: none;
   transform-origin: top left;
 }
@@ -2992,6 +2991,41 @@ html, body, #root {
 .alignment-overlay-block.muted {
   opacity: 0.38;
   filter: grayscale(0.5);
+}
+.alignment-audio-fade {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: var(--fade-in-pct, 0%);
+  min-width: 0;
+  pointer-events: none;
+  opacity: 0.72;
+}
+.alignment-audio-fade.in {
+  left: 8px;
+  background: linear-gradient(to bottom right, transparent 48%, rgba(255,255,255,0.72) 50%, transparent 52%);
+}
+.alignment-audio-fade.out {
+  right: 8px;
+  width: var(--fade-out-pct, 0%);
+  background: linear-gradient(to top right, transparent 48%, rgba(255,255,255,0.72) 50%, transparent 52%);
+}
+.alignment-overlay-delete {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.35);
+  background: rgba(0,0,0,0.3);
+  color: #fff;
+  line-height: 14px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  cursor: pointer;
 }
 .alignment-track-playhead {
   position: absolute; top: 0; bottom: 0; width: 2px;

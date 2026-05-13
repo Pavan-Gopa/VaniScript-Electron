@@ -74,6 +74,7 @@ type Props = {
   onSaveTextTracks?: (tracks: TextOverlayTrack[]) => void;
   onSaveAudioTracks?: (tracks: ExtraAudioTrack[]) => void;
   onResetAll?: () => void;
+  onSettingsChange?: (settings: ShortsSettings) => void;
   /** Switch between source/target language inside the editor */
   onSwitchLanguage?: (lang: 'source' | 'target') => void;
 };
@@ -150,6 +151,7 @@ export function SubtitleAlignmentEditor({
   onSaveTextTracks,
   onSaveAudioTracks,
   onResetAll,
+  onSettingsChange,
   currentLanguage,
   onSwitchLanguage,
 }: Props) {
@@ -196,7 +198,7 @@ export function SubtitleAlignmentEditor({
   const [looping, setLooping] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false); // green ✓ feedback after save
   const [bgSettings, setBgSettings] = useState<BackgroundSettings>(initialBackgroundSettings || defaultBackgroundSettings());
-  const [inspectorTab, setInspectorTab] = useState<'frame' | 'background' | 'layers'>('frame');
+  const [inspectorTab, setInspectorTab] = useState<'style' | 'frame' | 'background' | 'layers'>('style');
   const [logo, setLogo] = useState<LogoOverlaySettings | undefined>(initialLogo);
   const [textTracks, setTextTracks] = useState<TextOverlayTrack[]>(initialTextTracks || []);
   const [audioTracks, setAudioTracks] = useState<ExtraAudioTrack[]>(initialAudioTracks || []);
@@ -224,6 +226,7 @@ export function SubtitleAlignmentEditor({
   bgSettingsRef.current = bgSettings;
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const extraAudioRefs = useRef(new Map<string, HTMLAudioElement>());
   const multitrackRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
   const waveformTrackRef = useRef<HTMLDivElement>(null);
@@ -250,7 +253,7 @@ export function SubtitleAlignmentEditor({
     initKeyRef.current = initKey;
     initializedRef.current = false;
     const next = initialSegments?.length
-      ? normalizeSegments(initialSegments, clipDurationSec)
+      ? normalizeSegments(initialSegments, clipDurationSec, { keepEmpty: true })
       : cuesToAlignedSegments(initialCues, clipDurationSec);
     segmentsRef.current = next;
     setSegments(next);
@@ -474,7 +477,7 @@ export function SubtitleAlignmentEditor({
             return { ...segment, start: Math.min(Math.max(0, dragState.originalStart + deltaSec), segment.end - MIN_DURATION) };
           }
           return { ...segment, end: Math.max(segment.start + MIN_DURATION, Math.min(clipDurationSec, dragState.originalEnd + deltaSec)) };
-        }), clipDurationSec);
+        }), clipDurationSec, { keepEmpty: true });
         segmentsRef.current = next;
         return next;
       });
@@ -496,10 +499,17 @@ export function SubtitleAlignmentEditor({
       if (overlayDragState.kind === 'audio') {
         setAudioTracks((prev) => prev.map((track) => {
           if (track.id !== overlayDragState.trackId) return track;
-          return {
-            ...track,
-            startSec: Math.min(Math.max(0, overlayDragState.originalStart + deltaSec), Math.max(0, clipDurationSec - 0.05)),
-          };
+          if (overlayDragState.mode === 'move') {
+            const duration = Math.max(MIN_DURATION, overlayDragState.originalEnd - overlayDragState.originalStart);
+            const startSec = Math.min(Math.max(0, overlayDragState.originalStart + deltaSec), Math.max(0, clipDurationSec - duration));
+            return { ...track, startSec, trimEndSec: Math.max(0, clipDurationSec - (startSec + duration)) };
+          }
+          if (overlayDragState.mode === 'start') {
+            const startSec = Math.min(Math.max(0, overlayDragState.originalStart + deltaSec), overlayDragState.originalEnd - MIN_DURATION);
+            return { ...track, startSec };
+          }
+          const endSec = Math.max(track.startSec + MIN_DURATION, Math.min(clipDurationSec, overlayDragState.originalEnd + deltaSec));
+          return { ...track, trimEndSec: Math.max(0, clipDurationSec - endSec) };
         }));
         return;
       }
@@ -569,6 +579,16 @@ export function SubtitleAlignmentEditor({
   const captionBottom = Math.max(0, settings.subtitleBottomMargin * frameScale);
   const captionLetterSpacing = settings.subtitleLetterSpacing * frameScale;
   const captionTextShadow = `0 ${Math.max(1, 2 * frameScale)}px ${Math.max(1, 3 * frameScale)}px rgba(0,0,0,0.72)`;
+  const logoSafeMargin = Math.max(8, 40 * frameScale);
+  const logoPosition = logo?.position ?? 'top-left';
+  const logoPlacementStyle: React.CSSProperties = {
+    width: `${Math.round(120 * frameScale * (logo?.size ?? 1))}px`,
+    opacity: logo?.opacity ?? 1,
+    top: logoPosition.startsWith('top') ? `${logoSafeMargin}px` : undefined,
+    bottom: logoPosition.startsWith('bottom') ? `${logoSafeMargin}px` : undefined,
+    left: logoPosition.endsWith('left') ? `${logoSafeMargin}px` : undefined,
+    right: logoPosition.endsWith('right') ? `${logoSafeMargin}px` : undefined,
+  };
 
   useEffect(() => {
     if (!isOpen) return;
@@ -624,6 +644,46 @@ export function SubtitleAlignmentEditor({
     return hit ? hit.endSec : sec;
   }
 
+  function extraAudioEnd(track: ExtraAudioTrack): number {
+    return Math.max(track.startSec, clipDurationSec - Math.max(0, track.trimEndSec));
+  }
+
+  function extraAudioGain(track: ExtraAudioTrack, localSec: number): number {
+    const start = Math.max(0, track.startSec);
+    const end = extraAudioEnd(track);
+    if (track.muted || localSec < start || localSec > end) return 0;
+    const local = localSec - start;
+    const duration = Math.max(0.05, end - start);
+    let gain = Math.min(Math.max(track.volume, 0), 1);
+    if (track.fadeInSec > 0) gain *= Math.min(1, Math.max(0, local / track.fadeInSec));
+    if (track.fadeOutSec > 0) gain *= Math.min(1, Math.max(0, (duration - local) / track.fadeOutSec));
+    return Math.min(Math.max(gain, 0), 1);
+  }
+
+  function syncExtraAudio(localSec: number, shouldPlay: boolean) {
+    audioTracks.forEach((track) => {
+      const node = extraAudioRefs.current.get(track.id);
+      if (!node) return;
+      const gain = extraAudioGain(track, localSec);
+      const active = gain > 0;
+      const targetTime = Math.max(0, track.trimStartSec + Math.max(0, localSec - track.startSec));
+      node.volume = gain;
+      if (!active) {
+        node.pause();
+        if (Math.abs(node.currentTime - Math.max(0, track.trimStartSec)) > 0.25) {
+          node.currentTime = Math.max(0, track.trimStartSec);
+        }
+        return;
+      }
+      if (Number.isFinite(targetTime) && Math.abs(node.currentTime - targetTime) > 0.25) {
+        node.currentTime = targetTime;
+      }
+      if (shouldPlay && node.paused) {
+        node.play().catch(() => undefined);
+      }
+    });
+  }
+
   useEffect(() => {
     if (!isOpen || !playing) return;
     let frameId = 0;
@@ -647,12 +707,13 @@ export function SubtitleAlignmentEditor({
       // Skip over cut regions (read from ref for latest data)
       const hit = findCutAtRef(local);
       if (hit) {
-        const jumpTo = hit.endSec + 0.02;
-        video.currentTime = clipStartSec + jumpTo;
-        if (audio) audio.currentTime = clipStartSec + jumpTo;
-        setCurrentSec(jumpTo);
-        return; // wait for next frame after seek
-      }
+          const jumpTo = hit.endSec + 0.02;
+          video.currentTime = clipStartSec + jumpTo;
+          if (audio) audio.currentTime = clipStartSec + jumpTo;
+          syncExtraAudio(jumpTo, true);
+          setCurrentSec(jumpTo);
+          return; // wait for next frame after seek
+        }
 
       // Respect trim end / loop
       if (local >= currentPlayEnd - 0.02) {
@@ -660,22 +721,26 @@ export function SubtitleAlignmentEditor({
           const restart = skipCutRef(currentPlayStart);
           video.currentTime = clipStartSec + restart;
           if (audio) audio.currentTime = clipStartSec + restart;
+          syncExtraAudio(restart, true);
           setCurrentSec(restart);
         } else {
           stopped = true;
           window.cancelAnimationFrame(frameId);
           video.pause();
           audio?.pause();
+          extraAudioRefs.current.forEach((node) => node.pause());
           setCurrentSec(currentPlayEnd);
           setPlaying(false);
         }
       } else {
-        setCurrentSec(Math.min(Math.max(0, local), clipDurationSec));
+        const nextLocal = Math.min(Math.max(0, local), clipDurationSec);
+        syncExtraAudio(nextLocal, true);
+        setCurrentSec(nextLocal);
       }
     };
     frameId = window.requestAnimationFrame(tick);
     return () => { stopped = true; window.cancelAnimationFrame(frameId); };
-  }, [clipDurationSec, clipStartSec, isOpen, playing]);
+  }, [audioTracks, clipDurationSec, clipStartSec, isOpen, playing]);
 
   useEffect(() => {
     let cancelled = false;
@@ -707,6 +772,7 @@ export function SubtitleAlignmentEditor({
     if (videoRef.current) videoRef.current.currentTime = clipStartSec + safe;
     if (audioRef.current) audioRef.current.currentTime = clipStartSec + safe;
     if (blurVideoRef.current) blurVideoRef.current.currentTime = clipStartSec + safe;
+    syncExtraAudio(safe, false);
     setCurrentSec(safe);
   }
 
@@ -774,16 +840,19 @@ export function SubtitleAlignmentEditor({
       try {
         await video.play();
         blurVideoRef.current?.play().catch(() => undefined);
+        syncExtraAudio(startAt, true);
         setPlaying(true);
       } catch (error) {
         console.warn('Visual editor video playback failed.', error);
         audio?.pause();
+        extraAudioRefs.current.forEach((node) => node.pause());
         blurVideoRef.current?.pause();
         setPlaying(false);
       }
     } else {
       video.pause();
       audio?.pause();
+      extraAudioRefs.current.forEach((node) => node.pause());
       blurVideoRef.current?.pause();
       setPlaying(false);
     }
@@ -796,14 +865,16 @@ export function SubtitleAlignmentEditor({
     const video = videoRef.current;
     if (!video || playing) return; // RAF tick handles it when playing
     const local = video.currentTime - clipStartSec;
-    setCurrentSec(Math.min(Math.max(0, local), clipDurationSec));
+    const safe = Math.min(Math.max(0, local), clipDurationSec);
+    syncExtraAudio(safe, false);
+    setCurrentSec(safe);
   }
 
   /** Reset everything to the initial state as if opening the editor for the first time. */
   function resetToInitial() {
     if (!confirm('Reset all edits? This will discard all changes and restore the clip to its initial state.')) return;
     const next = initialSegments?.length
-      ? normalizeSegments(initialSegments, clipDurationSec)
+      ? normalizeSegments(initialSegments, clipDurationSec, { keepEmpty: true })
       : cuesToAlignedSegments(initialCues, clipDurationSec);
     segmentsRef.current = next;
     setSegments(next);
@@ -881,7 +952,7 @@ export function SubtitleAlignmentEditor({
     });
   }
 
-  function startAudioTrackDrag(event: React.PointerEvent, track: ExtraAudioTrack) {
+  function startAudioTrackDrag(event: React.PointerEvent, track: ExtraAudioTrack, mode: 'move' | 'start' | 'end') {
     const rect = (event.currentTarget.parentElement as HTMLElement | null)?.getBoundingClientRect();
     if (!rect) return;
     event.preventDefault();
@@ -889,10 +960,10 @@ export function SubtitleAlignmentEditor({
     setOverlayDragState({
       kind: 'audio',
       trackId: track.id,
-      mode: 'move',
+      mode,
       pointerX: event.clientX,
       originalStart: track.startSec,
-      originalEnd: track.startSec,
+      originalEnd: extraAudioEnd(track),
       pixelsPerSecond: Math.max(1, rect.width / clipDurationSec),
     });
   }
@@ -932,8 +1003,12 @@ export function SubtitleAlignmentEditor({
     });
   }
 
+  function patchCaptionSettings(partial: Partial<ShortsSettings>) {
+    onSettingsChange?.({ ...settings, ...partial });
+  }
+
   function persistEditorState(showFeedback = false) {
-    const normalized = normalizeSegments(segmentsRef.current, clipDurationSec);
+    const normalized = normalizeSegments(segmentsRef.current, clipDurationSec, { keepEmpty: true });
     const savedFrameKeyframes = materializeFrameDraft();
     const savedBackgroundSettings = bgSettingsRef.current;
     segmentsRef.current = normalized;
@@ -1251,18 +1326,15 @@ export function SubtitleAlignmentEditor({
                 {settings.subtitleTextTransform === 'uppercase' ? block.text.toUpperCase() : block.text}
               </div>
             ))}
-            </div>
             {logo?.src && !logo.hidden && (
               <img
                 className="alignment-logo-overlay-preview"
                 src={logo.src}
                 alt={logo.name || 'Logo'}
-                style={{
-                  width: `${Math.round(72 * logo.size)}px`,
-                  opacity: logo.opacity,
-                }}
+                style={logoPlacementStyle}
               />
             )}
+            </div>
           </div>
         </div>
 
@@ -1439,11 +1511,26 @@ export function SubtitleAlignmentEditor({
                 style={{
                   left: `${pct(track.startSec, clipDurationSec)}%`,
                   width: `${Math.max(1, pct(Math.max(1, clipDurationSec - track.startSec - track.trimEndSec), clipDurationSec))}%`,
-                }}
-                onPointerDown={(event) => startAudioTrackDrag(event, track)}
+                  '--fade-in-pct': `${Math.min(100, pct(track.fadeInSec, Math.max(0.05, extraAudioEnd(track) - track.startSec)))}%`,
+                  '--fade-out-pct': `${Math.min(100, pct(track.fadeOutSec, Math.max(0.05, extraAudioEnd(track) - track.startSec)))}%`,
+                } as React.CSSProperties}
+                onPointerDown={(event) => startAudioTrackDrag(event, track, 'move')}
                 onDoubleClick={() => seek(track.startSec)}
               >
+                <span className="alignment-resize left" onPointerDown={(event) => startAudioTrackDrag(event, track, 'start')} />
+                <span className="alignment-audio-fade in" />
                 {track.name}
+                <span className="alignment-audio-fade out" />
+                <button
+                  type="button"
+                  className="alignment-overlay-delete"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={() => setAudioTracks((prev) => prev.filter((candidate) => candidate.id !== track.id))}
+                  title="Delete audio track"
+                >
+                  ×
+                </button>
+                <span className="alignment-resize right" onPointerDown={(event) => startAudioTrackDrag(event, track, 'end')} />
               </div>
               <b className="alignment-track-playhead" style={{ left: `${pct(currentSec, clipDurationSec)}%` }} />
             </div>
@@ -1526,6 +1613,18 @@ export function SubtitleAlignmentEditor({
         </div>
 
         <audio ref={audioRef} src={audioSrc} className="review-audio-player-hidden" />
+        {audioTracks.map((track) => (
+          <audio
+            key={track.id}
+            ref={(node) => {
+              if (node) extraAudioRefs.current.set(track.id, node);
+              else extraAudioRefs.current.delete(track.id);
+            }}
+            src={track.src}
+            preload="auto"
+            className="review-audio-player-hidden"
+          />
+        ))}
 
         <div className="alignment-edit-panel">
           <div className="alignment-segment-list">
@@ -1622,10 +1721,91 @@ export function SubtitleAlignmentEditor({
           <div className="alignment-side">
             {/* Tab bar */}
             <div className="alignment-inspector-tabs">
+              <button type="button" className={inspectorTab === 'style' ? 'active' : ''} onClick={() => setInspectorTab('style')}>Style</button>
               <button type="button" className={inspectorTab === 'frame' ? 'active' : ''} onClick={() => setInspectorTab('frame')}>Frame</button>
               <button type="button" className={inspectorTab === 'background' ? 'active' : ''} onClick={() => setInspectorTab('background')}>Background</button>
               <button type="button" className={inspectorTab === 'layers' ? 'active' : ''} onClick={() => setInspectorTab('layers')}>Layers</button>
             </div>
+
+            {inspectorTab === 'style' && (
+            <div className="alignment-frame-panel alignment-style-panel">
+              <h4>Caption style</h4>
+              <p>Shared styling for subtitles and text overlays. Changes update the preview immediately.</p>
+              <label>
+                <span>Font</span>
+                <select value={settings.subtitleFontFamily} onChange={(event) => patchCaptionSettings({ subtitleFontFamily: event.currentTarget.value })}>
+                  <option value="Cuprum">Cuprum</option>
+                  <option value="Oswald">Oswald</option>
+                  <option value="Roboto Condensed">Roboto Condensed</option>
+                  <option value="Inter">Inter</option>
+                  <option value="Arial">Arial</option>
+                </select>
+              </label>
+              <label>
+                <span>Size</span>
+                <input type="range" min={70} max={200} step={1} value={settings.subtitleFontSize} onChange={(event) => patchCaptionSettings({ subtitleFontSize: Number(event.currentTarget.value) })} />
+                <b>{settings.subtitleFontSize}</b>
+              </label>
+              <label>
+                <span>Text color</span>
+                <input type="color" value={settings.subtitleTextColor} onChange={(event) => patchCaptionSettings({ subtitleTextColor: event.currentTarget.value })} />
+                <b>{settings.subtitleTextColor}</b>
+              </label>
+              <label>
+                <span>Letter spacing</span>
+                <input type="range" min={-2} max={8} step={0.25} value={settings.subtitleLetterSpacing} onChange={(event) => patchCaptionSettings({ subtitleLetterSpacing: Number(event.currentTarget.value) })} />
+                <b>{settings.subtitleLetterSpacing.toFixed(1)}</b>
+              </label>
+              <label>
+                <span>Line spacing</span>
+                <input type="range" min={0.8} max={1.6} step={0.05} value={settings.subtitleLineSpacing} onChange={(event) => patchCaptionSettings({ subtitleLineSpacing: Number(event.currentTarget.value) })} />
+                <b>{settings.subtitleLineSpacing.toFixed(2)}x</b>
+              </label>
+              <label>
+                <span>Box color</span>
+                <input type="color" value={settings.subtitleBoxColor} onChange={(event) => patchCaptionSettings({ subtitleBoxColor: event.currentTarget.value })} />
+                <b>{settings.subtitleBoxColor}</b>
+              </label>
+              <label>
+                <span>Box opacity</span>
+                <input type="range" min={0} max={1} step={0.02} value={settings.subtitleBoxOpacity} onChange={(event) => patchCaptionSettings({ subtitleBoxOpacity: Number(event.currentTarget.value) })} />
+                <b>{Math.round(settings.subtitleBoxOpacity * 100)}%</b>
+              </label>
+              <label>
+                <span>Box width</span>
+                <input type="range" min={48} max={96} step={1} value={settings.subtitleBoxWidth} onChange={(event) => patchCaptionSettings({ subtitleBoxWidth: Number(event.currentTarget.value) })} />
+                <b>{settings.subtitleBoxWidth}%</b>
+              </label>
+              <label>
+                <span>Box height</span>
+                <input type="range" min={0.8} max={2} step={0.05} value={settings.subtitleBoxHeight} onChange={(event) => patchCaptionSettings({ subtitleBoxHeight: Number(event.currentTarget.value) })} />
+                <b>{settings.subtitleBoxHeight.toFixed(2)}x</b>
+              </label>
+              <label>
+                <span>Edge softness</span>
+                <input type="range" min={0} max={1} step={0.05} value={settings.subtitleEdgeSoftness} onChange={(event) => patchCaptionSettings({ subtitleEdgeSoftness: Number(event.currentTarget.value) })} />
+                <b>{Math.round(settings.subtitleEdgeSoftness * 100)}%</b>
+              </label>
+              <label>
+                <span>Edge blur</span>
+                <input type="range" min={0} max={18} step={1} value={settings.subtitleBoxBlur} onChange={(event) => patchCaptionSettings({ subtitleBoxBlur: Number(event.currentTarget.value) })} />
+                <b>{settings.subtitleBoxBlur}px</b>
+              </label>
+              <label>
+                <span>Caption position</span>
+                <input type="range" min={0} max={1800} step={10} value={settings.subtitleBottomMargin} onChange={(event) => patchCaptionSettings({ subtitleBottomMargin: Number(event.currentTarget.value) })} />
+                <b>{settings.subtitleBottomMargin}</b>
+              </label>
+              <div className="alignment-layer-actions">
+                <label><input type="checkbox" checked={settings.subtitleBold} onChange={(event) => patchCaptionSettings({ subtitleBold: event.currentTarget.checked })} /> Bold</label>
+                <select value={settings.subtitleTextTransform} onChange={(event) => patchCaptionSettings({ subtitleTextTransform: event.currentTarget.value as ShortsSettings['subtitleTextTransform'] })}>
+                  <option value="uppercase">Uppercase</option>
+                  <option value="title">Title Case</option>
+                  <option value="none">Original Case</option>
+                </select>
+              </div>
+            </div>
+            )}
 
             {inspectorTab === 'frame' && (
             <div className="alignment-frame-panel">

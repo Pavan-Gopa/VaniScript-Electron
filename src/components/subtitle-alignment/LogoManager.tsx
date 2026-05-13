@@ -10,7 +10,8 @@ type Props = {
 };
 
 function fileSource(file: File): string {
-  return (file as FileWithPath).path || URL.createObjectURL(file);
+  const diskPath = (file as FileWithPath).path;
+  return diskPath ? encodeURI(`file://${diskPath}`) : URL.createObjectURL(file);
 }
 
 export function LogoManager({ logo, onChange }: Props) {
@@ -42,6 +43,7 @@ export function LogoManager({ logo, onChange }: Props) {
             name: file.name,
             size: logo?.size ?? 1,
             opacity: logo?.opacity ?? 1,
+            position: logo?.position ?? 'top-left',
             hidden: false,
           });
         }}
@@ -65,6 +67,18 @@ export function LogoManager({ logo, onChange }: Props) {
               onChange={(event) => onChange({ ...logo, size: Number(event.currentTarget.value) })}
             />
             <b>{Math.round(logo.size * 100)}%</b>
+          </label>
+          <label>
+            <span>Corner</span>
+            <select
+              value={logo.position ?? 'top-left'}
+              onChange={(event) => onChange({ ...logo, position: event.currentTarget.value as LogoOverlaySettings['position'] })}
+            >
+              <option value="top-left">Top left</option>
+              <option value="top-right">Top right</option>
+              <option value="bottom-left">Bottom left</option>
+              <option value="bottom-right">Bottom right</option>
+            </select>
           </label>
           <label>
             <span>Opacity</span>

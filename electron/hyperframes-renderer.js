@@ -129,6 +129,7 @@ function normalizeProject(project) {
       name: String(project.logo.name || 'Logo'),
       size: clamp(Number(project.logo.size) || 1, 0.5, 2),
       opacity: clamp(Number.isFinite(Number(project.logo.opacity)) ? Number(project.logo.opacity) : 1, 0, 1),
+      position: ['top-left', 'top-right', 'bottom-left', 'bottom-right'].includes(project.logo.position) ? project.logo.position : 'top-left',
       hidden: !!project.logo.hidden,
     } : undefined,
     textTracks: (project.textTracks || []).slice(0, 3).map((track, trackIndex) => ({
@@ -406,9 +407,10 @@ function buildCompositionHtml(project, relativeVideoPath) {
         white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal;
       }
       #logo-overlay {
-        position: absolute; top: 40px; left: 40px; z-index: 4;
+        position: absolute; z-index: 4;
         transform-origin: top left; pointer-events: none;
         max-width: 28%; max-height: 18%; object-fit: contain;
+        background: transparent;
       }
       #text-overlays {
         position: absolute; inset: 0; z-index: 4; pointer-events: none;
@@ -547,8 +549,14 @@ function buildCompositionHtml(project, relativeVideoPath) {
       }
 
       if (logoOverlay && project.logo) {
+        const margin = 40;
+        const position = project.logo.position || 'top-left';
         logoOverlay.style.width = (120 * (project.logo.size || 1)) + 'px';
         logoOverlay.style.opacity = String(project.logo.opacity ?? 1);
+        logoOverlay.style.top = position.startsWith('top') ? margin + 'px' : 'auto';
+        logoOverlay.style.bottom = position.startsWith('bottom') ? margin + 'px' : 'auto';
+        logoOverlay.style.left = position.endsWith('left') ? margin + 'px' : 'auto';
+        logoOverlay.style.right = position.endsWith('right') ? margin + 'px' : 'auto';
       }
 
       function styleOverlayBox(layer, textEl, style, text, bottomPx, scale, fontSizeFactor) {

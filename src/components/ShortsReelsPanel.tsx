@@ -750,6 +750,7 @@ export function ShortsReelsPanel({
           onSaveAudioTracks={(tracks) => {
             if (editorIndex !== null) onSavePlanAudioTracks?.(editorIndex, displayLanguage, tracks);
           }}
+          onSettingsChange={onChange}
           onResetAll={() => {
             if (editorIndex !== null) {
               onUpdatePlan(editorIndex, {
