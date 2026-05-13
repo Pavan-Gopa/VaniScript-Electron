@@ -2075,10 +2075,12 @@ html, body, #root {
   box-shadow: none;
   padding: 16px 16px 12px;
 }
-/* X close button — absolute top-right corner */
+/* X close button — aligned with the editor header actions */
 .alignment-close-x {
   position: absolute;
-  top: 12px; right: 12px;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
   width: 32px; height: 32px;
   border: none; border-radius: 8px;
   background: rgba(255,255,255,0.06);
@@ -2121,9 +2123,11 @@ html, body, #root {
   position: relative;
   z-index: 40;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
+  min-height: 42px;
+  padding-right: 44px;
   -webkit-app-region: no-drag;
 }
 .alignment-head h3 {
@@ -2142,7 +2146,6 @@ html, body, #root {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding-right: 40px; /* room for the X close button */
   pointer-events: auto;
   -webkit-app-region: no-drag;
 }
