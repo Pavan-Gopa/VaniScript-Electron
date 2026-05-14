@@ -351,9 +351,9 @@ export function SubtitleAlignmentEditor({
 
   useEffect(() => {
     if (!isOpen || !initializedRef.current || !onSaveBackgroundSettings) return;
-    const timer = window.setTimeout(() => onSaveBackgroundSettings(bgSettings), 150);
+    const timer = window.setTimeout(() => onSaveBackgroundSettings(backgroundSettingsWithEffectReference(bgSettings)), 150);
     return () => window.clearTimeout(timer);
-  }, [bgSettings, isOpen, onSaveBackgroundSettings]);
+  }, [bgSettings, frameGuideSize.height, isOpen, onSaveBackgroundSettings]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -1069,6 +1069,13 @@ export function SubtitleAlignmentEditor({
     setBgSettings(next);
   }
 
+  function backgroundSettingsWithEffectReference(settings: BackgroundSettings): BackgroundSettings {
+    const referenceHeight = Math.round(frameGuideSize.height || 0);
+    return referenceHeight > 0
+      ? { ...settings, effectReferenceHeight: referenceHeight }
+      : settings;
+  }
+
   function patchCaptionSettings(partial: Partial<ShortsSettings>) {
     onSettingsChange?.({ ...settings, ...partial });
   }
@@ -1151,7 +1158,7 @@ export function SubtitleAlignmentEditor({
   function persistEditorState(showFeedback = false) {
     const normalized = normalizeSegments(segmentsRef.current, clipDurationSec, { keepEmpty: true });
     const savedFrameKeyframes = materializeFrameDraft();
-    const savedBackgroundSettings = bgSettingsRef.current;
+    const savedBackgroundSettings = backgroundSettingsWithEffectReference(bgSettingsRef.current);
     segmentsRef.current = normalized;
     setSegments(normalized);
     frameKeyframesRef.current = savedFrameKeyframes;

@@ -515,6 +515,7 @@ function buildCompositionHtml(project, relativeVideoPath) {
       const extraAudio = Array.from(document.querySelectorAll('.extra-audio'));
       const bgS = project.backgroundSettings || {};
       const renderScale = project.height / 1920;
+      const effectScale = project.height / Math.max(1, Number(bgS.effectReferenceHeight) || 1920);
 
       const clamp = (v, mn, mx) => Math.min(Math.max(v, mn), mx);
       const smoothstep = (v) => { const t = clamp(v, 0, 1); return t * t * (3 - (2 * t)); };
@@ -550,7 +551,7 @@ function buildCompositionHtml(project, relativeVideoPath) {
 
       // Setup blur background
       if (bgS.blurEnabled && blurBg && blurBg.tagName === 'VIDEO') {
-        blurBg.style.filter = 'blur(' + ((bgS.blurStrength || 30) * renderScale) + 'px)';
+        blurBg.style.filter = 'blur(' + ((bgS.blurStrength || 30) * effectScale) + 'px)';
         blurBg.style.transform = 'scale(' + (bgS.blurScale || 1.3) + ')';
       }
       // Setup gradient overlay
@@ -571,10 +572,10 @@ function buildCompositionHtml(project, relativeVideoPath) {
         const fR = bgS.featherRight || 0;
         const masks = [];
         if (fT > 0 || fB > 0) {
-          masks.push('linear-gradient(to bottom, transparent 0px, black ' + (fT * renderScale) + 'px, black calc(100% - ' + (fB * renderScale) + 'px), transparent 100%)');
+          masks.push('linear-gradient(to bottom, transparent 0px, black ' + (fT * effectScale) + 'px, black calc(100% - ' + (fB * effectScale) + 'px), transparent 100%)');
         }
         if (fL > 0 || fR > 0) {
-          masks.push('linear-gradient(to right, transparent 0px, black ' + (fL * renderScale) + 'px, black calc(100% - ' + (fR * renderScale) + 'px), transparent 100%)');
+          masks.push('linear-gradient(to right, transparent 0px, black ' + (fL * effectScale) + 'px, black calc(100% - ' + (fR * effectScale) + 'px), transparent 100%)');
         }
         if (masks.length > 0) {
           const combined = masks.join(', ');
@@ -595,8 +596,8 @@ function buildCompositionHtml(project, relativeVideoPath) {
         const guideColor = bgS.frameGuideColor || '#ffaa19';
         const guideBorderOpacity = Number.isFinite(Number(bgS.frameGuideBorderOpacity)) ? bgS.frameGuideBorderOpacity : 1;
         const guideBorderColor = hexToRgba(guideColor, guideBorderOpacity);
-        const guideBorderWidth = Math.max(0, Number(bgS.frameGuideBorderWidth) || 0) * renderScale;
-        const guideBlur = Math.max(0, Number(bgS.frameGuideBlur) || 0) * renderScale;
+        const guideBorderWidth = Math.max(0, Number(bgS.frameGuideBorderWidth) || 0) * effectScale;
+        const guideBlur = Math.max(0, Number(bgS.frameGuideBlur) || 0) * effectScale;
         const guideDim = Number.isFinite(Number(bgS.frameGuideOpacity)) ? clamp(bgS.frameGuideOpacity, 0, 1) : 0;
         frameGuideOverlay.style.border = guideBorderWidth + 'px solid ' + guideBorderColor;
         frameGuideOverlay.style.background = guideDim > 0
@@ -614,10 +615,10 @@ function buildCompositionHtml(project, relativeVideoPath) {
           return;
         }
         const featherGradients = [];
-        const topPx = Math.max(0, Number(bgS.featherTop) || 0) * renderScale;
-        const bottomPx = Math.max(0, Number(bgS.featherBottom) || 0) * renderScale;
-        const leftPx = Math.max(0, Number(bgS.featherLeft) || 0) * renderScale;
-        const rightPx = Math.max(0, Number(bgS.featherRight) || 0) * renderScale;
+        const topPx = Math.max(0, Number(bgS.featherTop) || 0) * effectScale;
+        const bottomPx = Math.max(0, Number(bgS.featherBottom) || 0) * effectScale;
+        const leftPx = Math.max(0, Number(bgS.featherLeft) || 0) * effectScale;
+        const rightPx = Math.max(0, Number(bgS.featherRight) || 0) * effectScale;
         const edgeColor = hexToRgba(bgColor, 0.62);
         const clearColor = hexToRgba(bgColor, 0);
         if (topPx > 0) featherGradients.push('linear-gradient(to bottom, ' + edgeColor + ' 0px, ' + clearColor + ' ' + topPx + 'px)');

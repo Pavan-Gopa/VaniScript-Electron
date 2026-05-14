@@ -87,6 +87,7 @@ test('buildCompositionHtml carries visual editor background guide and scaled log
     subtitleBottomMargin: 420,
     frameKeyframes: [{ id: 'frame-0', time: 0, x: 0, y: 0, zoom: 1, backgroundColor: '#CA9E3F' }],
     backgroundSettings: {
+      effectReferenceHeight: 960,
       solidEnabled: true,
       solidColor: '#CA9E3F',
       blurEnabled: true,
@@ -124,6 +125,10 @@ test('buildCompositionHtml carries visual editor background guide and scaled log
   assert.match(html, /frameGuideBlur/);
   assert.match(html, /frameGuideBorderWidth/);
   assert.match(html, /frameGuideBorderOpacity/);
+  assert.match(html, /const effectScale = project\.height \/ Math\.max\(1, Number\(bgS\.effectReferenceHeight\) \|\| 1920\);/);
+  assert.match(html, /\(bgS\.blurStrength \|\| 30\) \* effectScale/);
+  assert.match(html, /Number\(bgS\.featherTop\) \|\| 0\) \* effectScale/);
+  assert.match(html, /Number\(bgS\.frameGuideBlur\) \|\| 0\) \* effectScale/);
   assert.match(html, /frameGuideOverlay\.style\.background = guideDim > 0/);
   assert.match(html, /frameGuideOverlay\.style\.boxShadow =[\s\S]*inset 0 0 ' \+ guideBlur/);
   assert.match(html, /videoStage\.style\.maskImage = combined;/);

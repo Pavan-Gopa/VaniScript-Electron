@@ -3,6 +3,9 @@ import type { FrameKeyframe } from './subtitle-alignment';
 // ── Background system types ──────────────────────────────────────────────────
 
 export type BackgroundSettings = {
+  // CSS-pixel height of the 9:16 visual editor frame where raw background/frame effects were tuned.
+  // HyperFrames uses this to preserve perceived blur/feather/glow strength across 1080p/2K/4K exports.
+  effectReferenceHeight?: number;
   // Mode 1: Solid color (existing)
   solidEnabled: boolean;
   solidColor: string;
