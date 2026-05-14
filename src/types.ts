@@ -135,6 +135,7 @@ declare global {
       saveFile: (opts: { defaultName: string; filters?: any[] }) => Promise<string | null>;
       openDirectory: () => Promise<string | null>;
       writeFile: (opts: { filePath: string; content: string }) => Promise<{ success: boolean; error?: string }>;
+      deleteFiles: (opts: { filePaths: string[] }) => Promise<{ success: boolean; error?: string }>;
       writeTempTextFile: (opts: { fileName: string; content: string }) => Promise<{ success: boolean; filePath?: string; error?: string }>;
       createTempPath: (opts: { fileName: string }) => Promise<{ success: boolean; filePath?: string; error?: string }>;
       readTextFile: (opts: { filePath: string }) => Promise<{ success: boolean; content?: string; error?: string }>;
@@ -172,12 +173,21 @@ declare global {
         format?: 'mp4' | 'mov';
       }) => Promise<{ success: boolean; outputPath?: string; error?: string; stderr?: string }>;
       hyperframesExportShortClip: (opts: {
+        jobId?: string;
         project: any;
         inputVideoPath: string;
         outputPath: string;
         format?: 'mp4' | 'mov';
         qualityPreset?: 'compact' | 'balanced' | 'high';
-      }) => Promise<{ success: boolean; outputPath?: string; error?: string; stderr?: string }>;
+      }) => Promise<{ success: boolean; outputPath?: string; error?: string; stderr?: string; cancelled?: boolean }>;
+      hyperframesCancelExport: (opts: { jobId: string }) => Promise<{ success: boolean; error?: string }>;
+      onHyperframesExportProgress: (callback: (payload: {
+        jobId?: string;
+        status?: string;
+        progress?: number;
+        stage?: string;
+        message?: string;
+      }) => void) => () => void;
       localInstallAsrModel: (opts: { modelId: string }) => Promise<{ ok: boolean; id: string; path?: string | null; error?: string }>;
       localRemoveAsrModel: (opts: { modelId: string }) => Promise<{ ok: boolean; id: string; error?: string }>;
       localTranscribeChunk: (opts: {

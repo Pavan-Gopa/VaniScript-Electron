@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // ─── File system ──────────────────────────────────────────────────────────
   writeFile: (opts) => ipcRenderer.invoke('fs:writeFile', opts),
+  deleteFiles: (opts) => ipcRenderer.invoke('fs:deleteFiles', opts),
   writeTempTextFile: (opts) => ipcRenderer.invoke('fs:writeTempTextFile', opts),
   createTempPath: (opts) => ipcRenderer.invoke('fs:createTempPath', opts),
   readTextFile: (opts) => ipcRenderer.invoke('fs:readTextFile', opts),
@@ -28,6 +29,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ffmpegRenderShortPreviewFrame: (opts) => ipcRenderer.invoke('ffmpeg:renderShortPreviewFrame', opts),
   ffmpegExportShortClip: (opts) => ipcRenderer.invoke('ffmpeg:exportShortClip', opts),
   hyperframesExportShortClip: (opts) => ipcRenderer.invoke('hyperframes:exportShortClip', opts),
+  hyperframesCancelExport: (opts) => ipcRenderer.invoke('hyperframes:cancelExport', opts),
+  onHyperframesExportProgress: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('hyperframes:export-progress', handler);
+    return () => ipcRenderer.removeListener('hyperframes:export-progress', handler);
+  },
 
   // ─── Local ASR ────────────────────────────────────────────────────────────
   localInstallAsrModel: (opts) => ipcRenderer.invoke('local-asr:installModel', opts),

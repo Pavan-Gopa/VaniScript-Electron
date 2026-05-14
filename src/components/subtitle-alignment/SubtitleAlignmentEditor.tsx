@@ -271,7 +271,7 @@ export function SubtitleAlignmentEditor({
     const nextBg = initialBackgroundSettings || defaultBackgroundSettings();
     const seededBg = {
       ...nextBg,
-      frameGuideColor: initialFrameKeyframes?.[0]?.backgroundColor || nextBg.frameGuideColor || '#ffaa19',
+      frameGuideColor: nextBg.frameGuideColor || '#ffaa19',
     };
     bgSettingsRef.current = seededBg;
     setBgSettings(seededBg);
@@ -678,11 +678,9 @@ export function SubtitleAlignmentEditor({
     frameZoomRef.current = frame.zoom;
     framePanXRef.current = frame.x;
     framePanYRef.current = frame.y;
-    setBgSettings((prev) => {
-      const next = { ...prev, frameGuideColor: frame.backgroundColor || prev.frameGuideColor || '#ffaa19' };
-      bgSettingsRef.current = next;
-      return next;
-    });
+    bgSettingsRef.current = bgSettingsRef.current.frameGuideColor
+      ? bgSettingsRef.current
+      : { ...bgSettingsRef.current, frameGuideColor: '#ffaa19' };
   }, [currentSec, frameKeyframes, isOpen]);
 
   // Playback boundaries derived from trim
@@ -2021,13 +2019,12 @@ export function SubtitleAlignmentEditor({
               <h4>Frame animation</h4>
               <p>Adjust the frame, then press Add point. Transitions between points are smooth.</p>
               <label>
-                <span>Guide</span>
+                <span>Border color</span>
                 <input type="color"
                   value={bgSettings.frameGuideColor ?? '#ffaa19'}
                   onChange={(e) => {
-                    const backgroundColor = e.currentTarget.value;
-                    updateBackgroundSettings((prev) => ({ ...prev, frameGuideColor: backgroundColor }));
-                    persistFrameControls({ backgroundColor });
+                    const frameGuideColor = e.currentTarget.value;
+                    updateBackgroundSettings((prev) => ({ ...prev, frameGuideColor }));
                   }} />
                 <b>{bgSettings.frameGuideColor ?? '#ffaa19'}</b>
               </label>

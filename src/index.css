@@ -1500,6 +1500,90 @@ html, body, #root {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   margin-bottom: 12px;
 }
+.shorts-export-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: grid;
+  place-items: center;
+  background: rgba(3, 5, 12, 0.68);
+  backdrop-filter: blur(10px);
+}
+.shorts-export-modal {
+  width: min(460px, calc(100vw - 36px));
+  display: grid;
+  gap: 14px;
+  padding: 26px;
+  border-radius: 22px;
+  border: 1px solid rgba(255,255,255,0.16);
+  background: rgba(16, 20, 34, 0.96);
+  box-shadow: 0 28px 90px rgba(0,0,0,0.48);
+  color: var(--text-0);
+}
+.shorts-export-modal h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 900;
+}
+.shorts-export-modal p {
+  margin: 5px 0 0;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.shorts-export-orbits {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  margin: 0 auto 2px;
+}
+.shorts-export-orbits span {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  border: 3px solid rgba(255,170,25,0.18);
+  border-top-color: var(--accent);
+  animation: shorts-export-spin 1.1s linear infinite;
+}
+.shorts-export-orbits span:nth-child(2) {
+  inset: 11px;
+  border-width: 2px;
+  border-top-color: rgba(255,255,255,0.92);
+  animation-duration: 0.72s;
+  animation-direction: reverse;
+}
+@keyframes shorts-export-spin {
+  to { transform: rotate(360deg); }
+}
+.shorts-export-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  color: var(--text-1);
+  font-size: 12px;
+  font-weight: 800;
+}
+.shorts-export-progress-bar {
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.08);
+}
+.shorts-export-progress-bar div {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #ffaa19, #ffd166);
+  transition: width 180ms ease;
+}
+.shorts-export-stage {
+  min-height: 18px;
+  color: var(--text-2);
+  font-size: 12px;
+  text-align: center;
+}
+.shorts-export-cancel {
+  justify-content: center;
+  width: 100%;
+}
 .shorts-finder-grid label,
 .shorts-style-grid label,
 .shorts-export-row label {

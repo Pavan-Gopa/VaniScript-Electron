@@ -71,6 +71,16 @@ interface Session {
 
 type LocalAsrSegment = { t0?: number; t1?: number; text?: string } | [number, number, string];
 type GlossaryScope = 'current' | 'processed';
+type ShortsExportProgress = {
+  jobId: string;
+  total: number;
+  completed: number;
+  current: number;
+  percent: number;
+  label: string;
+  stage: string;
+  cancelling: boolean;
+};
 type GlossaryDraft = {
   mode: 'existing' | 'new';
   selectedText: string;
@@ -350,6 +360,7 @@ export default function App() {
   const [shortsPlans, setShortsPlans] = useState<ShortsClipPlan[]>([]);
   const [shortsBusy, setShortsBusy] = useState(false);
   const [shortsBusyLabel, setShortsBusyLabel] = useState('');
+  const [shortsExportProgress, setShortsExportProgress] = useState<ShortsExportProgress | null>(null);
   const [selectedShortsPlanIndex, setSelectedShortsPlanIndex] = useState<number | null>(null);
   const [selectedShortsPlanIndexes, setSelectedShortsPlanIndexes] = useState<number[]>([]);
   const [shortsVideoSourceInfo, setShortsVideoSourceInfo] = useState<{ width: number; height: number; durationSec: number; fps?: number } | null>(null);
@@ -363,6 +374,10 @@ export default function App() {
   const autosaveTimerRef = useRef<number | null>(null);
   const autosaveSnapshotRef = useRef('');
   const projectSidebarCloseTimerRef = useRef<number | null>(null);
+  const shortsExportCancelRef = useRef(false);
+  const shortsExportJobIdRef = useRef('');
+  const shortsExportCompletedRef = useRef(0);
+  const shortsExportTotalRef = useRef(0);
   const keyRepeatRef = useRef<Record<string, number>>({});
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
@@ -405,6 +420,23 @@ export default function App() {
     });
     return () => { cancelled = true; };
   }, [session?.originalVideoPath]);
+
+  useEffect(() => {
+    if (!window.electronAPI?.onHyperframesExportProgress) return;
+    return window.electronAPI.onHyperframesExportProgress((payload) => {
+      if (!payload?.jobId || payload.jobId !== shortsExportJobIdRef.current) return;
+      const total = Math.max(1, shortsExportTotalRef.current || 1);
+      const completed = Math.max(0, shortsExportCompletedRef.current || 0);
+      const currentProgress = Math.min(Math.max(payload.progress ?? 0, 0), 1);
+      const overall = ((completed + currentProgress) / total) * 100;
+      setShortsExportProgress((prev) => prev ? {
+        ...prev,
+        percent: overall,
+        stage: payload.stage || prev.stage,
+        label: payload.message || prev.label,
+      } : prev);
+    });
+  }, []);
 
   useEffect(() => {
     if (!session) return;
@@ -1970,6 +2002,15 @@ export default function App() {
     if (!result.success) alert(result.error || 'Could not export Shorts/Reels ideas.');
   }, [selectedShortsPlanIndexes, session, shortsPlans]);
 
+  const handleCancelShortsExport = useCallback(async () => {
+    shortsExportCancelRef.current = true;
+    setShortsExportProgress((prev) => prev ? { ...prev, cancelling: true, label: 'Cancelling export…' } : prev);
+    const jobId = shortsExportJobIdRef.current;
+    if (jobId && window.electronAPI?.hyperframesCancelExport) {
+      await window.electronAPI.hyperframesCancelExport({ jobId }).catch(() => undefined);
+    }
+  }, []);
+
   const handleExportSelectedShortsVideos = useCallback(async () => {
     if (!session?.originalVideoPath || !window.electronAPI) return;
     const selected = selectedShortsPlanIndexes.map((index) => ({ index, plan: shortsPlans[index] })).filter((item) => item.plan);
@@ -1977,9 +2018,27 @@ export default function App() {
     if (jobs.length === 0) return;
     setShortsBusy(true);
     setShortsBusyLabel(`Exporting ${jobs.length} video${jobs.length === 1 ? '' : 's'}...`);
+    const exported: string[] = [];
+    let outputDir = '';
+    let currentOutputPath = '';
+    const exportJobId = `shorts_export_${Date.now()}`;
+    shortsExportCancelRef.current = false;
+    shortsExportJobIdRef.current = exportJobId;
+    shortsExportCompletedRef.current = 0;
+    shortsExportTotalRef.current = jobs.length;
     try {
-      const outputDir = await window.electronAPI.openDirectory();
+      outputDir = await window.electronAPI.openDirectory() || '';
       if (!outputDir) return;
+      setShortsExportProgress({
+        jobId: exportJobId,
+        total: jobs.length,
+        completed: 0,
+        current: 1,
+        percent: 0,
+        label: 'Preparing export…',
+        stage: 'prepare',
+        cancelling: false,
+      });
       let exportSourceInfo = shortsVideoSourceInfo ?? { width: 1920, height: 1080, durationSec: 0, fps: undefined as number | undefined };
       if (window.electronAPI.ffmpegGetVideoInfo) {
         const probedInfo = await window.electronAPI.ffmpegGetVideoInfo({ inputPath: session.originalVideoPath });
@@ -1997,19 +2056,35 @@ export default function App() {
       }
       const outputSize = verticalResolutionForPreset(shortsSettings.resolutionPreset, exportSourceInfo);
       const extension = extensionForShortsFormat(shortsSettings.videoFormat);
-      const exported: string[] = [];
       const videoUrlResult = await window.electronAPI.pathToFileUrl({ filePath: session.originalVideoPath });
       if (!videoUrlResult.success || !videoUrlResult.url) {
         throw new Error(videoUrlResult.error || 'Could not prepare source video for shorts export.');
       }
 
       for (let i = 0; i < jobs.length; i += 1) {
+        if (shortsExportCancelRef.current) {
+          const cancelled = new Error('Export cancelled');
+          cancelled.name = 'ExportCancelled';
+          throw cancelled;
+        }
         const { index, plan, language } = jobs[i];
+        shortsExportCompletedRef.current = i;
         setShortsBusyLabel(`Exporting ${i + 1}/${jobs.length}...`);
+        setShortsExportProgress((prev) => ({
+          jobId: exportJobId,
+          total: jobs.length,
+          completed: i,
+          current: i + 1,
+          percent: (i / jobs.length) * 100,
+          label: `Rendering ${language === 'source' ? 'source' : 'target'} clip ${i + 1}/${jobs.length}`,
+          stage: 'render',
+          cancelling: prev?.cancelling ?? false,
+        }));
         const frameKeyframes = language === 'source' ? plan.sourceFrameKeyframes : plan.targetFrameKeyframes;
         const startSec = parseTimestampToSeconds(plan.start);
         const endSec = parseTimestampToSeconds(plan.end);
         const outputPath = `${outputDir}/${String(index + 1).padStart(2, '0')}_${language}_${safeExportPart(shortsTitleForLanguage(plan, language))}${extension}`;
+        currentOutputPath = outputPath;
         const project = buildShortsRenderProject({
           id: `${session.sourceFileName}_${index}_${language}`,
           title: shortsTitleForLanguage(plan, language),
@@ -2052,21 +2127,44 @@ export default function App() {
           throw new Error('HyperFrames export is not available in this build.');
         }
         const result = await window.electronAPI.hyperframesExportShortClip({
+          jobId: exportJobId,
           project,
           inputVideoPath: session.originalVideoPath,
           outputPath,
           format: shortsSettings.videoFormat,
           qualityPreset: shortsSettings.videoQuality,
         });
+        if (result.cancelled || shortsExportCancelRef.current) {
+          const cancelled = new Error('Export cancelled');
+          cancelled.name = 'ExportCancelled';
+          throw cancelled;
+        }
         if (!result.success) throw new Error(result.error || `Could not export clip ${index + 1}.`);
         exported.push(result.outputPath || outputPath);
+        shortsExportCompletedRef.current = i + 1;
       }
 
+      setShortsExportProgress((prev) => prev ? { ...prev, completed: jobs.length, current: jobs.length, percent: 100, label: 'Export complete', stage: 'done' } : prev);
+      window.setTimeout(() => setShortsExportProgress(null), 700);
       alert(`Exported ${exported.length} clip${exported.length === 1 ? '' : 's'}:\n${outputDir}`);
     } catch (error) {
+      const cancelled = shortsExportCancelRef.current || (error instanceof Error && error.name === 'ExportCancelled');
+      if (cancelled) {
+        const cleanup = Array.from(new Set([...exported, currentOutputPath].filter(Boolean)));
+        if (cleanup.length > 0) {
+          await window.electronAPI.deleteFiles?.({ filePaths: cleanup }).catch(() => undefined);
+        }
+        setShortsExportProgress((prev) => prev ? { ...prev, percent: 0, label: 'Export cancelled. Partial files removed.', stage: 'cancelled', cancelling: false } : prev);
+        window.setTimeout(() => setShortsExportProgress(null), 900);
+        return;
+      }
       console.error('Shorts/Reels export failed.', error);
       alert(`Shorts/Reels export failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
+      shortsExportCancelRef.current = false;
+      shortsExportJobIdRef.current = '';
+      shortsExportCompletedRef.current = 0;
+      shortsExportTotalRef.current = 0;
       setShortsBusy(false);
       setShortsBusyLabel('');
     }
@@ -2669,6 +2767,37 @@ export default function App() {
 
         {showSettings && (
           <SettingsModal settings={settings} usage={usage} onSave={handleSaveSettings} onClose={() => setShowSettings(false)} />
+        )}
+
+        {shortsExportProgress && (
+          <div className="shorts-export-modal-backdrop">
+            <div className="shorts-export-modal" role="dialog" aria-modal="true" aria-label="Shorts export progress">
+              <div className="shorts-export-orbits" aria-hidden="true">
+                <span />
+                <span />
+              </div>
+              <div>
+                <h3>Exporting Shorts/Reels</h3>
+                <p>{shortsExportProgress.label}</p>
+              </div>
+              <div className="shorts-export-progress-meta">
+                <span>Clip {Math.min(shortsExportProgress.current, shortsExportProgress.total)} / {shortsExportProgress.total}</span>
+                <span>{Math.round(shortsExportProgress.percent)}%</span>
+              </div>
+              <div className="shorts-export-progress-bar">
+                <div style={{ width: `${Math.min(Math.max(shortsExportProgress.percent, 0), 100)}%` }} />
+              </div>
+              <div className="shorts-export-stage">{shortsExportProgress.stage}</div>
+              <button
+                type="button"
+                className="btn-cancel shorts-export-cancel"
+                disabled={shortsExportProgress.cancelling}
+                onClick={handleCancelShortsExport}
+              >
+                {shortsExportProgress.cancelling ? 'Cancelling…' : 'Cancel'}
+              </button>
+            </div>
+          </div>
         )}
 
         {projectSidebarOpen && (

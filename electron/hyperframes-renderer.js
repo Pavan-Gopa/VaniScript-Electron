@@ -242,15 +242,36 @@ function copyProjectLayerAssets(project, assetsDir) {
   return copied;
 }
 
-function runFfmpeg(ffmpegPath, args, log) {
+function isAbortError(error) {
+  return error?.name === 'AbortError' || error?.message === 'render_cancelled' || error?.message === 'Export cancelled';
+}
+
+function runFfmpeg(ffmpegPath, args, log, abortSignal) {
   return new Promise((resolve, reject) => {
+    if (abortSignal?.aborted) {
+      reject(new Error('render_cancelled'));
+      return;
+    }
     const proc = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stderr = '';
     let stdout = '';
+    const onAbort = () => {
+      try { proc.kill('SIGTERM'); } catch {}
+      reject(new Error('render_cancelled'));
+    };
+    abortSignal?.addEventListener('abort', onAbort, { once: true });
     proc.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
     proc.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
-    proc.on('error', reject);
+    proc.on('error', (error) => {
+      abortSignal?.removeEventListener('abort', onAbort);
+      reject(error);
+    });
     proc.on('close', (code) => {
+      abortSignal?.removeEventListener('abort', onAbort);
+      if (abortSignal?.aborted) {
+        reject(new Error('render_cancelled'));
+        return;
+      }
       if (code === 0) return resolve({ stdout, stderr });
       if (log) log.error('HyperFrames ffmpeg failed:', { code, args: args.join(' '), stderr });
       reject(new Error(stderr.trim() || stdout.trim() || `ffmpeg exited with code ${code}`));
@@ -264,7 +285,9 @@ async function createBrowserSafeProxy({
   ffmpegPath,
   assetsDir,
   log,
+  abortSignal,
 }) {
+  if (abortSignal?.aborted) throw new Error('render_cancelled');
   const proxyPath = path.join(assetsDir, 'source-browser.mp4');
   const durationSec = Math.max(0.1, Number(project.durationSec) || 0.1);
   const clipStartSec = Math.max(0, Number(project.clipStartSec) || 0);
@@ -310,12 +333,13 @@ async function createBrowserSafeProxy({
     : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20'];
 
   try {
-    await runFfmpeg(ffmpegPath, [...baseArgs, ...inputArgs, ...outputArgs, ...hardwareArgs, proxyPath], log);
+    await runFfmpeg(ffmpegPath, [...baseArgs, ...inputArgs, ...outputArgs, ...hardwareArgs, proxyPath], log, abortSignal);
     return proxyPath;
   } catch (error) {
+    if (isAbortError(error)) throw error;
     if (process.platform !== 'darwin') throw error;
     log.warn('HyperFrames proxy hardware encode failed, retrying with libx264.', error.message || String(error));
-    await runFfmpeg(ffmpegPath, [...baseArgs, ...inputArgs, ...outputArgs, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', proxyPath], log);
+    await runFfmpeg(ffmpegPath, [...baseArgs, ...inputArgs, ...outputArgs, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', proxyPath], log, abortSignal);
     return proxyPath;
   }
 }
@@ -680,7 +704,10 @@ async function renderShortClipWithHyperFrames({
   qualityPreset,
   ffmpegPath,
   log,
+  abortSignal,
+  onProgress,
 }) {
+  if (abortSignal?.aborted) throw new Error('render_cancelled');
   const sourcePath = path.resolve(inputVideoPath);
   const normalizedProject = normalizeProject(project);
   const runtimeRoot = ensureDir(path.join(app.getPath('userData'), 'HyperFramesRuntime'));
@@ -692,7 +719,9 @@ async function renderShortClipWithHyperFrames({
     ffmpegPath,
     assetsDir,
     log,
+    abortSignal,
   });
+  onProgress?.({ status: 'processing', progress: 0.08, stage: 'proxy', message: 'Prepared browser-safe video proxy' });
   const renderProject = {
     ...copyProjectLayerAssets(normalizedProject, assetsDir),
     clipStartSec: 0,
@@ -773,13 +802,19 @@ async function renderShortClipWithHyperFrames({
     });
 
     await executeRenderJob(job, projectDir, outputPath, (currentJob, message) => {
+      onProgress?.({
+        status: currentJob.status,
+        progress: currentJob.progress || 0,
+        stage: currentJob.currentStage || 'render',
+        message,
+      });
       log.info('HyperFrames progress:', {
         status: currentJob.status,
         progress: Math.round((currentJob.progress || 0) * 100),
         stage: currentJob.currentStage,
         message,
       });
-    });
+    }, abortSignal);
 
     return { success: true, outputPath };
   } finally {
