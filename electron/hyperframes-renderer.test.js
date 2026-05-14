@@ -127,6 +127,8 @@ test('buildCompositionHtml carries visual editor background guide and scaled log
   assert.match(html, /frameGuideOverlay\.style\.background = guideDim > 0/);
   assert.match(html, /frameGuideOverlay\.style\.boxShadow =[\s\S]*inset 0 0 ' \+ guideBlur/);
   assert.match(html, /videoStage\.style\.maskImage = combined;/);
+  assert.match(html, /videoStage\.style\.transform = 'translate\(-50%, -50%\) translate\('/);
+  assert.match(html, /video\.style\.transform = 'none';/);
   assert.match(html, /featherOverlay\.style\.background = featherGradients\.join\(', '\);/);
   assert.match(html, /const renderScale = project\.height \/ 1920;/);
   assert.match(html, /logoOverlay\.style\.width = \(120 \* renderScale \* \(project\.logo\.size \|\| 1\)\) \+ 'px';/);

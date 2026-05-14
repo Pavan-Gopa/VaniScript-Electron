@@ -416,7 +416,7 @@ function buildCompositionHtml(project, relativeVideoPath) {
         position: absolute; left: 50%; top: 50%;
         width: var(--stage-width); height: 100%;
         transform: translate(-50%, -50%);
-        overflow: visible; z-index: 2;
+        overflow: hidden; z-index: 2;
       }
       #source-video {
         position: absolute; inset: 0; width: 100%; height: 100%;
@@ -706,7 +706,8 @@ function buildCompositionHtml(project, relativeVideoPath) {
         background.style.background = bgColor;
         stage.style.background = bgColor;
         updateFeatherOverlay(bgColor);
-        video.style.transform = 'translate(' + frame.x + '%,' + frame.y + '%) scale(' + frame.zoom + ')';
+        videoStage.style.transform = 'translate(-50%, -50%) translate(' + frame.x + '%,' + frame.y + '%) scale(' + frame.zoom + ')';
+        video.style.transform = 'none';
         extraAudio.forEach((audio) => {
           const start = Number(audio.dataset.start || 0);
           const duration = Number(audio.dataset.duration || 0);
