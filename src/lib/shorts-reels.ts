@@ -1,5 +1,6 @@
 import type { AlignedSubtitleSegment, FrameKeyframe } from './subtitle-alignment';
 import type { BackgroundSettings, ShortsSubtitleStyle } from './shorts-render';
+import { renderPrompt, type PromptSettingsMap } from './prompt-presets';
 
 /** A cut region removed from the clip timeline via razor/delete. */
 export type TimelineCut = {
@@ -116,6 +117,7 @@ export type ShortsPlanOptions = {
   outputLanguage: string;
   speakerName?: string;
   mode?: ShortsPlanLanguageMode;
+  promptPresets?: PromptSettingsMap;
 };
 
 export function buildShortsPrompt(opts: ShortsPlanOptions): string {
@@ -127,31 +129,18 @@ export function buildShortsPrompt(opts: ShortsPlanOptions): string {
   const captionSchema = opts.mode === 'bilingual'
     ? 'Return only a JSON array. Each item must contain: start, end, title, summary, hook, category, captionText, sourceTitle, sourceSummary, sourceHook, sourceCategory, sourceCaptionText, targetTitle, targetSummary, targetHook, targetCategory, targetCaptionText.'
     : 'Return only a JSON array. Each item must contain: start, end, title, summary, hook, category, captionText.';
-  return [
-    'You are selecting clips for YouTube Shorts, Instagram Reels, and TikTok.',
-    'Context: Vaishnava lecture. Prefer moments with a clear story, paradox, emotional point, practical teaching, or memorable quote.',
-    opts.speakerName?.trim()
-      ? `Speaker metadata: ${opts.speakerName.trim()}. When describing who is speaking, use this name or a respectful shortened form such as Maharaj or Swami. Do not write generic phrases like "the speaker", "the speaker shares", "спикер", or "говорящий" when this metadata is available.`
-      : 'Speaker metadata is unknown. If you refer to the person speaking, use a generic phrase such as "the speaker".',
-    `Find exactly ${opts.count} candidate clips.`,
-    `Each clip must be between ${opts.minDurationSec} and ${opts.maxDurationSec} seconds.`,
+  const speakerMetadataLine = opts.speakerName?.trim()
+    ? `Speaker metadata: ${opts.speakerName.trim()}. When describing who is speaking, use this name or a respectful shortened form such as Maharaj or Swami. Do not write generic phrases like "the speaker", "the speaker shares", "спикер", or "говорящий" when this metadata is available.`
+    : 'Speaker metadata is unknown. If you refer to the person speaking, use a generic phrase such as "the speaker".';
+  return renderPrompt(opts.promptPresets, 'shortsPlanner', {
+    speakerMetadataLine,
+    count: opts.count,
+    minDurationSec: opts.minDurationSec,
+    maxDurationSec: opts.maxDurationSec,
     modeInstruction,
     captionSchema,
-    'captionText is the exact short-form subtitle script for this clip. It is not a summary.',
-    'captionText must contain many dense timestamped subtitle cues, one cue per line, formatted exactly as "[MM:SS] text".',
-    'Use absolute timestamps from the transcript, not relative timestamps. The first caption timestamp should be the clip start or the first spoken line inside the clip.',
-    'Create a new caption cue roughly every 1.5-4 seconds, or whenever the spoken phrase naturally changes.',
-    'Never put a whole 45-180 second clip into one or two caption cues. That makes the reel unusable.',
-    'Each caption cue should fit on a phone screen: aim for one line, maximum two short lines, usually 3-10 words or about 18-42 characters.',
-    'Preserve meaning and spoken order. Do not add commentary, explanations, markdown, numbering, or speaker labels inside captionText.',
-    'For bilingual output, sourceCaptionText and targetCaptionText must use the same timestamp markers and the same number/order of cues so both videos stay aligned.',
-    'Example captionText format: "[04:56] The spiritual city is\\n[04:59] the spiritual character of His residence\\n[05:03] In building the city of Mayapur"',
-    'Use short category tags such as story, philosophy, quote, teaching, humor, or history.',
-    'Do not invent timestamps. Use only timestamps from the transcript.',
-    '',
-    'Transcript:',
-    opts.transcript,
-  ].join('\n');
+    transcript: opts.transcript,
+  });
 }
 
 export function parseShortsPlanResponse(text: string): ShortsClipPlan[] {

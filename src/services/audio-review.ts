@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { renderPrompt, type PromptSettingsMap } from '../lib/prompt-presets';
 
 type ReviewMode = 'original' | 'translated';
 
@@ -8,32 +9,21 @@ export function buildAudioReviewPrompt(opts: {
   targetLang: string;
   speakerHint?: string;
   glossaryBlock?: string;
+  promptPresets?: PromptSettingsMap;
 }): string {
   const modeLabel = opts.mode === 'original'
     ? 'Original transcript correction'
     : `Translation correction to ${opts.targetLang}`;
 
-  return [
-    'You are doing an audio-aware review of a short highlighted transcript fragment.',
-    `Mode: ${modeLabel}.`,
-    opts.speakerHint ? `Speaker/context hint: ${opts.speakerHint}.` : '',
-    opts.glossaryBlock || '',
-    '',
-    'Task:',
-    '1. Listen to the audio and locate the highlighted fragment.',
-    '2. Correct only this highlighted fragment.',
-    '3. Preserve the spoken meaning exactly. Do not polish, summarize, or expand.',
-    '4. Use glossary spellings and translations exactly when applicable.',
-    opts.mode === 'translated'
+  return renderPrompt(opts.promptPresets, 'audioReview', {
+    modeLabel,
+    speakerHintLine: opts.speakerHint ? `Speaker/context hint: ${opts.speakerHint}.` : '',
+    glossaryBlock: opts.glossaryBlock || '',
+    returnLanguageRule: opts.mode === 'translated'
       ? `5. Return the corrected replacement in ${opts.targetLang}.`
       : '5. Return the corrected replacement in the original spoken language.',
-    '',
-    'Highlighted fragment:',
-    opts.selectedText,
-    '',
-    'Output only the corrected replacement text.',
-    'Do not return analysis, notes, markdown, labels, or quote marks.',
-  ].filter(Boolean).join('\n');
+    selectedText: opts.selectedText,
+  });
 }
 
 export async function reviewFragmentWithGeminiAudio(opts: {
@@ -45,6 +35,7 @@ export async function reviewFragmentWithGeminiAudio(opts: {
   apiKey: string;
   speakerHint?: string;
   glossaryBlock?: string;
+  promptPresets?: PromptSettingsMap;
 }): Promise<string> {
   const ai = new GoogleGenAI({ apiKey: opts.apiKey });
   const response = await ai.models.generateContent({

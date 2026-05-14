@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { renderPrompt, type PromptSettingsMap } from '../lib/prompt-presets';
 
 function collapseDuplicateTimestamps(text: string): string {
   return text.replace(/(\[\d{2}:\d{2}(?::\d{2})?\])(?:\s*\1)+/g, '$1');
@@ -38,26 +39,17 @@ export function buildLiteraryPolishPrompt(opts: {
   targetLang: string;
   speakerHint?: string;
   glossaryBlock?: string;
+  promptPresets?: PromptSettingsMap;
 }): string {
-  return [
-    `Polish the following translated fragment so it sounds natural, fluent, and literary in ${opts.targetLang}.`,
-    opts.speakerHint ? `Context: ${opts.speakerHint}.` : '',
-    opts.glossaryBlock || '',
-    '',
-    'Rules:',
-    '1. Preserve the meaning exactly. Do not add new meaning, do not summarize, and do not remove details.',
-    '2. Make the wording natural for a native reader of the target language, with correct grammar, cases, agreement, and word order.',
-    '3. Avoid stiff word-for-word translation. Rewrite only as much as needed so the sentence sounds idiomatic.',
-    '4. Preserve every existing [MM:SS] timestamp exactly if present. Do not add a new timestamp.',
-    '5. Preserve glossary terms exactly.',
-    '6. Return only the revised replacement text. No notes, labels, markdown, quote marks, or headings such as "Revised Russian:".',
-    opts.targetLang.toLowerCase().includes('russian')
+  return renderPrompt(opts.promptPresets, 'literaryPolishUser', {
+    targetLang: opts.targetLang,
+    speakerHintLine: opts.speakerHint ? `Context: ${opts.speakerHint}.` : '',
+    glossaryBlock: opts.glossaryBlock || '',
+    russianPolishRule: opts.targetLang.toLowerCase().includes('russian')
       ? '7. For Russian, avoid literal calques. Use natural Russian syntax and correct agreement, for example "отвечать за строительство", not "быть ответственным из конструкции".'
       : '',
-    '',
-    'Fragment:',
-    opts.text,
-  ].filter(Boolean).join('\n');
+    text: opts.text,
+  });
 }
 
 export async function polishTranslationWithGemini(opts: {
@@ -66,12 +58,14 @@ export async function polishTranslationWithGemini(opts: {
   apiKey: string;
   speakerHint?: string;
   glossaryBlock?: string;
+  promptPresets?: PromptSettingsMap;
 }): Promise<string> {
   const ai = new GoogleGenAI({ apiKey: opts.apiKey });
   const response = await ai.models.generateContent({
     model: 'gemini-2.5-flash',
     contents: buildLiteraryPolishPrompt(opts),
     config: {
+      systemInstruction: renderPrompt(opts.promptPresets, 'literaryPolishSystem', { targetLang: opts.targetLang }),
       temperature: 0.2,
     },
   });
@@ -84,6 +78,7 @@ export async function polishTranslationWithOpenAI(opts: {
   apiKey: string;
   speakerHint?: string;
   glossaryBlock?: string;
+  promptPresets?: PromptSettingsMap;
 }): Promise<string> {
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -94,7 +89,7 @@ export async function polishTranslationWithOpenAI(opts: {
     body: JSON.stringify({
       model: 'gpt-4o-mini',
       messages: [
-        { role: 'system', content: 'You revise translations into natural target-language prose while preserving exact meaning and timestamps.' },
+        { role: 'system', content: renderPrompt(opts.promptPresets, 'literaryPolishSystem', { targetLang: opts.targetLang }) },
         { role: 'user', content: buildLiteraryPolishPrompt(opts) },
       ],
       temperature: 0.2,
@@ -115,6 +110,7 @@ export async function polishTranslationWithClaude(opts: {
   apiKey: string;
   speakerHint?: string;
   glossaryBlock?: string;
+  promptPresets?: PromptSettingsMap;
 }): Promise<string> {
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -127,7 +123,7 @@ export async function polishTranslationWithClaude(opts: {
       model: 'claude-sonnet-4-20250514',
       max_tokens: 2048,
       temperature: 0.2,
-      system: 'You revise translations into natural target-language prose while preserving exact meaning and timestamps.',
+      system: renderPrompt(opts.promptPresets, 'literaryPolishSystem', { targetLang: opts.targetLang }),
       messages: [{ role: 'user', content: buildLiteraryPolishPrompt(opts) }],
     }),
   });
@@ -149,12 +145,13 @@ export async function polishTranslationLocally(opts: {
   targetLang: string;
   speakerHint?: string;
   glossaryBlock?: string;
+  promptPresets?: PromptSettingsMap;
 }): Promise<string> {
   if (!window.electronAPI) throw new Error('Local polish requires the Electron runtime.');
   const result = await window.electronAPI.localTranslateText({
     modelId: opts.modelId,
-    mode: 'polish',
-    text: opts.text,
+    mode: 'custom',
+    text: buildLiteraryPolishPrompt(opts),
     targetLang: opts.targetLang,
     speakerHint: opts.speakerHint,
     glossaryBlock: opts.glossaryBlock,

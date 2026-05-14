@@ -1,3 +1,5 @@
+import type { PromptSettingsMap } from './lib/prompt-presets';
+
 export type AppScreen = 'workspace' | 'review' | 'export';
 export type OutputFormat = 'TXT' | 'SRT' | 'VTT' | 'Markdown';
 export type Theme = 'dark' | 'light';
@@ -43,6 +45,7 @@ export interface AppSettings {
   // Local models
   localAsrModels: Record<string, LocalModelState>;
   localTranslationModels: Record<string, LocalModelState>;
+  promptPresets: PromptSettingsMap;
   glossary: GlossaryEntry[];
 }
 

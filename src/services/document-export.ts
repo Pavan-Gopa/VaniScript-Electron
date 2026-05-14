@@ -1,5 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
 import { OutputFormat } from '../types';
+import { renderPrompt, type PromptSettingsMap } from '../lib/prompt-presets';
 
 export type AiDocumentExportOptions = {
   format: OutputFormat;
@@ -7,6 +8,7 @@ export type AiDocumentExportOptions = {
   text: string;
   subtitleMaxCharsPerLine?: number;
   subtitleMaxLines?: number;
+  promptPresets?: PromptSettingsMap;
 };
 
 export function sanitizeDocumentExportOutput(rawText: string): string {
@@ -29,44 +31,21 @@ export function sanitizeDocumentExportOutput(rawText: string): string {
 export function buildDocumentExportPrompt(opts: AiDocumentExportOptions): string {
   const lang = opts.targetLang || 'the target language';
   if (opts.format === 'Markdown') {
-    return [
-      `You are a formatting editor. Create a polished ${lang} Markdown document from the prepared transcript below.`,
-      '',
-      'Hard rules:',
-      '1. Do not rewrite, paraphrase, summarize, correct, remove, or add transcript content.',
-      '2. Preserve the transcript text exactly, except removing timestamp markers if present.',
-      '3. You may add Markdown structure only: title, metadata block, table of contents, section headings, bold emphasis for short labels, horizontal rules, and paragraph breaks.',
-      '4. Divide the document by meaning. Section headings must describe the actual topic of the section, not merely copy the first sentence.',
-      '5. Preserve all metadata at the top and localize metadata labels to the document language.',
-      '6. Return only the Markdown document. No notes or explanations.',
-      '',
-      'For Russian Markdown use Russian labels such as "Дата", "Место", "Лектор", "Интервьюер / Участники", and "Содержание".',
-      '',
-      '<<<TRANSCRIPT>>>',
-      opts.text,
-      '<<<DOCUMENT>>>',
-    ].join('\n');
+    return renderPrompt(opts.promptPresets, 'documentMarkdown', {
+      targetLang: lang,
+      text: opts.text,
+    });
   }
 
   if (opts.format === 'SRT' || opts.format === 'VTT') {
     const maxChars = opts.subtitleMaxCharsPerLine ?? 42;
     const maxLines = opts.subtitleMaxLines ?? 2;
-    return [
-      `You are a professional subtitle formatter. Format the prepared transcript as valid ${opts.format}.`,
-      '',
-      'Hard rules:',
-      '1. Do not rewrite, paraphrase, translate, correct, remove, or add spoken text.',
-      '2. Keep timings accurate and monotonic. Preserve the provided timing boundaries as closely as possible.',
-      `3. Prefer no more than ${maxChars} characters per line and no more than ${maxLines} lines per subtitle cue.`,
-      '4. Break subtitles at natural phrase boundaries.',
-      '5. Do not split proper names, titles, Sanskrit terms, or devotional names across subtitle cues or lines when avoidable.',
-      '6. If a phrase would read badly when split, make the cue slightly shorter or longer rather than splitting the phrase awkwardly.',
-      `7. Return only valid ${opts.format}. No notes, no markdown fences, no explanations.`,
-      '',
-      '<<<TRANSCRIPT>>>',
-      opts.text,
-      `<<<${opts.format}>>>`,
-    ].join('\n');
+    return renderPrompt(opts.promptPresets, 'documentSubtitles', {
+      format: opts.format,
+      subtitleMaxCharsPerLine: maxChars,
+      subtitleMaxLines: maxLines,
+      text: opts.text,
+    });
   }
 
   return opts.text;
@@ -329,22 +308,12 @@ export function combineLocalMarkdownParts(parts: string[], sourceDocument: strin
 
 function buildLocalMarkdownPartPrompt(opts: AiDocumentExportOptions & { partIndex: number; totalParts: number }): string {
   const lang = opts.targetLang || 'the target language';
-  return [
-    `You are formatting part ${opts.partIndex + 1} of ${opts.totalParts} of a ${lang} Markdown document.`,
-    '',
-    'Hard rules:',
-    '1. Return only Markdown body sections for this fragment.',
-    '2. Do not include document title, metadata, table of contents, "Содержание", "Contents", or horizontal rules.',
-    '3. Do not rewrite, paraphrase, summarize, correct, remove, or add transcript content.',
-    '4. Remove timestamp markers if present.',
-    '5. Add only meaningful section headings and paragraph breaks.',
-    '6. If the fragment continues a previous topic, use a continuation heading only when it is genuinely needed.',
-    '7. No notes, no explanations, no markdown fences.',
-    '',
-    '<<<TRANSCRIPT_FRAGMENT>>>',
-    opts.text,
-    '<<<DOCUMENT_PART>>>',
-  ].join('\n');
+  return renderPrompt(opts.promptPresets, 'localMarkdownPart', {
+    partNumber: opts.partIndex + 1,
+    totalParts: opts.totalParts,
+    targetLang: lang,
+    text: opts.text,
+  });
 }
 
 export async function formatDocumentExportWithGemini(opts: AiDocumentExportOptions & { apiKey: string }): Promise<string> {

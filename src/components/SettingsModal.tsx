@@ -5,8 +5,9 @@ import { X, Eye, EyeOff, Download, Trash2, RefreshCw, Upload, Plus, CheckCircle2
 import { getAvailableTranscriptionProviders, getAvailableTranslationProviders, ProviderOption } from '../lib/provider-registry';
 import { createGlossaryEntry } from '../lib/glossary';
 import { filterGlossaryEntries, GlossarySortMode, joinGlossaryEntries, listGlossaryCategories, sortGlossaryEntries } from '../lib/glossary-management';
+import { PROMPT_DEFINITIONS, PROMPT_SLOTS, type PromptPresetId, type PromptSlot } from '../lib/prompt-presets';
 
-const TABS = ['API Keys', 'Models', 'Appearance', 'Glossary', 'Chunking', 'Transcription', 'Statistics'];
+const TABS = ['API Keys', 'Models', 'Appearance', 'Glossary', 'Chunking', 'Transcription', 'Prompts', 'Statistics'];
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -130,6 +131,7 @@ export function SettingsModal({ settings, usage, onSave, onClose }: Props) {
   const [glossaryCategory, setGlossaryCategory] = useState('all');
   const [glossarySort, setGlossarySort] = useState<GlossarySortMode>('newest');
   const [selectedGlossaryIds, setSelectedGlossaryIds] = useState<string[]>([]);
+  const [selectedPromptId, setSelectedPromptId] = useState<PromptPresetId>('transcriptionSystem');
   const downloadSnapshotsRef = useRef<Record<string, { bytes: number; unchangedTicks: number }>>({});
   const upd = (p: Partial<AppSettings>) => setS(prev => ({ ...prev, ...p }));
   const transcriptionProviders = getAvailableTranscriptionProviders(s);
@@ -140,6 +142,27 @@ export function SettingsModal({ settings, usage, onSave, onClose }: Props) {
   })[0];
   const glossaryCategories = listGlossaryCategories(s.glossary);
   const visibleGlossary = sortGlossaryEntries(filterGlossaryEntries(s.glossary, glossarySearch, glossaryCategory), glossarySort);
+  const promptStages = Array.from(new Set(PROMPT_DEFINITIONS.map((definition) => definition.stage)));
+  const selectedPrompt = PROMPT_DEFINITIONS.find((definition) => definition.id === selectedPromptId) ?? PROMPT_DEFINITIONS[0];
+  const selectedPromptSettings = s.promptPresets[selectedPrompt.id];
+  const activePromptSlot = selectedPromptSettings?.active ?? 'default';
+
+  const updatePromptPreset = useCallback((id: PromptPresetId, patch: Partial<AppSettings['promptPresets'][PromptPresetId]>) => {
+    setS((prev) => ({
+      ...prev,
+      promptPresets: {
+        ...prev.promptPresets,
+        [id]: {
+          ...prev.promptPresets[id],
+          ...patch,
+          custom: {
+            ...prev.promptPresets[id].custom,
+            ...(patch.custom ?? {}),
+          },
+        },
+      },
+    }));
+  }, []);
 
   const persistSettings = useCallback((next: AppSettings) => {
     setS(next);
@@ -924,6 +947,88 @@ export function SettingsModal({ settings, usage, onSave, onClose }: Props) {
 
           {/* Statistics */}
           {tab === 6 && (
+            <div>
+              <div className="s-section">
+                <p className="s-section-title">Prompt Presets</p>
+                <p style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.6, marginBottom: 12 }}>
+                  Each workflow stage has a protected Default prompt plus three editable custom variants. Select 1, 2, or 3 to make that custom prompt active for real API and local model calls.
+                </p>
+                <div className="prompt-settings-layout">
+                  <div className="prompt-settings-nav">
+                    {promptStages.map((stage) => (
+                      <div key={stage} className="prompt-stage-group">
+                        <div className="prompt-stage-title">{stage}</div>
+                        {PROMPT_DEFINITIONS.filter((definition) => definition.stage === stage).map((definition) => (
+                          <button
+                            key={definition.id}
+                            className={`prompt-nav-button ${selectedPrompt.id === definition.id ? 'active' : ''}`}
+                            onClick={() => setSelectedPromptId(definition.id)}
+                          >
+                            <span>{definition.label}</span>
+                            <small>{s.promptPresets[definition.id]?.active === 'default' ? 'Default' : s.promptPresets[definition.id]?.active.replace('custom', '')}</small>
+                          </button>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="prompt-settings-editor">
+                    <div className="prompt-editor-head">
+                      <div>
+                        <h3>{selectedPrompt.label}</h3>
+                        <p>{selectedPrompt.description}</p>
+                      </div>
+                      <div className="prompt-slot-switcher" role="tablist" aria-label={`${selectedPrompt.label} prompt variant`}>
+                        {PROMPT_SLOTS.map((slot) => (
+                          <button
+                            key={slot}
+                            className={activePromptSlot === slot ? 'active' : ''}
+                            onClick={() => updatePromptPreset(selectedPrompt.id, { active: slot })}
+                          >
+                            {slot === 'default' ? 'Default' : slot.replace('custom', '')}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    {selectedPrompt.variables.length > 0 && (
+                      <div className="prompt-variable-list">
+                        {selectedPrompt.variables.map((variable) => <code key={variable}>{`{{${variable}}}`}</code>)}
+                      </div>
+                    )}
+                    <textarea
+                      className="s-input prompt-template-textarea"
+                      readOnly={activePromptSlot === 'default'}
+                      value={activePromptSlot === 'default'
+                        ? selectedPrompt.defaultText
+                        : selectedPromptSettings.custom[activePromptSlot as Exclude<PromptSlot, 'default'>] ?? ''}
+                      onChange={(event) => {
+                        if (activePromptSlot === 'default') return;
+                        updatePromptPreset(selectedPrompt.id, {
+                          custom: { [activePromptSlot]: event.currentTarget.value } as AppSettings['promptPresets'][PromptPresetId]['custom'],
+                        });
+                      }}
+                      placeholder="Write a custom prompt for this workflow stage..."
+                    />
+                    <div className="prompt-editor-actions">
+                      <span>{activePromptSlot === 'default' ? 'Default prompt is read-only.' : `Custom variant ${activePromptSlot.replace('custom', '')} is active when selected.`}</span>
+                      {activePromptSlot !== 'default' && (
+                        <button
+                          className="btn-ghost-sm"
+                          onClick={() => updatePromptPreset(selectedPrompt.id, {
+                            custom: { [activePromptSlot]: selectedPrompt.defaultText } as AppSettings['promptPresets'][PromptPresetId]['custom'],
+                          })}
+                        >
+                          Copy Default Here
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Statistics */}
+          {tab === 7 && (
             <div>
               <p className="s-section-title">Cloud API Usage</p>
               {latestUsage && (

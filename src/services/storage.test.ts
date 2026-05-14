@@ -69,3 +69,36 @@ test('loadSettings merges starter glossary with existing user glossary', () => {
   assert.ok(settings.glossary.some((entry) => entry.id === 'user-term' && entry.category === 'Custom'));
   assert.ok(settings.glossary.some((entry) => entry.source === 'Māyāpur' && entry.category === 'Sacred places'));
 });
+
+test('loadSettings restores prompt preset defaults and persisted custom slots', () => {
+  const values = new Map<string, string>();
+  const originalLocalStorage = globalThis.localStorage;
+  Object.defineProperty(globalThis, 'localStorage', {
+    value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+    },
+    configurable: true,
+  });
+
+  values.set('vs_settings_v1', JSON.stringify({
+    promptPresets: {
+      translationUser: {
+        active: 'custom3',
+        custom: { custom3: 'Custom translation {{text}}' },
+      },
+      unknownPrompt: {
+        active: 'custom1',
+        custom: { custom1: 'ignore me' },
+      },
+    },
+  }));
+
+  const settings = loadSettings();
+  assert.equal(settings.promptPresets.translationUser.active, 'custom3');
+  assert.equal(settings.promptPresets.translationUser.custom.custom3, 'Custom translation {{text}}');
+  assert.equal((settings.promptPresets as any).unknownPrompt, undefined);
+  assert.ok(settings.promptPresets.shortsPlanner);
+
+  Object.defineProperty(globalThis, 'localStorage', { value: originalLocalStorage, configurable: true });
+});

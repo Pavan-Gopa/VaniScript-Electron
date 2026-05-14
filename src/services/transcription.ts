@@ -1,5 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
 import { formatGeminiError, isRetryableGeminiError } from '../lib/gemini-errors';
+import { renderPrompt, type PromptSettingsMap } from '../lib/prompt-presets';
 import { parseTaggedTranscriptionResult } from '../lib/tagged-result';
 import { AudioMetadata, LanguageResult } from '../types';
 
@@ -12,6 +13,7 @@ export interface TranscriptionConfig {
   geminiModel?: string; // optional: override model
   metadata?: AudioMetadata;
   includeMetadata?: boolean;
+  promptPresets?: PromptSettingsMap;
 }
 
 export const SUPPORTED_GEMINI_MODELS = [
@@ -20,20 +22,6 @@ export const SUPPORTED_GEMINI_MODELS = [
   'gemini-2.5-flash-lite',
   'gemini-2.0-flash',
 ] as const;
-
-const VAISHNAVA_SYSTEM = `You are a verbatim transcription engine optimized for Gaudiya Vaishnava philosophical lectures.
-
-RULES:
-1. DICTAPHONE MODE: Transcribe exact words in first person. Zero summarization.
-2. Sanskrit/Bengali terms: retain in original transliteration (Krishna, Bhakti, Shastra, etc.)
-3. Speaker labels: use [Speaker Name] only when multiple speakers present.
-4. Unrecognized words: {unrecognized word} as last resort.
-5. Timestamps for TXT: [MM:SS] at speaker changes or logical paragraphs.
-6. TAIL-CHECK: Ensure transcription reaches the absolute last spoken word.
-
-CONTEXT: Gaudiya Vaishnava tradition. Acharyas: Srila Prabhupada, Bhaktivinoda Thakur, Bhaktisiddhanta Sarasvati.
-Scriptures: Bhagavad-gita, Srimad-Bhagavatam, Caitanya-caritamrita, Nectar of Devotion.
-Common terms: sankirtan, kirtan, sadhana, bhakti, nama-japa, puja, guru, diksha, vaishnava, sampradaya.`;
 
 export async function transcribeChunkGemini(
   audioBase64: string,
@@ -55,32 +43,14 @@ Interviewer / Participants: ${config.metadata.participants || 'None'}
 (Output these clearly at the start of your TXT and Markdown blocks)
 ` : '';
 
-  const prompt = `
-TASK:
-1. Transcribe the audio in its original language.
-${isTranslation ? `2. Translate the transcript to ${config.targetLang}.` : ''}
-SPEAKER IDENTIFICATION HINT: Based on metadata, the primary speaker may be "${config.speakerHint || 'Unknown'}".
-
-${metadataBlock}
-
-REQUESTED FORMATS: ${requestedFormats}
-
-CRITICAL: YOU MUST WRAP EACH SECTION IN CLEAR TAGS.
-Example:
-[ORIGINAL_TXT]
-(content here)
-[/ORIGINAL_TXT]
-${isTranslation ? `\n[TRANSLATED_TXT]\n(content here)\n[/TRANSLATED_TXT]\n` : ''}
-Do this for ALL formats requested: ${requestedFormats}.
-Use tags like [ORIGINAL_SRT], [ORIGINAL_VTT], [ORIGINAL_MARKDOWN], [TRANSLATED_SRT], etc.
-
-REMAINING REQUIREMENTS:
-- TXT: clean reading text with metadata at the top when provided. Preserve paragraph structure.
-- SRT/VTT: split into real subtitle cues, not one large block. Keep cue lengths readable.
-- Markdown: no timestamps in prose body unless absolutely necessary. Use real headings/subheadings and readable article structure for book/editorial work.
-- SPEAKER TAGS: If there is only one speaker, do not repeat their name before every paragraph.
-- At the absolute end, provide: "UNRECOGNIZED FRAGMENTS LIST" with a list of all {unrecognized} fragments.
-`;
+  const prompt = renderPrompt(config.promptPresets, 'transcriptionUser', {
+    translationInstruction: isTranslation ? `2. Translate the transcript to ${config.targetLang}.` : '',
+    speakerHint: config.speakerHint || 'Unknown',
+    metadataBlock,
+    requestedFormats,
+    translatedTxtExample: isTranslation ? `\n[TRANSLATED_TXT]\n(content here)\n[/TRANSLATED_TXT]\n` : '',
+  });
+  const systemInstruction = renderPrompt(config.promptPresets, 'transcriptionSystem');
 
   onProgress?.('Uploading to Gemini...');
 
@@ -108,7 +78,7 @@ REMAINING REQUIREMENTS:
               ],
             },
           ],
-          config: { systemInstruction: VAISHNAVA_SYSTEM, temperature: 0.05 },
+          config: { systemInstruction, temperature: 0.05 },
         });
         break;
       } catch (err: any) {
@@ -177,6 +147,8 @@ export async function transcribeChunkOpenAI(
   form.append('model', 'whisper-1');
   if (config.sourceLang !== 'auto') form.append('language', config.sourceLang);
   form.append('response_format', 'text');
+  const promptHint = renderPrompt(config.promptPresets, 'openaiWhisperPrompt');
+  if (promptHint.trim()) form.append('prompt', promptHint);
 
   const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
     method: 'POST',
@@ -195,8 +167,16 @@ export async function transcribeChunkOpenAI(
       body: JSON.stringify({
         model: 'gpt-4o-mini',
         messages: [
-          { role: 'system', content: VAISHNAVA_SYSTEM },
-          { role: 'user', content: `Translate to ${config.targetLang}:\n\n${original}` },
+          { role: 'system', content: renderPrompt(config.promptPresets, 'translationSystem', { targetLang: config.targetLang }) },
+          {
+            role: 'user',
+            content: renderPrompt(config.promptPresets, 'translationUser', {
+              targetLang: config.targetLang,
+              speakerHintLine: config.speakerHint ? `Primary speaker hint: ${config.speakerHint}.` : '',
+              glossaryBlock: '',
+              text: original,
+            }),
+          },
         ],
         temperature: 0.1,
       }),

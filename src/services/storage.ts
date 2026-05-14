@@ -1,5 +1,6 @@
 import { AppSettings, UsageStats } from '../types';
 import { createDefaultTranslationModelStateMap } from '../lib/llamacpp-model-catalog';
+import { DEFAULT_PROMPT_SETTINGS, normalizePromptSettings } from '../lib/prompt-presets';
 import { mergeStarterGlossary, normalizeGlossaryCategory, STARTER_GLOSSARY } from '../lib/starter-glossary';
 
 const SETTINGS_KEY = 'vs_settings_v1';
@@ -29,6 +30,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     'whisper-large-v3': { status: 'not_downloaded', label: 'Whisper Large v3', runtime: 'whisper' },
   },
   localTranslationModels: createDefaultTranslationModelStateMap(),
+  promptPresets: DEFAULT_PROMPT_SETTINGS,
   glossary: STARTER_GLOSSARY,
 };
 
@@ -127,6 +129,7 @@ export function loadSettings(): AppSettings {
         ...DEFAULT_SETTINGS.localTranslationModels,
         ...normalizeTranslationModelStateMap(parsed.localTranslationModels),
       },
+      promptPresets: normalizePromptSettings(parsed.promptPresets),
       glossary: mergeStarterGlossary(parsedGlossary),
     };
   } catch {

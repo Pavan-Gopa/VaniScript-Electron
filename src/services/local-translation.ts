@@ -1,3 +1,5 @@
+import { renderPrompt, type PromptSettingsMap } from '../lib/prompt-presets';
+
 export function shouldTranslateChunk(targetLang: string): boolean {
   return targetLang.trim().toLowerCase() !== 'same';
 }
@@ -66,6 +68,7 @@ export async function translateTextLocally(opts: {
   targetLang: string;
   speakerHint?: string;
   glossaryBlock?: string;
+  promptPresets?: PromptSettingsMap;
 }): Promise<string> {
   if (!window.electronAPI) {
     throw new Error('Local translation requires the Electron runtime.');
@@ -76,9 +79,16 @@ export async function translateTextLocally(opts: {
 
   for (const batch of batches) {
     const maxTokens = Math.max(256, Math.min(1200, Math.ceil(batch.length * 1.4)));
+    const prompt = renderPrompt(opts.promptPresets, 'localTranslationUser', {
+      targetLang: opts.targetLang,
+      speakerHintLine: opts.speakerHint ? `Context: ${opts.speakerHint}` : '',
+      glossaryBlock: opts.glossaryBlock || '',
+      text: batch,
+    });
     const result = await window.electronAPI.localTranslateText({
       ...opts,
-      text: batch,
+      mode: 'custom',
+      text: prompt,
       maxTokens,
       maxOutputChars: 60000,
     });

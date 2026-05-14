@@ -32,6 +32,7 @@ import { formatDocumentExportLocally, formatDocumentExportWithGemini, formatDocu
 import { ShortsReelsPanel, ShortsSettings } from './components/ShortsReelsPanel';
 import { SourceMediaKind, sourceMediaKind } from './lib/media-source';
 import { buildShortsPrompt, parseShortsPlanResponse, parseTimestampToSeconds, secondsToShortsTimestamp, ShortsClipPlan, ShortsPlanLanguageMode } from './lib/shorts-reels';
+import { renderPrompt } from './lib/prompt-presets';
 import { toggleSync, copyMotionFrom, findLinkedPartnerIndex, resolveClipLanguageRole, buildSyncPatch } from './lib/ClipSyncManager';
 import {
   buildShortsAssSubtitle,
@@ -1024,6 +1025,7 @@ export default function App() {
       apiKey: settingsRef.current.geminiKey,
       speakerHint: session.config.lecturer,
       glossaryBlock: buildGlossaryPromptBlock(settingsRef.current.glossary),
+      promptPresets: settingsRef.current.promptPresets,
     });
   }, [session]);
 
@@ -1036,6 +1038,7 @@ export default function App() {
       targetLang: session.targetLang,
       speakerHint: session.config.lecturer,
       glossaryBlock,
+      promptPresets: settingsRef.current.promptPresets,
     };
 
     if (isLocalTranslationProvider(settingsRef.current, providerId)) {
@@ -1087,6 +1090,7 @@ export default function App() {
         targetLang: cfg.targetLang,
         speakerHint: cfg.lecturer,
         glossaryBlock: buildGlossaryPromptBlock(settingsRef.current.glossary),
+        promptPresets: settingsRef.current.promptPresets,
       });
     }
 
@@ -1097,11 +1101,11 @@ export default function App() {
 
     switch (providerId) {
       case 'gemini-cloud':
-        return translateTextWithGemini(stripMetadataBlock(originalText), cfg.targetLang, apiKey, cfg.lecturer, buildGlossaryPromptBlock(settingsRef.current.glossary));
+        return translateTextWithGemini(stripMetadataBlock(originalText), cfg.targetLang, apiKey, cfg.lecturer, buildGlossaryPromptBlock(settingsRef.current.glossary), settingsRef.current.promptPresets);
       case 'gpt-cloud':
-        return translateTextWithOpenAI(stripMetadataBlock(originalText), cfg.targetLang, apiKey, cfg.lecturer, buildGlossaryPromptBlock(settingsRef.current.glossary));
+        return translateTextWithOpenAI(stripMetadataBlock(originalText), cfg.targetLang, apiKey, cfg.lecturer, buildGlossaryPromptBlock(settingsRef.current.glossary), settingsRef.current.promptPresets);
       case 'claude-cloud':
-        return translateTextWithClaude(stripMetadataBlock(originalText), cfg.targetLang, apiKey, cfg.lecturer, buildGlossaryPromptBlock(settingsRef.current.glossary));
+        return translateTextWithClaude(stripMetadataBlock(originalText), cfg.targetLang, apiKey, cfg.lecturer, buildGlossaryPromptBlock(settingsRef.current.glossary), settingsRef.current.promptPresets);
       default:
         throw new Error(`Unsupported translation provider: ${providerId}`);
     }
@@ -1139,6 +1143,7 @@ export default function App() {
           participants: cfg.participants,
         },
         includeMetadata: chunkIndex === 0,
+        promptPresets: settingsRef.current.promptPresets,
       };
 
       let original = '', translated = '';
@@ -1582,6 +1587,7 @@ export default function App() {
       text: baseText,
       subtitleMaxCharsPerLine,
       subtitleMaxLines,
+      promptPresets: settingsRef.current.promptPresets,
     };
 
     try {
@@ -1722,7 +1728,7 @@ export default function App() {
           model: 'gpt-4o-mini',
           temperature: 0.2,
           messages: [
-            { role: 'system', content: 'You select short video clips from prepared transcripts. Return only the requested JSON.' },
+            { role: 'system', content: renderPrompt(settingsRef.current.promptPresets, 'shortsPlannerSystem') },
             { role: 'user', content: prompt },
           ],
         }),
@@ -1762,6 +1768,7 @@ export default function App() {
         outputLanguage: safeMode === 'source' || session.targetLang === 'same' ? 'English' : session.targetLang,
         speakerName,
         mode: safeMode,
+        promptPresets: settingsRef.current.promptPresets,
       });
       const response = await runShortsPrompt(prompt);
       const plans = parseShortsPlanResponse(response)
