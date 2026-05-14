@@ -422,23 +422,27 @@ function buildCompositionHtml(project, relativeVideoPath) {
         position: absolute; inset: 0; width: 100%; height: 100%;
         object-fit: contain; transform-origin: center center;
       }
+      #frame-guide-overlay {
+        position: absolute; inset: 0; z-index: 3; pointer-events: none;
+        border: 0 solid transparent;
+      }
       #subtitle-layer {
         position: absolute; left: 50%; transform: translateX(-50%);
         max-width: 100%; box-sizing: border-box; text-align: center;
-        overflow: hidden; pointer-events: none; display: none; z-index: 3;
+        overflow: hidden; pointer-events: none; display: none; z-index: 5;
       }
       #subtitle-text {
         display: block; margin: 0;
         white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal;
       }
       #logo-overlay {
-        position: absolute; z-index: 4;
+        position: absolute; z-index: 6;
         transform-origin: top left; pointer-events: none;
         max-width: 28%; max-height: 18%; object-fit: contain;
         background: transparent;
       }
       #text-overlays {
-        position: absolute; inset: 0; z-index: 4; pointer-events: none;
+        position: absolute; inset: 0; z-index: 6; pointer-events: none;
       }
       .text-overlay-layer {
         position: absolute; left: 50%; transform: translateX(-50%);
@@ -472,6 +476,7 @@ function buildCompositionHtml(project, relativeVideoPath) {
           src="${escapeHtml(relativeVideoPath)}"
         ></audio>
       </div>
+      <div id="frame-guide-overlay"></div>
       <div id="subtitle-layer"><span id="subtitle-text"></span></div>
       ${project.logo?.src && !project.logo.hidden ? `<img id="logo-overlay" src="${escapeHtml(project.logo.src)}" alt="${escapeHtml(project.logo.name || 'Logo')}" />` : ''}
       <div id="text-overlays"></div>
@@ -495,12 +500,14 @@ function buildCompositionHtml(project, relativeVideoPath) {
       const blurBg = document.getElementById('blur-bg');
       const gradientOverlay = document.getElementById('gradient-overlay');
       const video = document.getElementById('source-video');
+      const frameGuideOverlay = document.getElementById('frame-guide-overlay');
       const subtitleLayer = document.getElementById('subtitle-layer');
       const subtitleText = document.getElementById('subtitle-text');
       const logoOverlay = document.getElementById('logo-overlay');
       const textOverlays = document.getElementById('text-overlays');
       const extraAudio = Array.from(document.querySelectorAll('.extra-audio'));
       const bgS = project.backgroundSettings || {};
+      const renderScale = project.height / 1920;
 
       const clamp = (v, mn, mx) => Math.min(Math.max(v, mn), mx);
       const smoothstep = (v) => { const t = clamp(v, 0, 1); return t * t * (3 - (2 * t)); };
@@ -536,7 +543,7 @@ function buildCompositionHtml(project, relativeVideoPath) {
 
       // Setup blur background
       if (bgS.blurEnabled && blurBg && blurBg.tagName === 'VIDEO') {
-        blurBg.style.filter = 'blur(' + (bgS.blurStrength || 30) + 'px)';
+        blurBg.style.filter = 'blur(' + ((bgS.blurStrength || 30) * renderScale) + 'px)';
         blurBg.style.transform = 'scale(' + (bgS.blurScale || 1.3) + ')';
       }
       // Setup gradient overlay
@@ -557,10 +564,10 @@ function buildCompositionHtml(project, relativeVideoPath) {
         const fR = bgS.featherRight || 0;
         const masks = [];
         if (fT > 0 || fB > 0) {
-          masks.push('linear-gradient(to bottom, transparent 0px, black ' + fT + 'px, black calc(100% - ' + fB + 'px), transparent 100%)');
+          masks.push('linear-gradient(to bottom, transparent 0px, black ' + (fT * renderScale) + 'px, black calc(100% - ' + (fB * renderScale) + 'px), transparent 100%)');
         }
         if (fL > 0 || fR > 0) {
-          masks.push('linear-gradient(to right, transparent 0px, black ' + fL + 'px, black calc(100% - ' + fR + 'px), transparent 100%)');
+          masks.push('linear-gradient(to right, transparent 0px, black ' + (fL * renderScale) + 'px, black calc(100% - ' + (fR * renderScale) + 'px), transparent 100%)');
         }
         if (masks.length > 0) {
           const combined = masks.join(', ');
@@ -573,10 +580,23 @@ function buildCompositionHtml(project, relativeVideoPath) {
         }
       }
 
+      if (frameGuideOverlay) {
+        const guideColor = bgS.frameGuideColor || '#ffaa19';
+        const guideBorderOpacity = Number.isFinite(Number(bgS.frameGuideBorderOpacity)) ? bgS.frameGuideBorderOpacity : 1;
+        const guideBorderColor = hexToRgba(guideColor, guideBorderOpacity);
+        const guideBorderWidth = Math.max(0, Number(bgS.frameGuideBorderWidth) || 0) * renderScale;
+        const guideBlur = Math.max(0, Number(bgS.frameGuideBlur) || 0) * renderScale;
+        const guideDim = Number.isFinite(Number(bgS.frameGuideOpacity)) ? clamp(bgS.frameGuideOpacity, 0, 1) : 0;
+        frameGuideOverlay.style.border = guideBorderWidth + 'px solid ' + guideBorderColor;
+        frameGuideOverlay.style.boxShadow =
+          'inset 0 0 ' + guideBlur + 'px ' + (guideBlur * 0.5) + 'px ' + guideBorderColor +
+          ', 0 0 0 9999px rgba(0,0,0,' + guideDim + ')';
+      }
+
       if (logoOverlay && project.logo) {
-        const margin = 40;
+        const margin = 40 * renderScale;
         const position = project.logo.position || 'top-left';
-        logoOverlay.style.width = (120 * (project.logo.size || 1)) + 'px';
+        logoOverlay.style.width = (120 * renderScale * (project.logo.size || 1)) + 'px';
         logoOverlay.style.opacity = String(project.logo.opacity ?? 1);
         logoOverlay.style.top = position.startsWith('top') ? margin + 'px' : 'auto';
         logoOverlay.style.bottom = position.startsWith('bottom') ? margin + 'px' : 'auto';

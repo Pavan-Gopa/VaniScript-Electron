@@ -55,6 +55,80 @@ test('buildCompositionHtml emits the HyperFrames producer contract', () => {
   assert.doesNotMatch(html, /window\.__hf\s*=/);
 });
 
+test('buildCompositionHtml carries visual editor background guide and scaled logo settings', () => {
+  const html = buildCompositionHtml({
+    id: 'clip-visual-fidelity',
+    title: 'Clip visual fidelity',
+    sourceWidth: 3840,
+    sourceHeight: 2160,
+    width: 2160,
+    height: 3840,
+    fps: 24,
+    clipStartSec: 0,
+    durationSec: 5,
+    subtitles: [{ id: 'cue-1', startSec: 0, endSec: 2, text: 'Visual match' }],
+    captionStyle: {
+      fontFamily: 'Cuprum',
+      fontSize: 84,
+      bold: true,
+      textTransform: 'uppercase',
+      textColor: '#FFFFFF',
+      boxColor: '#FF8C00',
+      boxOpacity: 0.5,
+      boxWidth: 92,
+      boxHeight: 1.1,
+      edgeBlur: 8,
+      letterSpacing: 0,
+      lineSpacing: 1.05,
+      edgeSoftness: 0.3,
+      outline: 0,
+      shadow: 4,
+    },
+    subtitleBottomMargin: 420,
+    frameKeyframes: [{ id: 'frame-0', time: 0, x: 0, y: 0, zoom: 1, backgroundColor: '#CA9E3F' }],
+    backgroundSettings: {
+      solidEnabled: true,
+      solidColor: '#CA9E3F',
+      blurEnabled: true,
+      blurStrength: 40,
+      blurScale: 1.45,
+      gradientEnabled: false,
+      gradientType: 'linear',
+      gradientColorA: '#000000',
+      gradientColorB: '#111111',
+      gradientAngle: 180,
+      gradientOpacity: 0.6,
+      featherEnabled: true,
+      featherTop: 56,
+      featherBottom: 72,
+      featherLeft: 12,
+      featherRight: 18,
+      frameGuideColor: '#CA9E3F',
+      frameGuideOpacity: 0.66,
+      frameGuideBorderWidth: 3,
+      frameGuideBlur: 22,
+      frameGuideBorderOpacity: 0.8,
+    },
+    logo: {
+      id: 'logo-1',
+      src: './logo.png',
+      name: 'Logo',
+      size: 1.4,
+      opacity: 0.42,
+      position: 'top-left',
+    },
+  }, './assets/source.mp4');
+
+  assert.match(html, /id="frame-guide-overlay"/);
+  assert.match(html, /frameGuideBlur/);
+  assert.match(html, /frameGuideBorderWidth/);
+  assert.match(html, /frameGuideBorderOpacity/);
+  assert.match(html, /const renderScale = project\.height \/ 1920;/);
+  assert.match(html, /logoOverlay\.style\.width = \(120 \* renderScale \* \(project\.logo\.size \|\| 1\)\) \+ 'px';/);
+  assert.match(html, /const margin = 40 \* renderScale;/);
+  assert.match(html, /logoOverlay\.style\.opacity = String\(project\.logo\.opacity \?\? 1\);/);
+});
+
 test('buildMediaSegmentsFilter concats trim and razor-safe media segments', () => {
   const filter = buildMediaSegmentsFilter([
     { sourceStartSec: 102, sourceEndSec: 106, outputStartSec: 0, outputEndSec: 4 },
