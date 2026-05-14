@@ -515,7 +515,7 @@ function buildCompositionHtml(project, relativeVideoPath) {
       const extraAudio = Array.from(document.querySelectorAll('.extra-audio'));
       const bgS = project.backgroundSettings || {};
       const renderScale = project.height / 1920;
-      const effectScale = project.height / Math.max(1, Number(bgS.effectReferenceHeight) || 1920);
+      const effectScale = project.height / Math.max(1, Number(bgS.effectReferenceHeight) || 960);
 
       const clamp = (v, mn, mx) => Math.min(Math.max(v, mn), mx);
       const smoothstep = (v) => { const t = clamp(v, 0, 1); return t * t * (3 - (2 * t)); };
