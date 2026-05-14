@@ -117,6 +117,10 @@ export function Workspace({ onFileSelected }: WorkspaceProps) {
       </div>
 
       <div className="app-footer">
+        <div className="app-footer-brand">
+          <Logo className="app-footer-logo" />
+          <span>VaniScript</span>
+        </div>
         © 2026 VaniScript Audio Processor • Version 1.0.0<br />
         Optimized for Gaudiya Vaishnava Philosophical Lexicon &amp; Technical Terminology
       </div>

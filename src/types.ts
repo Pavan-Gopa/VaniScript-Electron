@@ -253,6 +253,7 @@ declare global {
       getPlatform: () => Promise<string>;
       getUserDataPath: () => Promise<string>;
       getSystemMemoryInfo: () => Promise<{ totalBytes: number; freeBytes: number; platform: string; arch: string }>;
+      onOpenSettings: (callback: () => void) => () => void;
       openExternal: (url: string) => Promise<void>;
     };
   }

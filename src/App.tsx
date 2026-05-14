@@ -450,6 +450,11 @@ export default function App() {
 
   useEffect(() => { applyTheme(settings.theme, settings.fontSize, settings.fontScale, settings.fontFamily); }, [settings.theme, settings.fontSize, settings.fontScale, settings.fontFamily]);
 
+  useEffect(() => {
+    if (!window.electronAPI?.onOpenSettings) return;
+    return window.electronAPI.onOpenSettings(() => setShowSettings(true));
+  }, []);
+
   const openProjectSidebar = useCallback(() => {
     if (projectSidebarCloseTimerRef.current) {
       window.clearTimeout(projectSidebarCloseTimerRef.current);
@@ -2305,8 +2310,10 @@ export default function App() {
               {/* ── Top bar ── */}
               <div className="review-topbar">
                 <div className="review-tb-left">
-                  <Logo className="review-logo" />
-                  <span className="review-app-name">VaniScript</span>
+                  <div className="review-brand">
+                    <Logo className="review-logo" />
+                    <span className="review-app-name">VaniScript</span>
+                  </div>
                   <div className="review-status">
                     <div className="status-dot" />
                     <span>{chunk?.status === 'processing' ? 'Processing…' : chunk?.status === 'error' ? 'Error' : 'Ready'}</span>

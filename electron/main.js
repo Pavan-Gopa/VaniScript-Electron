@@ -22,6 +22,18 @@ log.transports.console.level = 'debug';
 log.info('VaniScript starting up...');
 
 const hyperframesRenderControllers = new Map();
+const APP_NAME = 'VaniScript';
+let tray = null;
+let isQuitting = false;
+
+app.setName(APP_NAME);
+if (process.platform === 'darwin') {
+  app.setAboutPanelOptions({
+    applicationName: APP_NAME,
+    applicationVersion: app.getVersion(),
+    copyright: '© 2026 VaniScript Audio Processor',
+  });
+}
 
 // ─── Single instance lock ────────────────────────────────────────────────────
 const gotLock = app.requestSingleInstanceLock();
@@ -689,6 +701,137 @@ function ensureLocalTranslationWorker() {
   return localTranslationWorker;
 }
 
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function openSettingsFromShell() {
+  showMainWindow();
+  if (!mainWindow) return;
+  if (mainWindow.webContents.isLoadingMainFrame()) {
+    mainWindow.webContents.once('did-finish-load', () => {
+      mainWindow?.webContents.send('app:open-settings');
+    });
+    return;
+  }
+  mainWindow.webContents.send('app:open-settings');
+}
+
+function createVaniScriptIcon(template = false) {
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+      <rect width="64" height="64" rx="16" fill="#111628"/>
+      <path fill="#f5a623" d="M35.5 9c-1.7 0-3 1.3-3 3v31.1c0 2.8-2 5.2-4.7 5.7 2.1 2.8 4.1 5.8 5.8 9.2.4.8 1.6.8 2 0 2.4-4.7 5.3-8.8 8.3-12.8 1.4-1.8.1-4.5-2.2-4.5h-2.1V12c0-1.7-1.4-3-3.1-3h-1Zm-12 7.5c-1.7 0-3 1.3-3 3v18c0 1.7 1.3 3 3 3s3-1.3 3-3v-18c0-1.7-1.3-3-3-3Zm24 5c-1.7 0-3 1.3-3 3v12c0 1.7 1.3 3 3 3s3-1.3 3-3v-12c0-1.7-1.3-3-3-3Zm-36 6c-1.7 0-3 1.3-3 3v4c0 1.7 1.3 3 3 3s3-1.3 3-3v-4c0-1.7-1.3-3-3-3Z"/>
+    </svg>`;
+  const image = nativeImage.createFromDataURL(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`);
+  image.setTemplateImage(template);
+  return image;
+}
+
+function installAppMenu() {
+  const template = [
+    {
+      label: APP_NAME,
+      submenu: [
+        { role: 'about', label: `About ${APP_NAME}` },
+        { type: 'separator' },
+        {
+          label: 'Settings…',
+          accelerator: 'CommandOrControl+,',
+          click: openSettingsFromShell,
+        },
+        { type: 'separator' },
+        { role: 'hide', label: `Hide ${APP_NAME}` },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        {
+          label: `Quit ${APP_NAME}`,
+          accelerator: 'CommandOrControl+Q',
+          click: () => {
+            isQuitting = true;
+            app.quit();
+          },
+        },
+      ],
+    },
+    {
+      label: 'File',
+      submenu: [
+        { label: 'Settings…', accelerator: 'CommandOrControl+,', click: openSettingsFromShell },
+        { type: 'separator' },
+        { role: 'close' },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'selectAll' },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' },
+        { role: 'forceReload' },
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+      ],
+    },
+    {
+      label: 'Window',
+      submenu: [
+        { role: 'minimize' },
+        { role: 'zoom' },
+        { type: 'separator' },
+        { role: 'front' },
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+function installTray() {
+  if (tray) return;
+  const trayIcon = createVaniScriptIcon(process.platform === 'darwin');
+  const dockIcon = createVaniScriptIcon(false);
+  if (process.platform === 'darwin' && app.dock && !dockIcon.isEmpty()) {
+    app.dock.setIcon(dockIcon);
+  }
+  tray = new Tray(trayIcon);
+  tray.setToolTip(APP_NAME);
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: `Open ${APP_NAME}`, click: showMainWindow },
+    { label: 'Settings…', click: openSettingsFromShell },
+    { type: 'separator' },
+    {
+      label: `Quit ${APP_NAME}`,
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      },
+    },
+  ]));
+  tray.on('click', showMainWindow);
+}
+
 function removeLocalModelFiles(kind, modelId) {
   const modelDir = path.join(resolveLocalAsrStorageDir(kind), modelId);
   if (fs.existsSync(modelDir)) fs.rmSync(modelDir, { recursive: true, force: true });
@@ -697,12 +840,13 @@ function removeLocalModelFiles(kind, modelId) {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 820,
+    width: 1536,
+    height: 984,
     minWidth: 900,
     minHeight: 640,
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#0a0a12',
+    icon: createVaniScriptIcon(false),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -710,7 +854,7 @@ function createWindow() {
       sandbox: false,
     },
     show: false,
-    title: 'VaniScript',
+    title: APP_NAME,
   });
 
   const devServerUrl = DEV_SERVER_CANDIDATES.find((candidate) => /^https?:\/\//i.test(candidate));
@@ -733,9 +877,14 @@ function createWindow() {
     mainWindow.show();
   });
 
+  mainWindow.on('close', (event) => {
+    if (isQuitting) return;
+    event.preventDefault();
+    mainWindow.hide();
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
-    cleanupTempDir();
   });
 }
 
@@ -792,23 +941,26 @@ async function callLocalTranslationWorker(message) {
 // ─── App lifecycle ────────────────────────────────────────────────────────────
 app.whenReady().then(() => {
   getTempDir(); // create on startup
+  installAppMenu();
+  installTray();
   createWindow();
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    showMainWindow();
   });
 });
 
 app.on('window-all-closed', () => {
-  cleanupTempDir();
   if (process.platform !== 'darwin') app.quit();
 });
 
+app.on('before-quit', () => {
+  isQuitting = true;
+  cleanupTempDir();
+});
+
 app.on('second-instance', () => {
-  if (mainWindow) {
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.focus();
-  }
+  showMainWindow();
 });
 
 // ─── IPC: File dialog ────────────────────────────────────────────────────────

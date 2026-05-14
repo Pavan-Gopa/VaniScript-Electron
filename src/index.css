@@ -50,6 +50,12 @@ html, body, #root {
               radial-gradient(ellipse 60% 50% at 100% 0%, rgba(255,239,214,0.8) 0%, transparent 60%),
               #f7f9fc;
 }
+:root[data-theme="light"] .app-footer {
+  color: rgba(15,23,42,0.34);
+}
+:root[data-theme="light"] .app-footer-brand {
+  color: rgba(15,23,42,0.48);
+}
 :root[data-font-family="sans"] { --font-reading: 'Inter', system-ui, sans-serif; }
 :root[data-font-family="serif"] { --font-reading: Georgia, 'Times New Roman', serif; }
 
@@ -112,7 +118,7 @@ html, body, #root {
   display: flex; flex-direction: column; align-items: center;
   gap: 12px; margin-bottom: 36px;
 }
-.logo-wrap { display: flex; align-items: center; gap: 12px; }
+.logo-wrap { display: flex; align-items: center; gap: 8px; }
 .logo-img { width: 52px; height: 52px; }
 .logo-name {
   font-size: 32px; font-weight: 800; letter-spacing: -0.5px;
@@ -275,8 +281,14 @@ html, body, #root {
 }
 .review-topbar * { -webkit-app-region: no-drag; }
 .review-tb-left { display: flex; align-items: center; gap: 10px; }
-.review-logo { width: 22px; height: 22px; }
-.review-app-name { font-size: 14px; font-weight: 800; color: var(--accent); letter-spacing: -0.3px; }
+.review-brand {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.review-logo { width: 28px; height: 28px; }
+.review-app-name { font-size: 15px; font-weight: 800; color: var(--accent); letter-spacing: -0.3px; }
 .review-status {
   display: flex; align-items: center; gap: 5px;
   font-size: 11px; color: #4ade80; font-weight: 600;
@@ -3322,6 +3334,22 @@ html, body, #root {
   font-size: 11px; color: rgba(255,255,255,0.2);
   flex-shrink: 0;
 }
+.app-footer-brand {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  margin-bottom: 3px;
+  color: rgba(255,255,255,0.34);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+.app-footer-logo {
+  width: 15px;
+  height: 15px;
+  opacity: 0.62;
+}
 
 /* ─── SETTINGS MODAL ─── */
 .modal-overlay {
@@ -3332,9 +3360,9 @@ html, body, #root {
   animation: fadeIn 0.15s ease;
 }
 .modal {
-  width: 680px; max-width: 95vw;
-  /* FIXED HEIGHT — based on largest tab (Chunking) */
-  height: 620px;
+  width: 816px; max-width: 95vw;
+  /* FIXED HEIGHT — expanded to reduce nested settings scrolling */
+  height: 744px; max-height: 92vh;
   background: #111628;
   border: 1px solid rgba(255,255,255,0.1);
   border-radius: 20px;

@@ -68,6 +68,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getPlatform: () => ipcRenderer.invoke('app:getPlatform'),
   getUserDataPath: () => ipcRenderer.invoke('app:getUserDataPath'),
   getSystemMemoryInfo: () => ipcRenderer.invoke('system:getMemoryInfo'),
+  onOpenSettings: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('app:open-settings', handler);
+    return () => ipcRenderer.removeListener('app:open-settings', handler);
+  },
 
   // ─── Shell ────────────────────────────────────────────────────────────────
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
