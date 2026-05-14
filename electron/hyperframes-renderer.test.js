@@ -120,9 +120,14 @@ test('buildCompositionHtml carries visual editor background guide and scaled log
   }, './assets/source.mp4');
 
   assert.match(html, /id="frame-guide-overlay"/);
+  assert.match(html, /id="feather-overlay"/);
   assert.match(html, /frameGuideBlur/);
   assert.match(html, /frameGuideBorderWidth/);
   assert.match(html, /frameGuideBorderOpacity/);
+  assert.match(html, /frameGuideOverlay\.style\.background = guideDim > 0/);
+  assert.match(html, /frameGuideOverlay\.style\.boxShadow =[\s\S]*inset 0 0 ' \+ guideBlur/);
+  assert.match(html, /videoStage\.style\.maskImage = combined;/);
+  assert.match(html, /featherOverlay\.style\.background = featherGradients\.join\(', '\);/);
   assert.match(html, /const renderScale = project\.height \/ 1920;/);
   assert.match(html, /logoOverlay\.style\.width = \(120 \* renderScale \* \(project\.logo\.size \|\| 1\)\) \+ 'px';/);
   assert.match(html, /const margin = 40 \* renderScale;/);

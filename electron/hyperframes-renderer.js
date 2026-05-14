@@ -423,8 +423,12 @@ function buildCompositionHtml(project, relativeVideoPath) {
         object-fit: contain; transform-origin: center center;
       }
       #frame-guide-overlay {
-        position: absolute; inset: 0; z-index: 3; pointer-events: none;
+        position: absolute; inset: 0; z-index: 4; pointer-events: none;
         border: 0 solid transparent;
+      }
+      #feather-overlay {
+        position: absolute; inset: 0; z-index: 3; pointer-events: none;
+        display: none;
       }
       #subtitle-layer {
         position: absolute; left: 50%; transform: translateX(-50%);
@@ -476,6 +480,7 @@ function buildCompositionHtml(project, relativeVideoPath) {
           src="${escapeHtml(relativeVideoPath)}"
         ></audio>
       </div>
+      <div id="feather-overlay"></div>
       <div id="frame-guide-overlay"></div>
       <div id="subtitle-layer"><span id="subtitle-text"></span></div>
       ${project.logo?.src && !project.logo.hidden ? `<img id="logo-overlay" src="${escapeHtml(project.logo.src)}" alt="${escapeHtml(project.logo.name || 'Logo')}" />` : ''}
@@ -499,7 +504,9 @@ function buildCompositionHtml(project, relativeVideoPath) {
       const background = document.getElementById('background');
       const blurBg = document.getElementById('blur-bg');
       const gradientOverlay = document.getElementById('gradient-overlay');
+      const videoStage = document.getElementById('video-stage');
       const video = document.getElementById('source-video');
+      const featherOverlay = document.getElementById('feather-overlay');
       const frameGuideOverlay = document.getElementById('frame-guide-overlay');
       const subtitleLayer = document.getElementById('subtitle-layer');
       const subtitleText = document.getElementById('subtitle-text');
@@ -573,9 +580,13 @@ function buildCompositionHtml(project, relativeVideoPath) {
           const combined = masks.join(', ');
           video.style.maskImage = combined;
           video.style.webkitMaskImage = combined;
+          videoStage.style.maskImage = combined;
+          videoStage.style.webkitMaskImage = combined;
           if (masks.length > 1) {
             video.style.maskComposite = 'intersect';
             video.style.webkitMaskComposite = 'source-in';
+            videoStage.style.maskComposite = 'intersect';
+            videoStage.style.webkitMaskComposite = 'source-in';
           }
         }
       }
@@ -588,9 +599,33 @@ function buildCompositionHtml(project, relativeVideoPath) {
         const guideBlur = Math.max(0, Number(bgS.frameGuideBlur) || 0) * renderScale;
         const guideDim = Number.isFinite(Number(bgS.frameGuideOpacity)) ? clamp(bgS.frameGuideOpacity, 0, 1) : 0;
         frameGuideOverlay.style.border = guideBorderWidth + 'px solid ' + guideBorderColor;
+        frameGuideOverlay.style.background = guideDim > 0
+          ? 'linear-gradient(to bottom, rgba(0,0,0,' + (guideDim * 0.16) + ') 0%, rgba(0,0,0,0) 18%, rgba(0,0,0,0) 82%, rgba(0,0,0,' + (guideDim * 0.16) + ') 100%)'
+          : 'transparent';
         frameGuideOverlay.style.boxShadow =
           'inset 0 0 ' + guideBlur + 'px ' + (guideBlur * 0.5) + 'px ' + guideBorderColor +
-          ', 0 0 0 9999px rgba(0,0,0,' + guideDim + ')';
+          ', inset 0 0 ' + (guideBlur * 2.8) + 'px rgba(0,0,0,' + (guideDim * 0.28) + ')';
+      }
+
+      function updateFeatherOverlay(bgColor) {
+        if (!featherOverlay) return;
+        if (!bgS.featherEnabled) {
+          featherOverlay.style.display = 'none';
+          return;
+        }
+        const featherGradients = [];
+        const topPx = Math.max(0, Number(bgS.featherTop) || 0) * renderScale;
+        const bottomPx = Math.max(0, Number(bgS.featherBottom) || 0) * renderScale;
+        const leftPx = Math.max(0, Number(bgS.featherLeft) || 0) * renderScale;
+        const rightPx = Math.max(0, Number(bgS.featherRight) || 0) * renderScale;
+        const edgeColor = hexToRgba(bgColor, 0.62);
+        const clearColor = hexToRgba(bgColor, 0);
+        if (topPx > 0) featherGradients.push('linear-gradient(to bottom, ' + edgeColor + ' 0px, ' + clearColor + ' ' + topPx + 'px)');
+        if (bottomPx > 0) featherGradients.push('linear-gradient(to top, ' + edgeColor + ' 0px, ' + clearColor + ' ' + bottomPx + 'px)');
+        if (leftPx > 0) featherGradients.push('linear-gradient(to right, ' + edgeColor + ' 0px, ' + clearColor + ' ' + leftPx + 'px)');
+        if (rightPx > 0) featherGradients.push('linear-gradient(to left, ' + edgeColor + ' 0px, ' + clearColor + ' ' + rightPx + 'px)');
+        featherOverlay.style.display = featherGradients.length ? 'block' : 'none';
+        featherOverlay.style.background = featherGradients.join(', ');
       }
 
       if (logoOverlay && project.logo) {
@@ -670,6 +705,7 @@ function buildCompositionHtml(project, relativeVideoPath) {
         const bgColor = bgS.solidEnabled ? (bgS.solidColor || '#000000') : (frame.backgroundColor || '#000000');
         background.style.background = bgColor;
         stage.style.background = bgColor;
+        updateFeatherOverlay(bgColor);
         video.style.transform = 'translate(' + frame.x + '%,' + frame.y + '%) scale(' + frame.zoom + ')';
         extraAudio.forEach((audio) => {
           const start = Number(audio.dataset.start || 0);
