@@ -22,7 +22,7 @@ log.transports.console.level = 'debug';
 log.info('VaniScript starting up...');
 
 const hyperframesRenderControllers = new Map();
-const APP_NAME = 'VaniScript';
+const APP_NAME = 'VScript';
 let tray = null;
 let isQuitting = false;
 
@@ -31,7 +31,7 @@ if (process.platform === 'darwin') {
   app.setAboutPanelOptions({
     applicationName: APP_NAME,
     applicationVersion: app.getVersion(),
-    copyright: '© 2026 VaniScript Audio Processor',
+    copyright: '© 2026 VScript / VaniScript Audio Processor',
   });
 }
 
@@ -724,12 +724,12 @@ function openSettingsFromShell() {
 }
 
 function createVaniScriptIcon(template = false) {
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
-      <rect width="64" height="64" rx="16" fill="#111628"/>
-      <path fill="#f5a623" d="M35.5 9c-1.7 0-3 1.3-3 3v31.1c0 2.8-2 5.2-4.7 5.7 2.1 2.8 4.1 5.8 5.8 9.2.4.8 1.6.8 2 0 2.4-4.7 5.3-8.8 8.3-12.8 1.4-1.8.1-4.5-2.2-4.5h-2.1V12c0-1.7-1.4-3-3.1-3h-1Zm-12 7.5c-1.7 0-3 1.3-3 3v18c0 1.7 1.3 3 3 3s3-1.3 3-3v-18c0-1.7-1.3-3-3-3Zm24 5c-1.7 0-3 1.3-3 3v12c0 1.7 1.3 3 3 3s3-1.3 3-3v-12c0-1.7-1.3-3-3-3Zm-36 6c-1.7 0-3 1.3-3 3v4c0 1.7 1.3 3 3 3s3-1.3 3-3v-4c0-1.7-1.3-3-3-3Z"/>
-    </svg>`;
-  const image = nativeImage.createFromDataURL(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`);
+  const candidates = [
+    path.join(__dirname, '..', 'assets', 'icon.png'),
+    path.join(process.resourcesPath || '', 'assets', 'icon.png'),
+  ];
+  const iconPath = candidates.find((candidate) => candidate && fs.existsSync(candidate));
+  const image = iconPath ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
   image.setTemplateImage(template);
   return image;
 }

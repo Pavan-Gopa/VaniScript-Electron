@@ -9,24 +9,26 @@
     "dev": "vite --port=3000 --host=0.0.0.0",
     "vite-build": "vite build",
     "compile": "tsc --noEmit",
-    "electron": "electron .",
-    "start": "npm run vite-build && electron .",
+    "electron": "npm run prepare-dev-branding && build/VScript.app/Contents/MacOS/Electron .",
+    "start": "npm run vite-build && npm run electron",
     "build": "npm run vite-build && electron-builder --mac",
     "build:win": "npm run vite-build && electron-builder --win",
     "build:linux": "npm run vite-build && electron-builder --linux",
     "pack": "npm run vite-build && electron-builder --dir",
     "rebuild": "electron-rebuild",
-    "install:llamacpp-runtime": "node scripts/install-llamacpp-runtime.mjs"
+    "install:llamacpp-runtime": "node scripts/install-llamacpp-runtime.mjs",
+    "prepare-dev-branding": "node scripts/prepare-dev-electron-branding.mjs"
   },
   "build": {
     "appId": "com.gaudiya.vaniscript",
-    "productName": "VaniScript",
+    "productName": "VScript",
     "directories": {
       "output": "release"
     },
     "files": [
       "dist/**/*",
       "electron/**/*",
+      "assets/**/*",
       "src/render-engine/**/*",
       "src/lib/subtitle-alignment.ts",
       "src/lib/shorts-render.ts",
