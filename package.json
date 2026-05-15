@@ -9,7 +9,7 @@
     "dev": "vite --port=3000 --host=0.0.0.0",
     "vite-build": "vite build",
     "compile": "tsc --noEmit",
-    "electron": "npm run prepare-dev-branding && build/VScript.app/Contents/MacOS/Electron .",
+    "electron": "npm run prepare-dev-branding && node_modules/electron/dist/Electron.app/Contents/MacOS/Electron .",
     "start": "npm run vite-build && npm run electron",
     "build": "npm run vite-build && electron-builder --mac",
     "build:win": "npm run vite-build && electron-builder --win",
@@ -21,7 +21,7 @@
   },
   "build": {
     "appId": "com.gaudiya.vaniscript",
-    "productName": "VScript",
+  "productName": "VaniScript",
     "directories": {
       "output": "release"
     },

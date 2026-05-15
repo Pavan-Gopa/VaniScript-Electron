@@ -22,7 +22,7 @@ log.transports.console.level = 'debug';
 log.info('VaniScript starting up...');
 
 const hyperframesRenderControllers = new Map();
-const APP_NAME = 'VScript';
+const APP_NAME = 'VaniScript';
 let tray = null;
 let isQuitting = false;
 
@@ -31,7 +31,7 @@ if (process.platform === 'darwin') {
   app.setAboutPanelOptions({
     applicationName: APP_NAME,
     applicationVersion: app.getVersion(),
-    copyright: '© 2026 VScript / VaniScript Audio Processor',
+    copyright: '© 2026 VaniScript Audio Processor',
   });
 }
 
@@ -723,13 +723,14 @@ function openSettingsFromShell() {
   mainWindow.webContents.send('app:open-settings');
 }
 
-function createVaniScriptIcon(template = false) {
+function createVaniScriptIcon(template = false, size = 0) {
   const candidates = [
     path.join(__dirname, '..', 'assets', 'icon.png'),
     path.join(process.resourcesPath || '', 'assets', 'icon.png'),
   ];
   const iconPath = candidates.find((candidate) => candidate && fs.existsSync(candidate));
-  const image = iconPath ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
+  const source = iconPath ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
+  const image = size > 0 && !source.isEmpty() ? source.resize({ width: size, height: size }) : source;
   image.setTemplateImage(template);
   return image;
 }
@@ -810,14 +811,14 @@ function installAppMenu() {
 
 function installTray() {
   if (tray) return;
-  const trayIcon = createVaniScriptIcon(process.platform === 'darwin');
+  const trayIcon = createVaniScriptIcon(process.platform === 'darwin', process.platform === 'darwin' ? 18 : 0);
   const dockIcon = createVaniScriptIcon(false);
   if (process.platform === 'darwin' && app.dock && !dockIcon.isEmpty()) {
     app.dock.setIcon(dockIcon);
   }
   tray = new Tray(trayIcon);
   tray.setToolTip(APP_NAME);
-  tray.setContextMenu(Menu.buildFromTemplate([
+  const trayMenu = Menu.buildFromTemplate([
     { label: `Open ${APP_NAME}`, click: showMainWindow },
     { label: 'Settings…', click: openSettingsFromShell },
     { type: 'separator' },
@@ -828,8 +829,13 @@ function installTray() {
         app.quit();
       },
     },
-  ]));
-  tray.on('click', showMainWindow);
+  ]);
+  if (process.platform === 'darwin') {
+    tray.on('click', showMainWindow);
+    tray.on('right-click', () => tray?.popUpContextMenu(trayMenu));
+  } else {
+    tray.setContextMenu(trayMenu);
+  }
 }
 
 function removeLocalModelFiles(kind, modelId) {
