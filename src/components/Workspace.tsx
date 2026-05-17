@@ -48,6 +48,8 @@ export function Workspace({ onFileSelected }: WorkspaceProps) {
   const [isSavingRecording, setIsSavingRecording] = useState(false);
   const [isPreparingPreview, setIsPreparingPreview] = useState(false);
   const [recordingMode, setRecordingMode] = useState<RecordingMode>('system');
+  const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([]);
+  const [selectedAudioDeviceId, setSelectedAudioDeviceId] = useState('');
   const [recordingElapsedSec, setRecordingElapsedSec] = useState(0);
   const [recordingError, setRecordingError] = useState<string | null>(null);
   const [recordingPreview, setRecordingPreview] = useState<RecordingPreview | null>(null);
@@ -70,6 +72,30 @@ export function Workspace({ onFileSelected }: WorkspaceProps) {
     }, 250);
     return () => window.clearInterval(timer);
   }, [isRecording]);
+
+  useEffect(() => {
+    void refreshAudioInputs();
+    const mediaDevices = navigator.mediaDevices;
+    if (!mediaDevices?.addEventListener) return undefined;
+    const handleDeviceChange = () => void refreshAudioInputs();
+    mediaDevices.addEventListener('devicechange', handleDeviceChange);
+    return () => mediaDevices.removeEventListener('devicechange', handleDeviceChange);
+  }, []);
+
+  const refreshAudioInputs = async () => {
+    if (!navigator.mediaDevices?.enumerateDevices) return;
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const inputs = devices.filter((device) => device.kind === 'audioinput');
+      setAudioInputs(inputs);
+      setSelectedAudioDeviceId((current) => {
+        if (!current || inputs.some((device) => device.deviceId === current)) return current;
+        return '';
+      });
+    } catch {
+      // Device labels may be unavailable until microphone permission is granted.
+    }
+  };
 
   useEffect(() => {
     return () => {
@@ -181,27 +207,33 @@ export function Workspace({ onFileSelected }: WorkspaceProps) {
       shouldSaveRecordingRef.current = true;
       appendQueueRef.current = Promise.resolve();
 
-      const stream = mode === 'system'
-        ? await navigator.mediaDevices.getDisplayMedia({
+      let stream: MediaStream;
+      if (mode === 'system') {
+        stream = await navigator.mediaDevices.getDisplayMedia({
           video: true,
           audio: {
             echoCancellation: false,
             noiseSuppression: false,
             autoGainControl: false,
           } as MediaTrackConstraints,
-        })
-        : await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: false,
-            noiseSuppression: false,
-            autoGainControl: false,
-          },
         });
+      } else {
+        const audioConstraints: MediaTrackConstraints = {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        };
+        if (selectedAudioDeviceId) {
+          audioConstraints.deviceId = { exact: selectedAudioDeviceId };
+        }
+        stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+        void refreshAudioInputs();
+      }
 
       if (stream.getAudioTracks().length === 0) {
         stream.getTracks().forEach((track) => track.stop());
         throw new Error(mode === 'system'
-          ? 'No audio track was shared. Select a browser tab/window and enable audio sharing.'
+          ? 'macOS did not share audio from this window. Choose Microphone and select a physical mic or virtual audio input such as BlackHole/Loopback.'
           : 'No microphone audio track is available.');
       }
 
@@ -267,7 +299,7 @@ export function Workspace({ onFileSelected }: WorkspaceProps) {
       setIsPreparingPreview(false);
       setIsSavingRecording(false);
       const message = error?.name === 'NotSupportedError'
-        ? 'System capture is not available for this source. Try a browser tab/window with audio sharing, or use Microphone/virtual audio input.'
+        ? 'System capture is not available for this source. On macOS, use Microphone with a physical mic or virtual audio input such as BlackHole/Loopback.'
         : error?.message || String(error);
       setRecordingError(message);
     }
@@ -388,7 +420,7 @@ export function Workspace({ onFileSelected }: WorkspaceProps) {
           ) : (
             <>
               <h3>Record Audio Source</h3>
-              <p>Capture browser/system audio or a connected microphone.</p>
+              <p>Record from a shared source, microphone, or virtual audio input.</p>
               <div className="recording-source-tabs" role="group" aria-label="Recording source">
                 <button
                   type="button"
@@ -402,8 +434,32 @@ export function Workspace({ onFileSelected }: WorkspaceProps) {
                   className={`recording-mode-btn ${recordingMode === 'microphone' ? 'active' : ''}`}
                   onClick={() => setRecordingMode('microphone')}
                 >
-                  Microphone
+                  Mic / Virtual
                 </button>
+              </div>
+              <div className="recording-device-row">
+                {recordingMode === 'microphone' ? (
+                  <>
+                    <select
+                      className="recording-device-select"
+                      value={selectedAudioDeviceId}
+                      onChange={(event) => setSelectedAudioDeviceId(event.target.value)}
+                      onFocus={() => void refreshAudioInputs()}
+                    >
+                      <option value="">Default input</option>
+                      {audioInputs.map((device, index) => (
+                        <option key={device.deviceId || index} value={device.deviceId}>
+                          {device.label || `Audio input ${index + 1}`}
+                        </option>
+                      ))}
+                    </select>
+                    <button className="recording-refresh-btn" type="button" onClick={() => void refreshAudioInputs()} aria-label="Refresh audio inputs">↻</button>
+                  </>
+                ) : (
+                  <p className="recording-hint">
+                    On macOS, Chrome/window audio may not be provided. Use Mic / Virtual with BlackHole or Loopback if this source has no audio track.
+                  </p>
+                )}
               </div>
               <div className="source-card-actions">
                 <button
