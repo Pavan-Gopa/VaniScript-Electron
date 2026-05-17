@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, shell, dialog, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, Tray, Menu, nativeImage, session, desktopCapturer } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -15,6 +15,12 @@ const {
 const {
   renderShortClipWithHyperFrames,
 } = require('./hyperframes-renderer');
+
+for (const stream of [process.stdout, process.stderr]) {
+  stream?.on?.('error', (error) => {
+    if (error?.code !== 'EPIPE') throw error;
+  });
+}
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
 log.initialize();
@@ -896,6 +902,27 @@ function createWindow() {
   });
 }
 
+function configureDisplayMediaCapture() {
+  session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
+    try {
+      const sources = await desktopCapturer.getSources({
+        types: ['window', 'screen'],
+        thumbnailSize: { width: 320, height: 180 },
+        fetchWindowIcons: true,
+      });
+      const video = sources[0];
+      if (!video) return callback({});
+      callback({
+        video,
+        audio: request.audioRequested && process.platform === 'win32' ? 'loopback' : undefined,
+      });
+    } catch (error) {
+      log.error('Display media request failed:', error);
+      callback({});
+    }
+  }, { useSystemPicker: true });
+}
+
 // ─── Temp directory ───────────────────────────────────────────────────────────
 // Lazy getter — evaluated only after app is ready to ensure correct temp path
 function getTempDir() {
@@ -949,6 +976,7 @@ async function callLocalTranslationWorker(message) {
 // ─── App lifecycle ────────────────────────────────────────────────────────────
 app.whenReady().then(() => {
   getTempDir(); // create on startup
+  configureDisplayMediaCapture();
   installAppMenu();
   installTray();
   createWindow();
@@ -1182,6 +1210,21 @@ function cancelRecordingSession(id) {
   return { success: true };
 }
 
+function getRecordingPreview(id) {
+  const session = recordingSessions.get(id);
+  if (!session) return { success: false, error: 'Recording session not found.' };
+  if (!fs.existsSync(session.tempPath) || session.bytes <= 0) {
+    return { success: false, error: 'Recording produced no previewable media.' };
+  }
+  return {
+    success: true,
+    path: session.tempPath,
+    url: pathToFileURL(session.tempPath).toString(),
+    bytes: session.bytes,
+    mimeType: session.mimeType,
+  };
+}
+
 ipcMain.handle('recording:start', async (_, { mimeType, fileBaseName } = {}) => {
   try {
     const session = createRecordingSession({ mimeType, fileBaseName });
@@ -1212,6 +1255,15 @@ ipcMain.handle('recording:finish', async (_, { sessionId }) => {
     return await finishRecordingSession(sessionId);
   } catch (e) {
     log.error('recording:finish failed:', e);
+    return { success: false, error: e?.message ?? String(e) };
+  }
+});
+
+ipcMain.handle('recording:preview', async (_, { sessionId }) => {
+  try {
+    return getRecordingPreview(sessionId);
+  } catch (e) {
+    log.error('recording:preview failed:', e);
     return { success: false, error: e?.message ?? String(e) };
   }
 });

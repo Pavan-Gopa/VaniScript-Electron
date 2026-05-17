@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // ─── Recording ────────────────────────────────────────────────────────────
   recordingStart: (opts) => ipcRenderer.invoke('recording:start', opts),
   recordingAppendChunk: (opts) => ipcRenderer.invoke('recording:appendChunk', opts),
+  recordingPreview: (opts) => ipcRenderer.invoke('recording:preview', opts),
   recordingFinish: (opts) => ipcRenderer.invoke('recording:finish', opts),
   recordingCancel: (opts) => ipcRenderer.invoke('recording:cancel', opts),
   recordingOpenFolder: () => ipcRenderer.invoke('recording:openFolder'),

@@ -146,6 +146,7 @@ declare global {
       pathToFileUrl: (opts: { filePath: string }) => Promise<{ success: boolean; url?: string; error?: string }>;
       recordingStart: (opts: { mimeType?: string; fileBaseName?: string }) => Promise<{ success: boolean; sessionId?: string; error?: string }>;
       recordingAppendChunk: (opts: { sessionId: string; chunk: ArrayBuffer }) => Promise<{ success: boolean; bytes?: number; error?: string }>;
+      recordingPreview: (opts: { sessionId: string }) => Promise<{ success: boolean; path?: string; url?: string; bytes?: number; mimeType?: string; error?: string }>;
       recordingFinish: (opts: { sessionId: string }) => Promise<{ success: boolean; path?: string; name?: string; directory?: string; bytes?: number; error?: string; stderr?: string }>;
       recordingCancel: (opts: { sessionId: string }) => Promise<{ success: boolean; error?: string }>;
       recordingOpenFolder: () => Promise<{ success: boolean; directory?: string; error?: string }>;
