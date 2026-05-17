@@ -154,7 +154,7 @@ html, body, #root {
 .source-card.drag-over { border-color: var(--accent); background: rgba(245,166,35,0.1); }
 .source-card.solid { border-style: solid; border-color: rgba(255,255,255,0.1); }
 .source-card.recording { border-color: var(--red); background: rgba(255,92,92,0.05); }
-.source-card.record-source-card { cursor: default; }
+.source-card.record-source-card { border-style: solid; }
 .source-card-icon {
   width: 48px; height: 48px; border-radius: 50%;
   background: var(--accent-dim);
@@ -164,6 +164,19 @@ html, body, #root {
 }
 .source-card h3 { font-size: 15px; font-weight: 700; }
 .source-card p { font-size: 12px; color: var(--text-2); line-height: 1.5; }
+.recording-card-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(245,166,35,0.12);
+  border: 1px solid rgba(245,166,35,0.28);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
 .source-card-actions {
   display: flex;
   align-items: center;
@@ -315,6 +328,22 @@ html, body, #root {
   box-shadow: 0 28px 80px rgba(0,0,0,0.38);
   text-align: center;
 }
+.recording-control-modal {
+  position: relative;
+  width: min(560px, calc(100vw - 48px));
+  min-height: 420px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 34px;
+  border-radius: 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--bg-card-border);
+  box-shadow: 0 28px 80px rgba(0,0,0,0.38);
+  text-align: center;
+}
 .recording-review-close {
   position: absolute;
   top: 12px;
@@ -333,11 +362,27 @@ html, body, #root {
   font-size: 18px;
   font-weight: 800;
 }
+.recording-control-modal h3 {
+  font-size: 18px;
+  font-weight: 800;
+}
+.recording-modal-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
 .recording-review-modal p {
   color: var(--text-2);
   font-size: 13px;
   line-height: 1.5;
   max-width: 390px;
+}
+.recording-control-modal p {
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.5;
+  max-width: 420px;
 }
 .recording-review-player {
   width: 100%;

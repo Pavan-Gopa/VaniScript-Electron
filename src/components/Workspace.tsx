@@ -47,6 +47,7 @@ export function Workspace({ onFileSelected }: WorkspaceProps) {
   const [isRecording, setIsRecording] = useState(false);
   const [isSavingRecording, setIsSavingRecording] = useState(false);
   const [isPreparingPreview, setIsPreparingPreview] = useState(false);
+  const [showRecordingModal, setShowRecordingModal] = useState(false);
   const [recordingMode, setRecordingMode] = useState<RecordingMode>('system');
   const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([]);
   const [selectedAudioDeviceId, setSelectedAudioDeviceId] = useState('');
@@ -203,6 +204,7 @@ export function Workspace({ onFileSelected }: WorkspaceProps) {
       }
       setRecordingError(null);
       setRecordingPreview(null);
+      setShowRecordingModal(true);
       setRecordingMode(mode);
       shouldSaveRecordingRef.current = true;
       appendQueueRef.current = Promise.resolve();
@@ -276,6 +278,7 @@ export function Workspace({ onFileSelected }: WorkspaceProps) {
             mode,
             bytes: result.bytes,
           });
+          setShowRecordingModal(false);
         } catch (error: any) {
           await window.electronAPI?.recordingCancel?.({ sessionId: session.sessionId! });
           setRecordingError(error?.message || String(error));
@@ -356,6 +359,12 @@ export function Workspace({ onFileSelected }: WorkspaceProps) {
     void window.electronAPI?.recordingOpenFolder?.();
   };
 
+  const openRecordingModal = () => {
+    setRecordingError(null);
+    setShowRecordingModal(true);
+    void refreshAudioInputs();
+  };
+
   return (
     <div className="main-screen">
       <div className="logo-header">
@@ -386,99 +395,110 @@ export function Workspace({ onFileSelected }: WorkspaceProps) {
         </div>
 
         {/* Record card */}
-        <div className={`source-card solid record-source-card ${isRecording ? 'recording' : ''}`}>
-          <div className="source-card-icon" style={isRecording ? { borderColor: 'var(--red)', background: 'rgba(255,92,92,0.1)' } : {}}>
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={isRecording ? 'var(--red)' : 'currentColor'} strokeWidth="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"/></svg>
+        <div className={`source-card solid record-source-card ${isRecording ? 'recording' : ''}`} onClick={openRecordingModal}>
+          <div className="source-card-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"/></svg>
           </div>
-          {isRecording ? (
-            <>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <div className="rec-dot" />
-                <h3 style={{ color: 'var(--red)' }}>Recording {formatElapsed(recordingElapsedSec)}</h3>
-              </div>
-              <p>{recordingMode === 'system' ? 'Capturing shared system/browser audio.' : 'Capturing microphone input.'}</p>
-              <div className="recording-meter" aria-hidden="true">
-                {audioLevels.map((level, index) => (
-                  <span key={index} style={{ height: `${Math.round(18 + level * 42)}px` }} />
-                ))}
-              </div>
-              <div className="source-card-actions">
-                <button className="btn-save" type="button" onClick={stopRecording}>Stop &amp; Review</button>
-                <button className="btn-cancel" type="button" onClick={cancelRecording}>Cancel</button>
-              </div>
-            </>
-          ) : isPreparingPreview || isSavingRecording ? (
-            <>
-              <h3>{isSavingRecording ? 'Converting to MP3…' : 'Preparing preview…'}</h3>
-              <p>{isSavingRecording ? 'Saving high-quality 320 kbps MP3 recording.' : 'Loading the captured audio for review.'}</p>
-              <div className="recording-meter muted" aria-hidden="true">
-                {audioLevels.map((level, index) => (
-                  <span key={index} style={{ height: `${Math.round(18 + level * 42)}px` }} />
-                ))}
-              </div>
-            </>
-          ) : (
-            <>
-              <h3>Record Audio Source</h3>
-              <p>Record from a shared source, microphone, or virtual audio input.</p>
-              <div className="recording-source-tabs" role="group" aria-label="Recording source">
-                <button
-                  type="button"
-                  className={`recording-mode-btn ${recordingMode === 'system' ? 'active' : ''}`}
-                  onClick={() => setRecordingMode('system')}
-                >
-                  System
-                </button>
-                <button
-                  type="button"
-                  className={`recording-mode-btn ${recordingMode === 'microphone' ? 'active' : ''}`}
-                  onClick={() => setRecordingMode('microphone')}
-                >
-                  Mic / Virtual
-                </button>
-              </div>
-              <div className="recording-device-row">
-                {recordingMode === 'microphone' ? (
-                  <>
-                    <select
-                      className="recording-device-select"
-                      value={selectedAudioDeviceId}
-                      onChange={(event) => setSelectedAudioDeviceId(event.target.value)}
-                      onFocus={() => void refreshAudioInputs()}
-                    >
-                      <option value="">Default input</option>
-                      {audioInputs.map((device, index) => (
-                        <option key={device.deviceId || index} value={device.deviceId}>
-                          {device.label || `Audio input ${index + 1}`}
-                        </option>
-                      ))}
-                    </select>
-                    <button className="recording-refresh-btn" type="button" onClick={() => void refreshAudioInputs()} aria-label="Refresh audio inputs">↻</button>
-                  </>
-                ) : (
-                  <p className="recording-hint">
-                    On macOS, Chrome/window audio may not be provided. Use Mic / Virtual with BlackHole or Loopback if this source has no audio track.
-                  </p>
-                )}
-              </div>
-              <div className="source-card-actions">
-                <button
-                  className="btn-save"
-                  type="button"
-                  onClick={() => startRecording(recordingMode)}
-                >
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/></svg>
-                  Start
-                </button>
-                {window.electronAPI?.recordingOpenFolder && (
-                  <button className="btn-cancel" type="button" onClick={openRecordingsFolder}>Recordings</button>
-                )}
-              </div>
-              {recordingError && <p className="recording-error">{recordingError}</p>}
-            </>
-          )}
+          <h3>Record Audio Source</h3>
+          <p>Capture system audio or a connected microphone.</p>
+          {isRecording && <span className="recording-card-status">Recording {formatElapsed(recordingElapsedSec)}</span>}
+          {(isPreparingPreview || isSavingRecording) && <span className="recording-card-status">{isSavingRecording ? 'Converting to MP3…' : 'Preparing preview…'}</span>}
         </div>
       </div>
+
+      {showRecordingModal && !recordingPreview && (
+        <div className="recording-review-backdrop" role="dialog" aria-modal="true" aria-label="Record audio source">
+          <div className="recording-control-modal">
+            <button className="recording-review-close" type="button" onClick={() => setShowRecordingModal(false)} aria-label="Close recording setup">×</button>
+            <div className="source-card-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={isRecording ? 'var(--red)' : 'currentColor'} strokeWidth="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"/></svg>
+            </div>
+            {isRecording ? (
+              <>
+                <div className="recording-modal-title-row">
+                  <div className="rec-dot" />
+                  <h3>Recording {formatElapsed(recordingElapsedSec)}</h3>
+                </div>
+                <p>{recordingMode === 'system' ? 'Capturing the shared source audio.' : 'Capturing the selected audio input.'}</p>
+                <div className="recording-meter" aria-hidden="true">
+                  {audioLevels.map((level, index) => (
+                    <span key={index} style={{ height: `${Math.round(18 + level * 42)}px` }} />
+                  ))}
+                </div>
+                <div className="recording-review-actions">
+                  <button className="btn-cancel" type="button" onClick={cancelRecording}>Cancel</button>
+                  <button className="btn-save" type="button" onClick={stopRecording}>Stop &amp; Review</button>
+                </div>
+              </>
+            ) : isPreparingPreview || isSavingRecording ? (
+              <>
+                <h3>{isSavingRecording ? 'Converting to MP3…' : 'Preparing preview…'}</h3>
+                <p>{isSavingRecording ? 'Saving high-quality 320 kbps MP3 recording.' : 'Loading the captured audio for review.'}</p>
+                <div className="recording-meter muted" aria-hidden="true">
+                  {audioLevels.map((level, index) => (
+                    <span key={index} style={{ height: `${Math.round(18 + level * 42)}px` }} />
+                  ))}
+                </div>
+              </>
+            ) : (
+              <>
+                <h3>Record Audio Source</h3>
+                <p>Choose a source, record, review the audio, then continue to transcription.</p>
+                <div className="recording-source-tabs" role="group" aria-label="Recording source">
+                  <button
+                    type="button"
+                    className={`recording-mode-btn ${recordingMode === 'system' ? 'active' : ''}`}
+                    onClick={() => setRecordingMode('system')}
+                  >
+                    System
+                  </button>
+                  <button
+                    type="button"
+                    className={`recording-mode-btn ${recordingMode === 'microphone' ? 'active' : ''}`}
+                    onClick={() => setRecordingMode('microphone')}
+                  >
+                    Mic / Virtual
+                  </button>
+                </div>
+                <div className="recording-device-row">
+                  {recordingMode === 'microphone' ? (
+                    <>
+                      <select
+                        className="recording-device-select"
+                        value={selectedAudioDeviceId}
+                        onChange={(event) => setSelectedAudioDeviceId(event.target.value)}
+                        onFocus={() => void refreshAudioInputs()}
+                      >
+                        <option value="">Default input</option>
+                        {audioInputs.map((device, index) => (
+                          <option key={device.deviceId || index} value={device.deviceId}>
+                            {device.label || `Audio input ${index + 1}`}
+                          </option>
+                        ))}
+                      </select>
+                      <button className="recording-refresh-btn" type="button" onClick={() => void refreshAudioInputs()} aria-label="Refresh audio inputs">↻</button>
+                    </>
+                  ) : (
+                    <p className="recording-hint">
+                      On macOS, selected app/window audio is not always exposed by Electron. If this returns no audio, use Mic / Virtual with a physical mic or virtual cable.
+                    </p>
+                  )}
+                </div>
+                {recordingError && <p className="recording-error">{recordingError}</p>}
+                <div className="recording-review-actions">
+                  {window.electronAPI?.recordingOpenFolder ? (
+                    <button className="btn-cancel" type="button" onClick={openRecordingsFolder}>Recordings</button>
+                  ) : <span />}
+                  <button className="btn-save" type="button" onClick={() => startRecording(recordingMode)}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/></svg>
+                    Start Recording
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {recordingPreview && (
         <div className="recording-review-backdrop" role="dialog" aria-modal="true" aria-label="Review recording">
