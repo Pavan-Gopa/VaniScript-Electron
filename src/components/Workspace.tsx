@@ -1,16 +1,76 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { Logo } from './Logo';
 
 interface WorkspaceProps {
   onFileSelected: (path: string, name: string) => void;
 }
 
+type RecordingMode = 'system' | 'microphone';
+
+const SYSTEM_MIME_TYPES = [
+  'video/webm;codecs=vp9,opus',
+  'video/webm;codecs=vp8,opus',
+  'video/webm;codecs=opus',
+  'video/webm',
+  'audio/webm;codecs=opus',
+  'audio/webm',
+];
+
+const MICROPHONE_MIME_TYPES = [
+  'audio/webm;codecs=opus',
+  'audio/webm',
+  'video/webm;codecs=vp8,opus',
+  'video/webm',
+];
+
+function getSupportedMimeType(mode: RecordingMode) {
+  const candidates = mode === 'microphone' ? MICROPHONE_MIME_TYPES : SYSTEM_MIME_TYPES;
+  return candidates.find((type) => MediaRecorder.isTypeSupported(type)) || '';
+}
+
+function formatElapsed(seconds: number) {
+  const safe = Math.max(0, Math.floor(seconds));
+  const m = Math.floor(safe / 60).toString().padStart(2, '0');
+  const s = (safe % 60).toString().padStart(2, '0');
+  return `${m}:${s}`;
+}
+
 export function Workspace({ onFileSelected }: WorkspaceProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [isSavingRecording, setIsSavingRecording] = useState(false);
+  const [recordingMode, setRecordingMode] = useState<RecordingMode>('system');
+  const [recordingElapsedSec, setRecordingElapsedSec] = useState(0);
+  const [recordingError, setRecordingError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
+  const streamRef = useRef<MediaStream | null>(null);
+  const recordingSessionIdRef = useRef<string | null>(null);
+  const appendQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const shouldSaveRecordingRef = useRef(true);
+  const recordingStartedAtRef = useRef(0);
+
+  useEffect(() => {
+    if (!isRecording) return undefined;
+    const timer = window.setInterval(() => {
+      setRecordingElapsedSec((Date.now() - recordingStartedAtRef.current) / 1000);
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [isRecording]);
+
+  useEffect(() => {
+    return () => {
+      shouldSaveRecordingRef.current = false;
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+      }
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      const sessionId = recordingSessionIdRef.current;
+      if (sessionId) {
+        void window.electronAPI?.recordingCancel?.({ sessionId });
+      }
+    };
+  }, []);
 
   const handlePickFile = async () => {
     if (window.electronAPI) {
@@ -32,28 +92,129 @@ export function Workspace({ onFileSelected }: WorkspaceProps) {
     if (f) onFileSelected((f as any).path ?? f.name, f.name);
   };
 
-  const startRecording = async () => {
+  const appendRecordingChunk = (sessionId: string, blob: Blob) => {
+    const next = appendQueueRef.current.catch(() => undefined).then(async () => {
+      const chunk = await blob.arrayBuffer();
+      const result = await window.electronAPI?.recordingAppendChunk?.({ sessionId, chunk });
+      if (!result?.success) throw new Error(result?.error || 'Could not write recording chunk.');
+    });
+    appendQueueRef.current = next;
+    void next.catch((error) => {
+      setRecordingError(error?.message || String(error));
+    });
+  };
+
+  const cleanupRecordingResources = () => {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    mediaRecorderRef.current = null;
+    recordingSessionIdRef.current = null;
+    appendQueueRef.current = Promise.resolve();
+  };
+
+  const startRecording = async (mode: RecordingMode) => {
     try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-      const mr = new MediaRecorder(stream);
+      if (!window.electronAPI?.recordingStart || !window.electronAPI?.recordingFinish) {
+        throw new Error('Recording requires the Electron desktop app.');
+      }
+      setRecordingError(null);
+      setRecordingMode(mode);
+      shouldSaveRecordingRef.current = true;
+      appendQueueRef.current = Promise.resolve();
+
+      const stream = mode === 'system'
+        ? await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
+        : await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+          },
+        });
+
+      if (stream.getAudioTracks().length === 0) {
+        stream.getTracks().forEach((track) => track.stop());
+        throw new Error(mode === 'system'
+          ? 'No audio track was shared. Select a browser tab/window and enable audio sharing.'
+          : 'No microphone audio track is available.');
+      }
+
+      const mimeType = getSupportedMimeType(mode);
+      const session = await window.electronAPI.recordingStart({
+        mimeType,
+        fileBaseName: mode === 'system' ? 'System Audio Recording' : 'Microphone Recording',
+      });
+      if (!session.success || !session.sessionId) throw new Error(session.error || 'Could not start recording session.');
+
+      const mr = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
       mediaRecorderRef.current = mr;
-      chunksRef.current = [];
-      mr.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data); };
-      mr.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: mr.mimeType });
-        const name = `Recorded_${Date.now()}.webm`;
-        onFileSelected(name, name);
-        stream.getTracks().forEach(t => t.stop());
-        setIsRecording(false);
+      streamRef.current = stream;
+      recordingSessionIdRef.current = session.sessionId;
+      recordingStartedAtRef.current = Date.now();
+      setRecordingElapsedSec(0);
+
+      mr.ondataavailable = (event) => {
+        if (event.data.size > 0 && session.sessionId) appendRecordingChunk(session.sessionId, event.data);
       };
-      stream.getVideoTracks()[0].onended = () => { if (mr.state !== 'inactive') mr.stop(); };
-      mr.start();
+      mr.onstop = async () => {
+        setIsRecording(false);
+        setIsSavingRecording(true);
+        try {
+          await appendQueueRef.current;
+          if (!shouldSaveRecordingRef.current) {
+            await window.electronAPI?.recordingCancel?.({ sessionId: session.sessionId! });
+            return;
+          }
+          const result = await window.electronAPI?.recordingFinish?.({ sessionId: session.sessionId! });
+          if (!result?.success || !result.path) {
+            throw new Error(result?.error || 'MP3 conversion failed.');
+          }
+          onFileSelected(result.path, result.name || result.path.split('/').pop() || 'recording.mp3');
+        } catch (error: any) {
+          await window.electronAPI?.recordingCancel?.({ sessionId: session.sessionId! });
+          setRecordingError(error?.message || String(error));
+        } finally {
+          cleanupRecordingResources();
+          setIsSavingRecording(false);
+        }
+      };
+      const sharedVideoTrack = stream.getVideoTracks()[0];
+      if (sharedVideoTrack) {
+        sharedVideoTrack.onended = () => {
+          if (mr.state !== 'inactive') mr.stop();
+        };
+      }
+      mr.start(1000);
       setIsRecording(true);
-    } catch { setIsRecording(false); }
+    } catch (error: any) {
+      cleanupRecordingResources();
+      setIsRecording(false);
+      setIsSavingRecording(false);
+      setRecordingError(error?.message || String(error));
+    }
   };
 
   const stopRecording = () => {
+    shouldSaveRecordingRef.current = true;
+    mediaRecorderRef.current?.requestData?.();
     if (mediaRecorderRef.current?.state !== 'inactive') mediaRecorderRef.current?.stop();
+  };
+
+  const cancelRecording = () => {
+    shouldSaveRecordingRef.current = false;
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    } else {
+      const sessionId = recordingSessionIdRef.current;
+      if (sessionId) void window.electronAPI?.recordingCancel?.({ sessionId });
+      cleanupRecordingResources();
+      setIsRecording(false);
+      setIsSavingRecording(false);
+    }
+  };
+
+  const openRecordingsFolder = () => {
+    void window.electronAPI?.recordingOpenFolder?.();
   };
 
   return (
@@ -86,7 +247,7 @@ export function Workspace({ onFileSelected }: WorkspaceProps) {
         </div>
 
         {/* Record card */}
-        <div className={`source-card solid ${isRecording ? 'recording' : ''}`}>
+        <div className={`source-card solid record-source-card ${isRecording ? 'recording' : ''}`}>
           <div className="source-card-icon" style={isRecording ? { borderColor: 'var(--red)', background: 'rgba(255,92,92,0.1)' } : {}}>
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={isRecording ? 'var(--red)' : 'currentColor'} strokeWidth="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"/></svg>
           </div>
@@ -94,23 +255,53 @@ export function Workspace({ onFileSelected }: WorkspaceProps) {
             <>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <div className="rec-dot" />
-                <h3 style={{ color: 'var(--red)' }}>Recording…</h3>
+                <h3 style={{ color: 'var(--red)' }}>Recording {formatElapsed(recordingElapsedSec)}</h3>
               </div>
-              <p>Play audio in another window or browser tab</p>
-              <button className="btn-cancel" style={{ width: 'auto', padding: '8px 20px' }} onClick={stopRecording}>Stop &amp; Use</button>
+              <p>{recordingMode === 'system' ? 'Capturing shared system/browser audio.' : 'Capturing microphone input.'}</p>
+              <div className="source-card-actions">
+                <button className="btn-save" type="button" onClick={stopRecording}>Stop &amp; Save MP3</button>
+                <button className="btn-cancel" type="button" onClick={cancelRecording}>Cancel</button>
+              </div>
+            </>
+          ) : isSavingRecording ? (
+            <>
+              <h3>Converting to MP3…</h3>
+              <p>Saving high-quality 320 kbps MP3 recording.</p>
             </>
           ) : (
             <>
-              <h3>Record System Audio</h3>
-              <p>Capture audio from a browser tab or window.</p>
-              <button
-                className="btn-cancel"
-                style={{ width: 'auto', padding: '8px 20px', display: 'flex', alignItems: 'center', gap: 6 }}
-                onClick={startRecording}
-              >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/></svg>
-                Start Recording
-              </button>
+              <h3>Record Audio Source</h3>
+              <p>Capture browser/system audio or a connected microphone.</p>
+              <div className="recording-source-tabs" role="group" aria-label="Recording source">
+                <button
+                  type="button"
+                  className={`recording-mode-btn ${recordingMode === 'system' ? 'active' : ''}`}
+                  onClick={() => setRecordingMode('system')}
+                >
+                  System
+                </button>
+                <button
+                  type="button"
+                  className={`recording-mode-btn ${recordingMode === 'microphone' ? 'active' : ''}`}
+                  onClick={() => setRecordingMode('microphone')}
+                >
+                  Microphone
+                </button>
+              </div>
+              <div className="source-card-actions">
+                <button
+                  className="btn-save"
+                  type="button"
+                  onClick={() => startRecording(recordingMode)}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/></svg>
+                  Start
+                </button>
+                {window.electronAPI?.recordingOpenFolder && (
+                  <button className="btn-cancel" type="button" onClick={openRecordingsFolder}>Recordings</button>
+                )}
+              </div>
+              {recordingError && <p className="recording-error">{recordingError}</p>}
             </>
           )}
         </div>

@@ -18,6 +18,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   readFileBuffer: (opts) => ipcRenderer.invoke('fs:readFileBuffer', opts),
   pathToFileUrl: (opts) => ipcRenderer.invoke('fs:pathToFileUrl', opts),
 
+  // ─── Recording ────────────────────────────────────────────────────────────
+  recordingStart: (opts) => ipcRenderer.invoke('recording:start', opts),
+  recordingAppendChunk: (opts) => ipcRenderer.invoke('recording:appendChunk', opts),
+  recordingFinish: (opts) => ipcRenderer.invoke('recording:finish', opts),
+  recordingCancel: (opts) => ipcRenderer.invoke('recording:cancel', opts),
+  recordingOpenFolder: () => ipcRenderer.invoke('recording:openFolder'),
+
   // ─── FFmpeg ────────────────────────────────────────────────────────────────
   ffmpegGetPath: () => ipcRenderer.invoke('ffmpeg:getPath'),
   ffmpegConvertToWav: (opts) => ipcRenderer.invoke('ffmpeg:convertToWav', opts),

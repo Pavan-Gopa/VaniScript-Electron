@@ -4,6 +4,7 @@ const { app, BrowserWindow, ipcMain, shell, dialog, Tray, Menu, nativeImage } = 
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const crypto = require('crypto');
 const { pathToFileURL } = require('url');
 const { spawn, fork } = require('child_process');
 const log = require('electron-log');
@@ -22,6 +23,7 @@ log.transports.console.level = 'debug';
 log.info('VaniScript starting up...');
 
 const hyperframesRenderControllers = new Map();
+const recordingSessions = new Map();
 const APP_NAME = 'VaniScript';
 let tray = null;
 let isQuitting = false;
@@ -1097,6 +1099,141 @@ function runFfmpeg(args) {
     });
   });
 }
+
+function recordingsRootDir() {
+  const dir = path.join(projectsRootDir(), 'Recordings');
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function mimeToRecordingExtension(mimeType) {
+  const normalized = String(mimeType || '').toLowerCase();
+  if (normalized.includes('mp4')) return 'mp4';
+  if (normalized.includes('ogg')) return 'ogg';
+  if (normalized.includes('wav')) return 'wav';
+  if (normalized.includes('aac')) return 'aac';
+  if (normalized.includes('mpeg') || normalized.includes('mp3')) return 'mp3';
+  return 'webm';
+}
+
+function recordingTimestamp() {
+  return new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').replace('Z', '');
+}
+
+function createRecordingSession({ mimeType, fileBaseName }) {
+  const id = crypto.randomUUID ? crypto.randomUUID() : `rec-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const ext = mimeToRecordingExtension(mimeType);
+  const base = safeName(fileBaseName || 'VaniScript Recording', 'VaniScript Recording');
+  const tempPath = path.join(getTempDir(), `${base}_${recordingTimestamp()}_${id}.${ext}`);
+  recordingSessions.set(id, {
+    id,
+    mimeType: mimeType || '',
+    tempPath,
+    base,
+    bytes: 0,
+  });
+  return recordingSessions.get(id);
+}
+
+async function finishRecordingSession(id) {
+  const session = recordingSessions.get(id);
+  if (!session) return { success: false, error: 'Recording session not found.' };
+  recordingSessions.delete(id);
+
+  if (!fs.existsSync(session.tempPath) || session.bytes <= 0) {
+    try { if (fs.existsSync(session.tempPath)) fs.rmSync(session.tempPath, { force: true }); } catch {}
+    return { success: false, error: 'Recording produced no audio data.' };
+  }
+
+  const outputDir = recordingsRootDir();
+  const outputPath = path.join(outputDir, `${session.base}_${recordingTimestamp()}.mp3`);
+  try {
+    const result = await runFfmpeg([
+      '-y',
+      '-i', session.tempPath,
+      '-vn',
+      '-map', '0:a:0',
+      '-c:a', 'libmp3lame',
+      '-b:a', '320k',
+      '-ar', '48000',
+      '-ac', '2',
+      outputPath,
+    ]);
+    if (!result.success) return { success: false, error: result.error, stderr: result.stderr };
+    return {
+      success: true,
+      path: outputPath,
+      name: path.basename(outputPath),
+      directory: outputDir,
+      bytes: fs.existsSync(outputPath) ? fs.statSync(outputPath).size : 0,
+    };
+  } finally {
+    try { if (fs.existsSync(session.tempPath)) fs.rmSync(session.tempPath, { force: true }); } catch (error) {
+      log.warn('Could not remove temporary recording:', session.tempPath, error.message || String(error));
+    }
+  }
+}
+
+function cancelRecordingSession(id) {
+  const session = recordingSessions.get(id);
+  if (!session) return { success: true };
+  recordingSessions.delete(id);
+  try { if (fs.existsSync(session.tempPath)) fs.rmSync(session.tempPath, { force: true }); } catch {}
+  return { success: true };
+}
+
+ipcMain.handle('recording:start', async (_, { mimeType, fileBaseName } = {}) => {
+  try {
+    const session = createRecordingSession({ mimeType, fileBaseName });
+    return { success: true, sessionId: session.id };
+  } catch (e) {
+    log.error('recording:start failed:', e);
+    return { success: false, error: e?.message ?? String(e) };
+  }
+});
+
+ipcMain.handle('recording:appendChunk', async (_, { sessionId, chunk }) => {
+  try {
+    const session = recordingSessions.get(sessionId);
+    if (!session) return { success: false, error: 'Recording session not found.' };
+    const buffer = Buffer.from(chunk);
+    if (buffer.length === 0) return { success: true, bytes: session.bytes };
+    fs.appendFileSync(session.tempPath, buffer);
+    session.bytes += buffer.length;
+    return { success: true, bytes: session.bytes };
+  } catch (e) {
+    log.error('recording:appendChunk failed:', e);
+    return { success: false, error: e?.message ?? String(e) };
+  }
+});
+
+ipcMain.handle('recording:finish', async (_, { sessionId }) => {
+  try {
+    return await finishRecordingSession(sessionId);
+  } catch (e) {
+    log.error('recording:finish failed:', e);
+    return { success: false, error: e?.message ?? String(e) };
+  }
+});
+
+ipcMain.handle('recording:cancel', async (_, { sessionId }) => {
+  try {
+    return cancelRecordingSession(sessionId);
+  } catch (e) {
+    log.error('recording:cancel failed:', e);
+    return { success: false, error: e?.message ?? String(e) };
+  }
+});
+
+ipcMain.handle('recording:openFolder', async () => {
+  try {
+    const directory = recordingsRootDir();
+    await shell.openPath(directory);
+    return { success: true, directory };
+  } catch (e) {
+    return { success: false, error: e?.message ?? String(e) };
+  }
+});
 
 function escapeFfmpegFilterPath(filePath) {
   return String(filePath || '')
