@@ -26,6 +26,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   recordingCancel: (opts) => ipcRenderer.invoke('recording:cancel', opts),
   recordingOpenFolder: () => ipcRenderer.invoke('recording:openFolder'),
 
+  // ─── Link imports ─────────────────────────────────────────────────────────
+  linkImportStart: (opts) => ipcRenderer.invoke('link-import:start', opts),
+  linkImportCancel: (opts) => ipcRenderer.invoke('link-import:cancel', opts),
+  linkImportOpenFolder: () => ipcRenderer.invoke('link-import:openFolder'),
+  onLinkImportProgress: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('link-import:progress', handler);
+    return () => ipcRenderer.removeListener('link-import:progress', handler);
+  },
+
   // ─── FFmpeg ────────────────────────────────────────────────────────────────
   ffmpegGetPath: () => ipcRenderer.invoke('ffmpeg:getPath'),
   ffmpegConvertToWav: (opts) => ipcRenderer.invoke('ffmpeg:convertToWav', opts),

@@ -6,12 +6,21 @@ interface WorkspaceProps {
 }
 
 type RecordingMode = 'system' | 'microphone';
+type LinkImportMode = 'video' | 'audio';
 
 interface RecordingPreview {
   sessionId: string;
   url: string;
   mode: RecordingMode;
   bytes?: number;
+}
+
+interface LinkImportResult {
+  path: string;
+  name: string;
+  url?: string;
+  mode: LinkImportMode;
+  directory?: string;
 }
 
 const SYSTEM_MIME_TYPES = [
@@ -55,6 +64,14 @@ export function Workspace({ onFileSelected }: WorkspaceProps) {
   const [recordingError, setRecordingError] = useState<string | null>(null);
   const [recordingPreview, setRecordingPreview] = useState<RecordingPreview | null>(null);
   const [audioLevels, setAudioLevels] = useState<number[]>(Array.from({ length: 36 }, () => 0.12));
+  const [showLinkModal, setShowLinkModal] = useState(false);
+  const [linkImportUrl, setLinkImportUrl] = useState('');
+  const [linkImportMode, setLinkImportMode] = useState<LinkImportMode>('video');
+  const [isImportingLink, setIsImportingLink] = useState(false);
+  const [linkImportProgress, setLinkImportProgress] = useState(0);
+  const [linkImportStatus, setLinkImportStatus] = useState('');
+  const [linkImportError, setLinkImportError] = useState<string | null>(null);
+  const [linkImportResult, setLinkImportResult] = useState<LinkImportResult | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -65,6 +82,7 @@ export function Workspace({ onFileSelected }: WorkspaceProps) {
   const recordingStartedAtRef = useRef(0);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserFrameRef = useRef<number | null>(null);
+  const linkImportJobIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!isRecording) return undefined;
@@ -81,6 +99,18 @@ export function Workspace({ onFileSelected }: WorkspaceProps) {
     const handleDeviceChange = () => void refreshAudioInputs();
     mediaDevices.addEventListener('devicechange', handleDeviceChange);
     return () => mediaDevices.removeEventListener('devicechange', handleDeviceChange);
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = window.electronAPI?.onLinkImportProgress?.((payload) => {
+      if (payload.jobId && payload.jobId !== linkImportJobIdRef.current) return;
+      if (typeof payload.progress === 'number') setLinkImportProgress(payload.progress);
+      if (payload.message) {
+        const detail = payload.speed || payload.eta ? ` ${payload.speed || ''}${payload.eta ? ` ETA ${payload.eta}` : ''}` : '';
+        setLinkImportStatus(`${payload.message}${detail}`.trim());
+      }
+    });
+    return () => unsubscribe?.();
   }, []);
 
   const refreshAudioInputs = async () => {
@@ -112,6 +142,10 @@ export function Workspace({ onFileSelected }: WorkspaceProps) {
       const previewSessionId = previewSessionIdRef.current;
       if (previewSessionId) {
         void window.electronAPI?.recordingCancel?.({ sessionId: previewSessionId });
+      }
+      const linkJobId = linkImportJobIdRef.current;
+      if (linkJobId) {
+        void window.electronAPI?.linkImportCancel?.({ jobId: linkJobId });
       }
       stopAudioMeter();
     };
@@ -365,6 +399,77 @@ export function Workspace({ onFileSelected }: WorkspaceProps) {
     void refreshAudioInputs();
   };
 
+  const openLinkImportModal = () => {
+    setLinkImportError(null);
+    setLinkImportStatus('');
+    setLinkImportProgress(0);
+    setLinkImportResult(null);
+    setShowLinkModal(true);
+  };
+
+  const startLinkImport = async () => {
+    if (!window.electronAPI?.linkImportStart) {
+      setLinkImportError('Link import requires the Electron desktop app.');
+      return;
+    }
+    const trimmed = linkImportUrl.trim();
+    if (!/^https?:\/\/\S+$/i.test(trimmed)) {
+      setLinkImportError('Paste a valid media link first.');
+      return;
+    }
+    const jobId = `link-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    linkImportJobIdRef.current = jobId;
+    setIsImportingLink(true);
+    setLinkImportError(null);
+    setLinkImportResult(null);
+    setLinkImportProgress(0);
+    setLinkImportStatus('Preparing link import…');
+    try {
+      const result = await window.electronAPI.linkImportStart({
+        url: trimmed,
+        mode: linkImportMode,
+        jobId,
+      });
+      if (!result?.success || !result.path) {
+        if (result?.cancelled) return;
+        throw new Error(result?.error || 'Link import failed.');
+      }
+      setLinkImportProgress(100);
+      setLinkImportStatus('Ready to continue.');
+      setLinkImportResult({
+        path: result.path,
+        name: result.name || result.path.split('/').pop() || 'imported-media',
+        url: result.url,
+        mode: result.mode || linkImportMode,
+        directory: result.directory,
+      });
+    } catch (error: any) {
+      setLinkImportError(error?.message || String(error));
+      setLinkImportStatus('');
+    } finally {
+      setIsImportingLink(false);
+      linkImportJobIdRef.current = null;
+    }
+  };
+
+  const cancelLinkImport = async () => {
+    const jobId = linkImportJobIdRef.current;
+    if (jobId) await window.electronAPI?.linkImportCancel?.({ jobId });
+    linkImportJobIdRef.current = null;
+    setIsImportingLink(false);
+    setLinkImportStatus('Import cancelled.');
+  };
+
+  const continueWithLinkImport = () => {
+    if (!linkImportResult) return;
+    setShowLinkModal(false);
+    onFileSelected(linkImportResult.path, linkImportResult.name);
+  };
+
+  const openLinkImportsFolder = () => {
+    void window.electronAPI?.linkImportOpenFolder?.();
+  };
+
   return (
     <div className="main-screen">
       <div className="logo-header">
@@ -404,7 +509,94 @@ export function Workspace({ onFileSelected }: WorkspaceProps) {
           {isRecording && <span className="recording-card-status">Recording {formatElapsed(recordingElapsedSec)}</span>}
           {(isPreparingPreview || isSavingRecording) && <span className="recording-card-status">{isSavingRecording ? 'Converting to MP3…' : 'Preparing preview…'}</span>}
         </div>
+
+        {/* Link import card */}
+        <div className="source-card solid link-source-card" onClick={openLinkImportModal}>
+          <div className="source-card-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
+          </div>
+          <h3>Import from Link</h3>
+          <p>Paste a YouTube, SoundCloud, or media link.</p>
+          {isImportingLink && <span className="recording-card-status">Importing {Math.round(linkImportProgress)}%</span>}
+        </div>
       </div>
+
+      {showLinkModal && (
+        <div className="recording-review-backdrop" role="dialog" aria-modal="true" aria-label="Import from link">
+          <div className="recording-control-modal link-import-modal">
+            <button
+              className="recording-review-close"
+              type="button"
+              onClick={() => { if (!isImportingLink) setShowLinkModal(false); }}
+              aria-label="Close link import"
+            >
+              ×
+            </button>
+            <div className="source-card-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
+            </div>
+            <h3>Import from Link</h3>
+            <p>Download media you have permission to use, then continue through the usual VaniScript workflow.</p>
+            <input
+              className="link-import-input"
+              value={linkImportUrl}
+              onChange={(event) => setLinkImportUrl(event.target.value)}
+              placeholder="https://youtube.com/watch?v=…"
+              disabled={isImportingLink}
+            />
+            <div className="recording-source-tabs" role="group" aria-label="Import mode">
+              <button
+                type="button"
+                className={`recording-mode-btn ${linkImportMode === 'video' ? 'active' : ''}`}
+                onClick={() => setLinkImportMode('video')}
+                disabled={isImportingLink}
+              >
+                Video + audio
+              </button>
+              <button
+                type="button"
+                className={`recording-mode-btn ${linkImportMode === 'audio' ? 'active' : ''}`}
+                onClick={() => setLinkImportMode('audio')}
+                disabled={isImportingLink}
+              >
+                Audio only
+              </button>
+            </div>
+            {(isImportingLink || linkImportStatus) && (
+              <div className="link-import-progress">
+                <div><span style={{ width: `${Math.max(0, Math.min(100, linkImportProgress))}%` }} /></div>
+                <p>{linkImportStatus || 'Importing…'}</p>
+              </div>
+            )}
+            {linkImportResult?.url && (
+              linkImportResult.mode === 'audio' ? (
+                <audio className="recording-review-player" controls src={linkImportResult.url} />
+              ) : (
+                <video className="link-import-preview-video" controls src={linkImportResult.url} />
+              )
+            )}
+            {linkImportError && <p className="recording-error">{linkImportError}</p>}
+            <div className="recording-review-actions">
+              <button
+                className="btn-cancel"
+                type="button"
+                onClick={isImportingLink ? cancelLinkImport : openLinkImportsFolder}
+              >
+                {isImportingLink ? 'Cancel' : 'Imports'}
+              </button>
+              {linkImportResult ? (
+                <button className="btn-save" type="button" onClick={continueWithLinkImport}>
+                  Continue
+                </button>
+              ) : (
+                <button className="btn-save" type="button" onClick={startLinkImport} disabled={isImportingLink}>
+                  {isImportingLink ? 'Importing…' : 'Import Link'}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {showRecordingModal && !recordingPreview && (
         <div className="recording-review-backdrop" role="dialog" aria-modal="true" aria-label="Record audio source">

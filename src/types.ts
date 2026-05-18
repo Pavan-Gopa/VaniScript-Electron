@@ -150,6 +150,27 @@ declare global {
       recordingFinish: (opts: { sessionId: string }) => Promise<{ success: boolean; path?: string; name?: string; directory?: string; bytes?: number; error?: string; stderr?: string }>;
       recordingCancel: (opts: { sessionId: string }) => Promise<{ success: boolean; error?: string }>;
       recordingOpenFolder: () => Promise<{ success: boolean; directory?: string; error?: string }>;
+      linkImportStart: (opts: { url: string; mode: 'video' | 'audio'; jobId?: string }) => Promise<{
+        success: boolean;
+        path?: string;
+        name?: string;
+        directory?: string;
+        url?: string;
+        mode?: 'video' | 'audio';
+        error?: string;
+        stderr?: string;
+        cancelled?: boolean;
+      }>;
+      linkImportCancel: (opts: { jobId: string }) => Promise<{ success: boolean; error?: string }>;
+      linkImportOpenFolder: () => Promise<{ success: boolean; directory?: string; error?: string }>;
+      onLinkImportProgress: (callback: (payload: {
+        jobId?: string;
+        status?: 'starting' | 'downloading' | 'processing' | 'complete' | 'error' | 'cancelled';
+        progress?: number;
+        message?: string;
+        speed?: string;
+        eta?: string;
+      }) => void) => () => void;
       ffmpegGetPath: () => Promise<string>;
       ffmpegConvertToWav: (opts: { inputPath: string }) => Promise<{ success: boolean; outputPath: string; error?: string; stderr?: string }>;
       ffmpegExtractAudioForTranscription: (opts: { inputPath: string }) => Promise<{ success: boolean; outputPath: string; error?: string; stderr?: string }>;

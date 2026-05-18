@@ -30,6 +30,7 @@ log.info('VaniScript starting up...');
 
 const hyperframesRenderControllers = new Map();
 const recordingSessions = new Map();
+const linkImportJobs = new Map();
 const APP_NAME = 'VaniScript';
 let tray = null;
 let isQuitting = false;
@@ -78,6 +79,42 @@ function getFfmpegPath() {
     if (p === 'ffmpeg' || fs.existsSync(p)) { log.info('Using system ffmpeg:', p); return p; }
   }
   return 'ffmpeg';
+}
+
+function getYtDlpPath() {
+  const executable = process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp';
+  if (app.isPackaged) {
+    const resourcesPath = process.resourcesPath;
+    const platformDir = process.platform === 'darwin' ? 'darwin' : process.platform === 'win32' ? 'win32' : 'linux';
+    const candidates = [
+      path.join(resourcesPath, 'yt-dlp-bin', platformDir, executable),
+      path.join(resourcesPath, 'yt-dlp-bin', executable),
+    ];
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) {
+        try { if (process.platform !== 'win32') fs.chmodSync(candidate, 0o755); } catch {}
+        log.info('Using packaged yt-dlp:', candidate);
+        return candidate;
+      }
+    }
+  }
+
+  const devCandidates = [
+    path.join(__dirname, '..', 'vendor', 'yt-dlp', process.platform === 'darwin' ? 'darwin' : process.platform === 'win32' ? 'win32' : 'linux', executable),
+    path.join(__dirname, '..', 'vendor', 'yt-dlp', executable),
+    '/opt/homebrew/bin/yt-dlp',
+    '/usr/local/bin/yt-dlp',
+    '/usr/bin/yt-dlp',
+    'yt-dlp',
+  ];
+  for (const candidate of devCandidates) {
+    if (candidate === 'yt-dlp' || fs.existsSync(candidate)) {
+      try { if (candidate !== 'yt-dlp' && process.platform !== 'win32') fs.chmodSync(candidate, 0o755); } catch {}
+      log.info('Using yt-dlp:', candidate);
+      return candidate;
+    }
+  }
+  return 'yt-dlp';
 }
 
 // ─── Windows ─────────────────────────────────────────────────────────────────
@@ -1134,6 +1171,169 @@ function recordingsRootDir() {
   return dir;
 }
 
+function linkImportsRootDir() {
+  const dir = path.join(projectsRootDir(), 'Link Imports');
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function emitLinkImportProgress(payload) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send('link-import:progress', payload);
+}
+
+function normalizeImportUrl(value) {
+  const url = String(value || '').trim();
+  if (!/^https?:\/\/\S+$/i.test(url)) {
+    throw new Error('Enter a valid http or https link.');
+  }
+  return url;
+}
+
+function parseYtDlpProgress(line) {
+  const trimmed = String(line || '').trim();
+  const match = trimmed.match(/^download:([^|]+)\|([^|]*)\|([^|]*)/);
+  if (!match) return null;
+  const rawPercent = match[1].replace('%', '').trim();
+  const progress = Number.parseFloat(rawPercent);
+  return {
+    progress: Number.isFinite(progress) ? Math.max(0, Math.min(100, progress)) : undefined,
+    speed: match[2].trim(),
+    eta: match[3].trim(),
+  };
+}
+
+function latestFileInDirectory(dir, startedAtMs) {
+  try {
+    const entries = fs.readdirSync(dir)
+      .map((name) => {
+        const filePath = path.join(dir, name);
+        const stat = fs.statSync(filePath);
+        return { filePath, stat };
+      })
+      .filter(({ stat }) => stat.isFile() && stat.mtimeMs >= startedAtMs - 1000)
+      .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
+    return entries[0]?.filePath || null;
+  } catch {
+    return null;
+  }
+}
+
+function importLinkWithYtDlp({ url, mode = 'video', jobId }) {
+  const safeMode = mode === 'audio' ? 'audio' : 'video';
+  const id = jobId || `link-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const importUrl = normalizeImportUrl(url);
+  const outputDir = linkImportsRootDir();
+  const startedAtMs = Date.now();
+  const ytDlpPath = getYtDlpPath();
+  const outputTemplate = path.join(outputDir, '%(title).180B_%(id)s.%(ext)s');
+  const args = [
+    '--no-playlist',
+    '--newline',
+    '--no-warnings',
+    '--progress-template',
+    'download:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s',
+    '--print',
+    'after_move:filepath',
+    '-o',
+    outputTemplate,
+  ];
+
+  if (safeMode === 'audio') {
+    args.push('-x', '--audio-format', 'mp3', '--audio-quality', '0');
+  } else {
+    args.push('-f', 'bv*+ba/b', '--merge-output-format', 'mp4');
+  }
+  args.push(importUrl);
+
+  return new Promise((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    let resolvedPath = '';
+    let lastProgress = 0;
+    let proc;
+    try {
+      proc = spawn(ytDlpPath, args, {
+        env: {
+          ...process.env,
+          PYTHONIOENCODING: 'utf-8',
+        },
+      });
+    } catch (error) {
+      resolve({ success: false, error: error?.message || String(error) });
+      return;
+    }
+
+    linkImportJobs.set(id, { proc, outputDir });
+    emitLinkImportProgress({ jobId: id, status: 'starting', progress: 0, message: 'Preparing link import…' });
+
+    const handleOutput = (chunk) => {
+      const text = chunk.toString();
+      stdout += text;
+      for (const line of text.split(/\r?\n/)) {
+        const progress = parseYtDlpProgress(line);
+        if (progress) {
+          lastProgress = progress.progress ?? lastProgress;
+          emitLinkImportProgress({
+            jobId: id,
+            status: 'downloading',
+            progress: lastProgress,
+            speed: progress.speed,
+            eta: progress.eta,
+            message: progress.progress !== undefined ? `Downloading ${Math.round(progress.progress)}%` : 'Downloading…',
+          });
+          continue;
+        }
+        const trimmed = line.trim();
+        if (trimmed && !trimmed.startsWith('[') && !trimmed.startsWith('download:')) {
+          resolvedPath = trimmed;
+        }
+      }
+    };
+
+    proc.stdout.on('data', handleOutput);
+    proc.stderr.on('data', (chunk) => {
+      const text = chunk.toString();
+      stderr += text;
+      handleOutput(chunk);
+    });
+    proc.on('error', (error) => {
+      linkImportJobs.delete(id);
+      emitLinkImportProgress({ jobId: id, status: 'error', progress: lastProgress, message: error?.message || String(error) });
+      resolve({ success: false, error: error?.message || String(error), stderr });
+    });
+    proc.on('close', (code, signal) => {
+      linkImportJobs.delete(id);
+      if (signal === 'SIGTERM' || signal === 'SIGKILL') {
+        emitLinkImportProgress({ jobId: id, status: 'cancelled', progress: lastProgress, message: 'Import cancelled.' });
+        resolve({ success: false, cancelled: true, error: 'Import cancelled.' });
+        return;
+      }
+      if (code !== 0) {
+        const lines = stderr.split('\n').map((line) => line.trim()).filter(Boolean);
+        const message = lines.findLast?.((line) => /error/i.test(line)) || lines.at(-1) || `yt-dlp exited with code ${code}`;
+        emitLinkImportProgress({ jobId: id, status: 'error', progress: lastProgress, message });
+        resolve({ success: false, error: message, stderr: stderr.slice(-1600) });
+        return;
+      }
+      const filePath = (resolvedPath && fs.existsSync(resolvedPath)) ? resolvedPath : latestFileInDirectory(outputDir, startedAtMs);
+      if (!filePath) {
+        resolve({ success: false, error: 'Import finished, but no media file was found.', stderr: stderr.slice(-1600), stdout: stdout.slice(-1600) });
+        return;
+      }
+      emitLinkImportProgress({ jobId: id, status: 'complete', progress: 100, message: 'Import complete.' });
+      resolve({
+        success: true,
+        path: filePath,
+        name: path.basename(filePath),
+        directory: outputDir,
+        url: pathToFileURL(filePath).toString(),
+        mode: safeMode,
+      });
+    });
+  });
+}
+
 function mimeToRecordingExtension(mimeType) {
   const normalized = String(mimeType || '').toLowerCase();
   if (normalized.includes('mp4')) return 'mp4';
@@ -1280,6 +1480,38 @@ ipcMain.handle('recording:cancel', async (_, { sessionId }) => {
 ipcMain.handle('recording:openFolder', async () => {
   try {
     const directory = recordingsRootDir();
+    await shell.openPath(directory);
+    return { success: true, directory };
+  } catch (e) {
+    return { success: false, error: e?.message ?? String(e) };
+  }
+});
+
+ipcMain.handle('link-import:start', async (_, { url, mode, jobId } = {}) => {
+  try {
+    return await importLinkWithYtDlp({ url, mode, jobId });
+  } catch (e) {
+    log.error('link-import:start failed:', e);
+    return { success: false, error: e?.message ?? String(e) };
+  }
+});
+
+ipcMain.handle('link-import:cancel', async (_, { jobId } = {}) => {
+  try {
+    const job = linkImportJobs.get(jobId);
+    if (job?.proc && !job.proc.killed) {
+      job.proc.kill('SIGTERM');
+    }
+    linkImportJobs.delete(jobId);
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e?.message ?? String(e) };
+  }
+});
+
+ipcMain.handle('link-import:openFolder', async () => {
+  try {
+    const directory = linkImportsRootDir();
     await shell.openPath(directory);
     return { success: true, directory };
   } catch (e) {
