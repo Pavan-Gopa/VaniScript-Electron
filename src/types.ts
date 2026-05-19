@@ -165,7 +165,7 @@ declare global {
       linkImportOpenFolder: () => Promise<{ success: boolean; directory?: string; error?: string }>;
       onLinkImportProgress: (callback: (payload: {
         jobId?: string;
-        status?: 'starting' | 'downloading' | 'processing' | 'complete' | 'error' | 'cancelled';
+        status?: 'starting' | 'resolving' | 'downloading' | 'processing' | 'complete' | 'error' | 'cancelled';
         progress?: number;
         message?: string;
         speed?: string;

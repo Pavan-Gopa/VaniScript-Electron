@@ -117,6 +117,26 @@ function getYtDlpPath() {
   return 'yt-dlp';
 }
 
+function getYtDlpJavaScriptRuntimeArgs() {
+  const candidatePaths = [
+    process.env.YTDLP_NODE_PATH,
+    process.env.NODE_PATH,
+    '/opt/homebrew/bin/node',
+    '/usr/local/bin/node',
+    '/usr/bin/node',
+    'node',
+  ].filter(Boolean);
+
+  for (const candidate of candidatePaths) {
+    if (candidate === 'node' || fs.existsSync(candidate)) {
+      return ['--js-runtimes', `node:${candidate}`];
+    }
+  }
+
+  log.warn('No Node.js runtime found for yt-dlp JavaScript challenges; YouTube downloads may be slow or incomplete.');
+  return [];
+}
+
 // ─── Windows ─────────────────────────────────────────────────────────────────
 let mainWindow = null;
 let localWhisperWorker = null;
@@ -1191,15 +1211,17 @@ function normalizeImportUrl(value) {
 }
 
 function parseYtDlpProgress(line) {
-  const trimmed = String(line || '').trim();
-  const match = trimmed.match(/^download:([^|]+)\|([^|]*)\|([^|]*)/);
+  const trimmed = String(line || '').replace(/\u001b\[[0-9;]*m/g, '').trim();
+  const templateMatch = trimmed.match(/download:([^|]+)\|([^|]*)\|([^|]*)/);
+  const nativeMatch = trimmed.match(/\[download\]\s+([0-9.]+)%.*?(?:at\s+([^\s]+\/s))?.*?(?:ETA\s+([0-9:]+))?/i);
+  const match = templateMatch || nativeMatch;
   if (!match) return null;
   const rawPercent = match[1].replace('%', '').trim();
   const progress = Number.parseFloat(rawPercent);
   return {
     progress: Number.isFinite(progress) ? Math.max(0, Math.min(100, progress)) : undefined,
-    speed: match[2].trim(),
-    eta: match[3].trim(),
+    speed: (match[2] || '').trim(),
+    eta: (match[3] || '').trim(),
   };
 }
 
@@ -1230,7 +1252,23 @@ function importLinkWithYtDlp({ url, mode = 'video', jobId }) {
   const args = [
     '--no-playlist',
     '--newline',
+    '--progress',
     '--no-warnings',
+    ...getYtDlpJavaScriptRuntimeArgs(),
+    '--concurrent-fragments',
+    '8',
+    '--http-chunk-size',
+    '10M',
+    '--throttled-rate',
+    '100K',
+    '--retries',
+    'infinite',
+    '--fragment-retries',
+    'infinite',
+    '--extractor-retries',
+    '5',
+    '--socket-timeout',
+    '30',
     '--progress-template',
     'download:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s',
     '--print',
@@ -1240,7 +1278,7 @@ function importLinkWithYtDlp({ url, mode = 'video', jobId }) {
   ];
 
   if (safeMode === 'audio') {
-    args.push('-x', '--audio-format', 'mp3', '--audio-quality', '0');
+    args.push('-f', 'ba/b', '-x', '--audio-format', 'mp3', '--audio-quality', '0');
   } else {
     args.push('-f', 'bv*+ba/b', '--merge-output-format', 'mp4');
   }
@@ -1267,10 +1305,25 @@ function importLinkWithYtDlp({ url, mode = 'video', jobId }) {
     linkImportJobs.set(id, { proc, outputDir });
     emitLinkImportProgress({ jobId: id, status: 'starting', progress: 0, message: 'Preparing link import…' });
 
+    let outputBuffer = '';
+
+    const emitProcessLine = (line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      if (/Extracting URL|Downloading webpage|Downloading player|Solving JS challenges|Downloading m3u8 information/i.test(trimmed)) {
+        emitLinkImportProgress({ jobId: id, status: 'resolving', progress: lastProgress, message: 'Resolving media streams…' });
+      } else if (/Merging formats|ffmpeg/i.test(trimmed)) {
+        emitLinkImportProgress({ jobId: id, status: 'processing', progress: Math.max(lastProgress, 98), message: 'Merging video and audio…' });
+      }
+    };
+
     const handleOutput = (chunk) => {
       const text = chunk.toString();
       stdout += text;
-      for (const line of text.split(/\r?\n/)) {
+      outputBuffer += text.replace(/\r/g, '\n');
+      const lines = outputBuffer.split(/\n/);
+      outputBuffer = lines.pop() || '';
+      for (const line of lines) {
         const progress = parseYtDlpProgress(line);
         if (progress) {
           lastProgress = progress.progress ?? lastProgress;
@@ -1284,6 +1337,7 @@ function importLinkWithYtDlp({ url, mode = 'video', jobId }) {
           });
           continue;
         }
+        emitProcessLine(line);
         const trimmed = line.trim();
         if (trimmed && !trimmed.startsWith('[') && !trimmed.startsWith('download:')) {
           resolvedPath = trimmed;
