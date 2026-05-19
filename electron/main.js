@@ -1213,8 +1213,9 @@ function normalizeImportUrl(value) {
 function parseYtDlpProgress(line) {
   const trimmed = String(line || '').replace(/\u001b\[[0-9;]*m/g, '').trim();
   const templateMatch = trimmed.match(/download:([^|]+)\|([^|]*)\|([^|]*)/);
+  const compactTemplateMatch = trimmed.match(/^([0-9.]+%?)\|([^|]*)\|([^|]*)$/);
   const nativeMatch = trimmed.match(/\[download\]\s+([0-9.]+)%.*?(?:at\s+([^\s]+\/s))?.*?(?:ETA\s+([0-9:]+))?/i);
-  const match = templateMatch || nativeMatch;
+  const match = templateMatch || compactTemplateMatch || nativeMatch;
   if (!match) return null;
   const rawPercent = match[1].replace('%', '').trim();
   const progress = Number.parseFloat(rawPercent);
@@ -1241,6 +1242,33 @@ function latestFileInDirectory(dir, startedAtMs) {
   }
 }
 
+function bytesInRecentPartialFiles(dir, startedAtMs) {
+  try {
+    return fs.readdirSync(dir)
+      .map((name) => {
+        const filePath = path.join(dir, name);
+        const stat = fs.statSync(filePath);
+        return { name, stat };
+      })
+      .filter(({ name, stat }) => stat.isFile() && name.endsWith('.part') && stat.mtimeMs >= startedAtMs - 1000)
+      .reduce((total, { stat }) => total + stat.size, 0);
+  } catch {
+    return 0;
+  }
+}
+
+function humanFileSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value >= 10 || unitIndex === 0 ? Math.round(value) : value.toFixed(1)} ${units[unitIndex]}`;
+}
+
 function importLinkWithYtDlp({ url, mode = 'video', jobId }) {
   const safeMode = mode === 'audio' ? 'audio' : 'video';
   const id = jobId || `link-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -1249,48 +1277,81 @@ function importLinkWithYtDlp({ url, mode = 'video', jobId }) {
   const startedAtMs = Date.now();
   const ytDlpPath = getYtDlpPath();
   const outputTemplate = path.join(outputDir, '%(title).180B_%(id)s.%(ext)s');
-  const args = [
+  const jsRuntimeArgs = getYtDlpJavaScriptRuntimeArgs();
+  const baseArgs = [
     '--no-playlist',
     '--newline',
     '--progress',
     '--no-warnings',
-    ...getYtDlpJavaScriptRuntimeArgs(),
+    '--force-ipv4',
     '--concurrent-fragments',
-    '8',
-    '--http-chunk-size',
-    '10M',
+    '12',
     '--throttled-rate',
-    '100K',
+    '250K',
     '--retries',
-    'infinite',
+    '3',
     '--fragment-retries',
-    'infinite',
+    '3',
     '--extractor-retries',
-    '5',
+    '3',
     '--socket-timeout',
     '30',
     '--progress-template',
-    'download:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s',
+    '%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s',
     '--print',
     'after_move:filepath',
     '-o',
     outputTemplate,
   ];
+  const strategies = safeMode === 'audio'
+    ? [{
+        key: 'audio',
+        label: 'audio stream',
+        args: [...baseArgs, '-f', 'ba/b', '-x', '--audio-format', 'mp3', '--audio-quality', '0'],
+        resolveMessage: 'Resolving audio stream…',
+      }]
+    : [{
+        key: 'hls',
+        label: 'adaptive video stream',
+        args: [
+          ...baseArgs,
+          ...jsRuntimeArgs,
+          '-f',
+          'bestvideo[protocol^=m3u8]+bestaudio[protocol^=m3u8]/best[protocol^=m3u8]/bv*+ba/b',
+          '--merge-output-format',
+          'mp4',
+        ],
+        resolveMessage: 'Resolving adaptive video stream…',
+      }, {
+        key: 'direct',
+        label: 'direct best-quality stream',
+        args: [
+          ...baseArgs,
+          '-f',
+          'bv*+ba/b',
+          '--merge-output-format',
+          'mp4',
+        ],
+        resolveMessage: 'Resolving direct video stream…',
+      }];
 
-  if (safeMode === 'audio') {
-    args.push('-f', 'ba/b', '-x', '--audio-format', 'mp3', '--audio-quality', '0');
-  } else {
-    args.push('-f', 'bv*+ba/b', '--merge-output-format', 'mp4');
-  }
-  args.push(importUrl);
+  const job = { proc: null, outputDir, cancelled: false };
+  linkImportJobs.set(id, job);
+  emitLinkImportProgress({ jobId: id, status: 'starting', progress: 0, message: 'Preparing link import…' });
 
-  return new Promise((resolve) => {
+  const runStrategy = (strategy, index) => new Promise((resolve) => {
+    const args = [...strategy.args, importUrl];
     let stdout = '';
     let stderr = '';
     let resolvedPath = '';
     let lastProgress = 0;
+    let lastOutputAt = Date.now();
+    let lastStatus = 'starting';
+    const strategyStartedAt = Date.now();
+    let stalled = false;
     let proc;
     try {
+      log.info(`Starting link import ${id} with ${strategy.key} strategy:`, ytDlpPath, args.join(' '));
       proc = spawn(ytDlpPath, args, {
         env: {
           ...process.env,
@@ -1298,35 +1359,77 @@ function importLinkWithYtDlp({ url, mode = 'video', jobId }) {
         },
       });
     } catch (error) {
-      resolve({ success: false, error: error?.message || String(error) });
+      resolve({ success: false, error: error?.message || String(error), retryable: index < strategies.length - 1 });
       return;
     }
 
-    linkImportJobs.set(id, { proc, outputDir });
-    emitLinkImportProgress({ jobId: id, status: 'starting', progress: 0, message: 'Preparing link import…' });
+    job.proc = proc;
+    emitLinkImportProgress({
+      jobId: id,
+      status: 'resolving',
+      progress: 0,
+      message: index === 0 ? strategy.resolveMessage : `Retrying with ${strategy.label}…`,
+    });
 
-    let outputBuffer = '';
+    let stdoutBuffer = '';
+    let stderrBuffer = '';
+    const heartbeat = setInterval(() => {
+      if (job.cancelled || !proc || proc.killed) return;
+      const idleMs = Date.now() - lastOutputAt;
+      if (idleMs < 12000) return;
+      const partialBytes = bytesInRecentPartialFiles(outputDir, startedAtMs);
+      const sizeText = partialBytes ? ` (${humanFileSize(partialBytes)} downloaded)` : '';
+      if (lastStatus === 'downloading') {
+        emitLinkImportProgress({
+          jobId: id,
+          status: 'downloading',
+          progress: lastProgress,
+          message: `Downloading${sizeText}…`,
+        });
+      } else {
+        emitLinkImportProgress({
+          jobId: id,
+          status: 'resolving',
+          progress: lastProgress,
+          message: `${strategy.resolveMessage} YouTube can take a minute or two before media download starts.`,
+        });
+      }
+      if (strategy.key === 'direct' && Date.now() - strategyStartedAt > 90000 && lastProgress < 1 && partialBytes < 3 * 1024 * 1024) {
+        stalled = true;
+        proc.kill('SIGTERM');
+      }
+    }, 5000);
 
     const emitProcessLine = (line) => {
       const trimmed = line.trim();
       if (!trimmed) return;
-      if (/Extracting URL|Downloading webpage|Downloading player|Solving JS challenges|Downloading m3u8 information/i.test(trimmed)) {
-        emitLinkImportProgress({ jobId: id, status: 'resolving', progress: lastProgress, message: 'Resolving media streams…' });
+      if (/Extracting URL|Downloading webpage|Downloading player|Solving JS challenges|Downloading m3u8 information|Downloading API JSON|Downloading android/i.test(trimmed)) {
+        lastStatus = 'resolving';
+        emitLinkImportProgress({ jobId: id, status: 'resolving', progress: lastProgress, message: strategy.resolveMessage });
       } else if (/Merging formats|ffmpeg/i.test(trimmed)) {
+        lastStatus = 'processing';
         emitLinkImportProgress({ jobId: id, status: 'processing', progress: Math.max(lastProgress, 98), message: 'Merging video and audio…' });
+      } else if (/Downloading 1 format/i.test(trimmed)) {
+        lastStatus = 'downloading';
+        emitLinkImportProgress({ jobId: id, status: 'downloading', progress: lastProgress, message: 'Starting download…' });
       }
     };
 
-    const handleOutput = (chunk) => {
+    const handleOutput = (chunk, source) => {
       const text = chunk.toString();
-      stdout += text;
-      outputBuffer += text.replace(/\r/g, '\n');
-      const lines = outputBuffer.split(/\n/);
-      outputBuffer = lines.pop() || '';
+      lastOutputAt = Date.now();
+      if (source === 'stderr') stderr += text;
+      else stdout += text;
+      let buffer = (source === 'stderr' ? stderrBuffer : stdoutBuffer) + text.replace(/\r/g, '\n');
+      const lines = buffer.split(/\n/);
+      buffer = lines.pop() || '';
+      if (source === 'stderr') stderrBuffer = buffer;
+      else stdoutBuffer = buffer;
       for (const line of lines) {
         const progress = parseYtDlpProgress(line);
         if (progress) {
           lastProgress = progress.progress ?? lastProgress;
+          lastStatus = 'downloading';
           emitLinkImportProgress({
             jobId: id,
             status: 'downloading',
@@ -1339,40 +1442,46 @@ function importLinkWithYtDlp({ url, mode = 'video', jobId }) {
         }
         emitProcessLine(line);
         const trimmed = line.trim();
-        if (trimmed && !trimmed.startsWith('[') && !trimmed.startsWith('download:')) {
+        if (trimmed && !trimmed.startsWith('[') && !trimmed.includes('|') && !/warning|error|youtube|info/i.test(trimmed)) {
           resolvedPath = trimmed;
         }
       }
     };
 
-    proc.stdout.on('data', handleOutput);
-    proc.stderr.on('data', (chunk) => {
-      const text = chunk.toString();
-      stderr += text;
-      handleOutput(chunk);
-    });
+    proc.stdout.on('data', (chunk) => handleOutput(chunk, 'stdout'));
+    proc.stderr.on('data', (chunk) => handleOutput(chunk, 'stderr'));
     proc.on('error', (error) => {
-      linkImportJobs.delete(id);
+      clearInterval(heartbeat);
+      log.error(`Link import ${id} ${strategy.key} spawn error:`, error);
       emitLinkImportProgress({ jobId: id, status: 'error', progress: lastProgress, message: error?.message || String(error) });
-      resolve({ success: false, error: error?.message || String(error), stderr });
+      resolve({ success: false, error: error?.message || String(error), stderr, retryable: index < strategies.length - 1 });
     });
     proc.on('close', (code, signal) => {
-      linkImportJobs.delete(id);
+      clearInterval(heartbeat);
+      log.info(`Link import ${id} ${strategy.key} closed: code=${code} signal=${signal} progress=${lastProgress}`);
       if (signal === 'SIGTERM' || signal === 'SIGKILL') {
-        emitLinkImportProgress({ jobId: id, status: 'cancelled', progress: lastProgress, message: 'Import cancelled.' });
-        resolve({ success: false, cancelled: true, error: 'Import cancelled.' });
+        if (stalled) {
+          resolve({ success: false, retryable: index < strategies.length - 1, error: `${strategy.label} stalled.` });
+          return;
+        }
+        if (job.cancelled) {
+          emitLinkImportProgress({ jobId: id, status: 'cancelled', progress: lastProgress, message: 'Import cancelled.' });
+          resolve({ success: false, cancelled: true, error: 'Import cancelled.' });
+          return;
+        }
+        resolve({ success: false, retryable: index < strategies.length - 1, error: `${strategy.label} stopped.` });
         return;
       }
       if (code !== 0) {
         const lines = stderr.split('\n').map((line) => line.trim()).filter(Boolean);
         const message = lines.findLast?.((line) => /error/i.test(line)) || lines.at(-1) || `yt-dlp exited with code ${code}`;
-        emitLinkImportProgress({ jobId: id, status: 'error', progress: lastProgress, message });
-        resolve({ success: false, error: message, stderr: stderr.slice(-1600) });
+        log.warn(`Link import ${id} ${strategy.key} failed:`, message, stderr.slice(-1200));
+        resolve({ success: false, error: message, stderr: stderr.slice(-1600), retryable: index < strategies.length - 1 });
         return;
       }
       const filePath = (resolvedPath && fs.existsSync(resolvedPath)) ? resolvedPath : latestFileInDirectory(outputDir, startedAtMs);
       if (!filePath) {
-        resolve({ success: false, error: 'Import finished, but no media file was found.', stderr: stderr.slice(-1600), stdout: stdout.slice(-1600) });
+        resolve({ success: false, retryable: index < strategies.length - 1, error: 'Import finished, but no media file was found.', stderr: stderr.slice(-1600), stdout: stdout.slice(-1600) });
         return;
       }
       emitLinkImportProgress({ jobId: id, status: 'complete', progress: 100, message: 'Import complete.' });
@@ -1386,6 +1495,30 @@ function importLinkWithYtDlp({ url, mode = 'video', jobId }) {
       });
     });
   });
+
+  return (async () => {
+    let lastResult = null;
+    for (let i = 0; i < strategies.length; i += 1) {
+      if (job.cancelled) break;
+      const result = await runStrategy(strategies[i], i);
+      lastResult = result;
+      if (result?.success || result?.cancelled) {
+        linkImportJobs.delete(id);
+        return result;
+      }
+      if (!result?.retryable) break;
+      emitLinkImportProgress({
+        jobId: id,
+        status: 'resolving',
+        progress: 0,
+        message: `The previous download path was too slow. Trying ${strategies[i + 1]?.label || 'another route'}…`,
+      });
+    }
+    linkImportJobs.delete(id);
+    const message = lastResult?.error || 'Link import failed.';
+    emitLinkImportProgress({ jobId: id, status: 'error', progress: 0, message });
+    return lastResult || { success: false, error: message };
+  })();
 }
 
 function mimeToRecordingExtension(mimeType) {
@@ -1553,10 +1686,10 @@ ipcMain.handle('link-import:start', async (_, { url, mode, jobId } = {}) => {
 ipcMain.handle('link-import:cancel', async (_, { jobId } = {}) => {
   try {
     const job = linkImportJobs.get(jobId);
+    if (job) job.cancelled = true;
     if (job?.proc && !job.proc.killed) {
       job.proc.kill('SIGTERM');
     }
-    linkImportJobs.delete(jobId);
     return { success: true };
   } catch (e) {
     return { success: false, error: e?.message ?? String(e) };
