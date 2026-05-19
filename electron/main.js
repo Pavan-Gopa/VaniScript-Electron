@@ -1257,6 +1257,21 @@ function bytesInRecentPartialFiles(dir, startedAtMs) {
   }
 }
 
+function cleanupRecentPartialFiles(dir, startedAtMs) {
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.includes('.part')) continue;
+      const filePath = path.join(dir, name);
+      const stat = fs.statSync(filePath);
+      if (stat.isFile() && stat.mtimeMs >= startedAtMs - 1000) {
+        fs.rmSync(filePath, { force: true });
+      }
+    }
+  } catch (error) {
+    log.warn('Could not clean partial link import files:', error?.message || String(error));
+  }
+}
+
 function humanFileSize(bytes) {
   if (!Number.isFinite(bytes) || bytes <= 0) return '';
   const units = ['B', 'KB', 'MB', 'GB'];
@@ -1309,10 +1324,12 @@ function importLinkWithYtDlp({ url, mode = 'video', jobId }) {
         label: 'audio stream',
         args: [...baseArgs, '-f', 'ba/b', '-x', '--audio-format', 'mp3', '--audio-quality', '0'],
         resolveMessage: 'Resolving audio stream…',
+        stallTimeoutMs: 60000,
+        stallMinBytes: 3 * 1024 * 1024,
       }]
     : [{
         key: 'hls',
-        label: 'adaptive video stream',
+        label: 'maximum-quality adaptive video stream',
         args: [
           ...baseArgs,
           ...jsRuntimeArgs,
@@ -1321,7 +1338,9 @@ function importLinkWithYtDlp({ url, mode = 'video', jobId }) {
           '--merge-output-format',
           'mp4',
         ],
-        resolveMessage: 'Resolving adaptive video stream…',
+        resolveMessage: 'Resolving maximum-quality adaptive video stream…',
+        stallTimeoutMs: 120000,
+        stallMinBytes: 8 * 1024 * 1024,
       }, {
         key: 'direct',
         label: 'direct best-quality stream',
@@ -1333,6 +1352,21 @@ function importLinkWithYtDlp({ url, mode = 'video', jobId }) {
           'mp4',
         ],
         resolveMessage: 'Resolving direct video stream…',
+        stallTimeoutMs: 60000,
+        stallMinBytes: 3 * 1024 * 1024,
+      }, {
+        key: 'compatible',
+        label: 'fast compatible MP4 stream',
+        args: [
+          ...baseArgs,
+          '-f',
+          'best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/b',
+          '--merge-output-format',
+          'mp4',
+        ],
+        resolveMessage: 'Resolving fast compatible MP4 stream…',
+        stallTimeoutMs: 60000,
+        stallMinBytes: 3 * 1024 * 1024,
       }];
 
   const job = { proc: null, outputDir, cancelled: false };
@@ -1394,7 +1428,7 @@ function importLinkWithYtDlp({ url, mode = 'video', jobId }) {
           message: `${strategy.resolveMessage} YouTube can take a minute or two before media download starts.`,
         });
       }
-      if (strategy.key === 'direct' && Date.now() - strategyStartedAt > 90000 && lastProgress < 1 && partialBytes < 3 * 1024 * 1024) {
+      if (strategy.stallTimeoutMs && Date.now() - strategyStartedAt > strategy.stallTimeoutMs && lastProgress < 2 && partialBytes < strategy.stallMinBytes) {
         stalled = true;
         proc.kill('SIGTERM');
       }
@@ -1461,7 +1495,7 @@ function importLinkWithYtDlp({ url, mode = 'video', jobId }) {
       log.info(`Link import ${id} ${strategy.key} closed: code=${code} signal=${signal} progress=${lastProgress}`);
       if (signal === 'SIGTERM' || signal === 'SIGKILL') {
         if (stalled) {
-          resolve({ success: false, retryable: index < strategies.length - 1, error: `${strategy.label} stalled.` });
+          resolve({ success: false, stalled: true, retryable: index < strategies.length - 1, error: `${strategy.label} was throttled or stalled.` });
           return;
         }
         if (job.cancelled) {
@@ -1507,6 +1541,7 @@ function importLinkWithYtDlp({ url, mode = 'video', jobId }) {
         return result;
       }
       if (!result?.retryable) break;
+      cleanupRecentPartialFiles(outputDir, startedAtMs);
       emitLinkImportProgress({
         jobId: id,
         status: 'resolving',
@@ -1515,9 +1550,13 @@ function importLinkWithYtDlp({ url, mode = 'video', jobId }) {
       });
     }
     linkImportJobs.delete(id);
-    const message = lastResult?.error || 'Link import failed.';
+    const wasThrottled = Boolean(lastResult?.stalled);
+    const message = wasThrottled
+      ? 'YouTube is throttling this link too heavily for local import. Try Audio only, a different link, or download the file externally and upload it to VaniScript.'
+      : (lastResult?.error || 'Link import failed.');
+    cleanupRecentPartialFiles(outputDir, startedAtMs);
     emitLinkImportProgress({ jobId: id, status: 'error', progress: 0, message });
-    return lastResult || { success: false, error: message };
+    return { ...(lastResult || { success: false }), success: false, error: message };
   })();
 }
 
