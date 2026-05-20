@@ -8,6 +8,7 @@ export type PromptPresetId =
   | 'openaiWhisperPrompt'
   | 'translationSystem'
   | 'translationUser'
+  | 'structuredTranslationUser'
   | 'localTranslationUser'
   | 'literaryPolishSystem'
   | 'literaryPolishUser'
@@ -95,6 +96,17 @@ Keep paragraph breaks. Do not return one dense paragraph.
 Return only the translated text.
 
 {{text}}`;
+
+const STRUCTURED_TRANSLATION_USER = `Translate each segment to {{targetLang}}.
+{{speakerHintLine}}
+{{glossaryBlock}}
+
+Return only a strict JSON array. Each array item must be {"id": "...", "text": "..."} with the same ids, count, and order as the input.
+Preserve all [MM:SS] timestamp markers inside each segment exactly.
+Do not merge, drop, reorder, summarize, or add commentary.
+
+Segments:
+{{segmentsJson}}`;
 
 const LOCAL_TRANSLATION_USER = `{{speakerHintLine}}
 Translate the transcript into {{targetLang}}.
@@ -257,6 +269,14 @@ export const PROMPT_DEFINITIONS: PromptDefinition[] = [
     description: 'Main transcript translation prompt for cloud providers.',
     variables: ['targetLang', 'speakerHintLine', 'glossaryBlock', 'text'],
     defaultText: TRANSLATION_USER,
+  },
+  {
+    id: 'structuredTranslationUser',
+    label: 'Translation · Structured Batch',
+    stage: 'Translation',
+    description: 'Strict JSON prompt for multi-segment cloud translation with split fallback.',
+    variables: ['targetLang', 'speakerHintLine', 'glossaryBlock', 'segmentsJson'],
+    defaultText: STRUCTURED_TRANSLATION_USER,
   },
   {
     id: 'localTranslationUser',

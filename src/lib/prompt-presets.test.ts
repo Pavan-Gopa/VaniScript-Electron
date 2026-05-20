@@ -45,4 +45,5 @@ test('unknown persisted prompt ids are ignored and missing defaults are restored
   assert.equal((settings as any).unknownPrompt, undefined);
   assert.ok(settings.transcriptionSystem);
   assert.ok(settings.documentMarkdown);
+  assert.ok(settings.structuredTranslationUser);
 });

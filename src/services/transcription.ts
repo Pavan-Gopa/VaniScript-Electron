@@ -1,8 +1,18 @@
 import { GoogleGenAI } from '@google/genai';
 import { formatGeminiError, isRetryableGeminiError } from '../lib/gemini-errors';
 import { renderPrompt, type PromptSettingsMap } from '../lib/prompt-presets';
+import {
+  buildReadableCuesFromWords,
+  buildSrtFromTimedCues,
+  buildTimedTextFromWords,
+  buildVttFromTimedCues,
+  splitTextIntoReadableCues,
+  type TimedCue,
+  type TimedWord,
+} from '../lib/segment-timing';
 import { parseTaggedTranscriptionResult } from '../lib/tagged-result';
 import { AudioMetadata, LanguageResult } from '../types';
+import { translateTextWithOpenAI } from './cloud-translation';
 
 
 export interface TranscriptionConfig {
@@ -146,7 +156,9 @@ export async function transcribeChunkOpenAI(
   form.append('file', audioBlob, 'chunk.wav');
   form.append('model', 'whisper-1');
   if (config.sourceLang !== 'auto') form.append('language', config.sourceLang);
-  form.append('response_format', 'text');
+  form.append('response_format', 'verbose_json');
+  form.append('timestamp_granularities[]', 'word');
+  form.append('timestamp_granularities[]', 'segment');
   const promptHint = renderPrompt(config.promptPresets, 'openaiWhisperPrompt');
   if (promptHint.trim()) form.append('prompt', promptHint);
 
@@ -156,33 +168,44 @@ export async function transcribeChunkOpenAI(
     body: form,
   });
   if (!res.ok) throw new Error(`OpenAI error: ${res.statusText}`);
-  const original = await res.text();
+  const transcriptionJson = await res.json();
+  const rawText = String(transcriptionJson.text || '').trim();
+  const words: TimedWord[] = Array.isArray(transcriptionJson.words)
+    ? transcriptionJson.words
+        .map((word: { word?: unknown; text?: unknown; start?: unknown; end?: unknown }) => ({
+          text: String(word.word ?? word.text ?? '').trim(),
+          start: Number(word.start),
+          end: Number(word.end),
+        }))
+        .filter((word: TimedWord) => word.text && Number.isFinite(word.start) && Number.isFinite(word.end) && word.end > word.start)
+    : [];
+  const segmentCues: TimedCue[] = Array.isArray(transcriptionJson.segments)
+    ? transcriptionJson.segments
+        .map((segment: { text?: unknown; start?: unknown; end?: unknown }) => ({
+          text: String(segment.text || '').trim(),
+          startSec: Number(segment.start),
+          endSec: Number(segment.end),
+        }))
+        .filter((cue: TimedCue) => cue.text && Number.isFinite(cue.startSec) && Number.isFinite(cue.endSec) && cue.endSec > cue.startSec)
+    : [];
+  const inferredDuration = Math.max(
+    0,
+    ...words.map((word) => word.end),
+    ...segmentCues.map((cue) => cue.endSec),
+  );
+  const cues = words.length > 0
+    ? buildReadableCuesFromWords(words)
+    : segmentCues.length > 0
+      ? segmentCues
+      : splitTextIntoReadableCues(rawText, inferredDuration || Math.max(1, rawText.length / 12));
+  const original = words.length > 0
+    ? buildTimedTextFromWords(words)
+    : cues.map((cue) => `[${String(Math.floor(cue.startSec / 60)).padStart(2, '0')}:${String(Math.floor(cue.startSec % 60)).padStart(2, '0')}] ${cue.text}`).join('\n');
 
   let translated = '';
   if (config.targetLang && config.targetLang !== 'same') {
     onProgress?.('Translating with GPT...');
-    const translateRes = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [
-          { role: 'system', content: renderPrompt(config.promptPresets, 'translationSystem', { targetLang: config.targetLang }) },
-          {
-            role: 'user',
-            content: renderPrompt(config.promptPresets, 'translationUser', {
-              targetLang: config.targetLang,
-              speakerHintLine: config.speakerHint ? `Primary speaker hint: ${config.speakerHint}.` : '',
-              glossaryBlock: '',
-              text: original,
-            }),
-          },
-        ],
-        temperature: 0.1,
-      }),
-    });
-    const j = await translateRes.json();
-    translated = j.choices?.[0]?.message?.content?.trim() ?? '';
+    translated = await translateTextWithOpenAI(original, config.targetLang, apiKey, config.speakerHint, '', config.promptPresets);
   }
 
   const metadataPrefix = config.includeMetadata && config.metadata
@@ -191,8 +214,8 @@ export async function transcribeChunkOpenAI(
 
   const originalFormats: LanguageResult = {
     TXT: `${metadataPrefix}${original}`.trim(),
-    SRT: original,
-    VTT: original,
+    SRT: cues.length > 0 ? buildSrtFromTimedCues(cues) : original,
+    VTT: cues.length > 0 ? buildVttFromTimedCues(cues) : original,
     Markdown: original,
   };
   const translatedFormats: LanguageResult | undefined = translated ? {
