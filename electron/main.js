@@ -771,9 +771,7 @@ function showMainWindow() {
     createWindow();
     return;
   }
-  if (mainWindow.isMinimized()) mainWindow.restore();
-  mainWindow.show();
-  mainWindow.focus();
+  revealMainWindow('show-main-window');
 }
 
 function openSettingsFromShell() {
@@ -798,6 +796,23 @@ function createVaniScriptIcon(template = false, size = 0) {
   const image = size > 0 && !source.isEmpty() ? source.resize({ width: size, height: size }) : source;
   image.setTemplateImage(template);
   return image;
+}
+
+function revealMainWindow(reason) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.moveTop();
+  mainWindow.focus();
+  if (process.platform === 'darwin') {
+    app.focus({ steal: true });
+  }
+  log.info('Main window reveal', {
+    reason,
+    visible: mainWindow.isVisible(),
+    focused: mainWindow.isFocused(),
+    bounds: mainWindow.getBounds(),
+  });
 }
 
 function installAppMenu() {
@@ -942,11 +957,37 @@ function createWindow() {
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
     log.error('Renderer failed to load', { errorCode, errorDescription, validatedURL });
+    revealMainWindow('renderer-failed-load');
+  });
+
+  mainWindow.webContents.on('did-finish-load', () => {
+    log.info('Renderer finished loading');
+    revealMainWindow('renderer-finished-load');
+  });
+
+  mainWindow.webContents.on('dom-ready', () => {
+    log.info('Renderer DOM ready');
+    revealMainWindow('renderer-dom-ready');
+  });
+
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    log.error('Renderer process gone', details);
+  });
+
+  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    const payload = `[renderer:${level}] ${message} (${sourceId}:${line})`;
+    if (level >= 2) log.warn(payload);
+    else log.info(payload);
   });
 
   mainWindow.once('ready-to-show', () => {
-    mainWindow.show();
+    log.info('Main window ready to show');
+    revealMainWindow('ready-to-show');
   });
+
+  setTimeout(() => {
+    revealMainWindow('startup-fallback');
+  }, 1200);
 
   mainWindow.on('close', (event) => {
     if (isQuitting) return;
