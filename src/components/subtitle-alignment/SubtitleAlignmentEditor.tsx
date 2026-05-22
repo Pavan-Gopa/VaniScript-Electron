@@ -90,6 +90,19 @@ function selectedSegmentAt(segments: AlignedSubtitleSegment[], currentSec: numbe
   return segments.find((segment) => currentSec >= segment.start && currentSec < segment.end) || null;
 }
 
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (
+    target instanceof HTMLInputElement
+    || target instanceof HTMLTextAreaElement
+    || target instanceof HTMLSelectElement
+    || target.isContentEditable
+  ) {
+    return true;
+  }
+  return Boolean(target.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]'));
+}
+
 function interpolateFrameKeyframes(keyframes: FrameKeyframe[], time: number): FrameKeyframe | null {
   if (keyframes.length === 0) return null;
   const sorted = [...keyframes].sort((a, b) => a.time - b.time);
@@ -372,17 +385,11 @@ export function SubtitleAlignmentEditor({
   useEffect(() => {
     if (!isOpen) return;
     const keydown = (event: KeyboardEvent) => {
-      if (
-        event.target instanceof HTMLInputElement
-        || event.target instanceof HTMLTextAreaElement
-        || event.target instanceof HTMLSelectElement
-        || (event.target instanceof HTMLElement && event.target.isContentEditable)
-      ) {
-        return;
-      }
+      if (isTypingTarget(event.target)) return;
       if (event.key === 'Escape') onClose();
-      if (event.code === 'Space') {
+      if ((event.code === 'Space' || event.key === ' ') && !event.repeat) {
         event.preventDefault();
+        event.stopPropagation();
         void togglePlayback();
       }
       if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
@@ -414,8 +421,8 @@ export function SubtitleAlignmentEditor({
         }
       }
     };
-    window.addEventListener('keydown', keydown);
-    return () => window.removeEventListener('keydown', keydown);
+    document.addEventListener('keydown', keydown, true);
+    return () => document.removeEventListener('keydown', keydown, true);
   }, [currentSec, cuts, isOpen, onClose]);
 
   useEffect(() => {
