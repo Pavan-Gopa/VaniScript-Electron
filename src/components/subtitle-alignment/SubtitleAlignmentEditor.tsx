@@ -103,6 +103,12 @@ function isTypingTarget(target: EventTarget | null): boolean {
   return Boolean(target.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]'));
 }
 
+function releaseTypingFocus() {
+  if (isTypingTarget(document.activeElement)) {
+    (document.activeElement as HTMLElement).blur();
+  }
+}
+
 function interpolateFrameKeyframes(keyframes: FrameKeyframe[], time: number): FrameKeyframe | null {
   if (keyframes.length === 0) return null;
   const sorted = [...keyframes].sort((a, b) => a.time - b.time);
@@ -849,6 +855,7 @@ export function SubtitleAlignmentEditor({
   }
 
   function seek(nextLocalSec: number) {
+    releaseTypingFocus();
     // If seeking lands inside a cut, skip to end of cut
     const adjusted = skipCut(nextLocalSec);
     syncMedia(adjusted);
