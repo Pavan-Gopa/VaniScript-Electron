@@ -404,7 +404,7 @@ export function buildShortsAssSubtitle(opts: AssSubtitleOptions): string {
     : Math.max(0, Math.round(((style.edgeSoftness || 0) * 80) * styleScale));
   const maxLines = Math.min(Math.max(Math.round(opts.maxLines || 2), 1), 4);
   const maxCharsPerLine = opts.maxCharsPerLine ? Math.max(8, Math.round(opts.maxCharsPerLine)) : undefined;
-  const boxHeightScale = Math.min(Math.max(style.boxHeight || 1, 0.5), 3.5);
+  const boxHeightScale = Math.min(Math.max(style.boxHeight || 1, 0.5), 5.0);
   const paddingY = Math.max(2, Math.round(fontSize * 0.12 * boxHeightScale));
   const paddingX = Math.max(4, Math.round(paddingY * 1.45));
   const textBoxWidth = Math.max(1, boxWidth - (paddingX * 2));

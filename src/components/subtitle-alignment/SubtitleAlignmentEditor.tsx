@@ -651,16 +651,10 @@ export function SubtitleAlignmentEditor({
   const captionLetterSpacing = settings.subtitleLetterSpacing * frameScale;
   const captionTextShadow = `0 ${Math.max(1, 2 * frameScale)}px ${Math.max(1, 3 * frameScale)}px rgba(0,0,0,0.72)`;
   function captionPreviewStyleFor(style: ShortsSubtitleStyle, bottomPx: number, fontFactor = 1): React.CSSProperties {
-    const alpha = Math.round(Math.min(Math.max(style.boxOpacity ?? 0.5, 0), 1) * 255).toString(16).padStart(2, '0');
     const fontSize = Math.max(10, style.fontSize * frameScale * fontFactor);
     const paddingY = Math.max(1, fontSize * 0.12 * style.boxHeight);
     const paddingX = Math.max(1, paddingY * 1.45);
-    const radius = style.edgeSoftness >= 0.95
-      ? 9999
-      : (style.edgeSoftness * 80 * frameScale);
-    const blur = Math.max(0, style.edgeBlur * frameScale);
     return {
-      background: `${style.boxColor}${alpha}`,
       color: style.textColor,
       fontFamily: style.fontFamily,
       fontSize: `${fontSize}px`,
@@ -671,9 +665,13 @@ export function SubtitleAlignmentEditor({
       maxWidth: captionMaxWidth,
       bottom: `${bottomPx}px`,
       padding: `${paddingY}px ${paddingX}px`,
-      borderRadius: `${radius}px`,
-      boxShadow: blur > 0 ? `0 0 ${blur}px ${style.boxColor}${alpha}` : undefined,
       textShadow: captionTextShadow,
+      position: 'relative',
+      overflow: 'visible',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      textAlign: 'center',
     };
   }
   const logoSafeMargin = Math.max(8, 40 * frameScale);
@@ -1471,39 +1469,66 @@ export function SubtitleAlignmentEditor({
               <div
                 className="alignment-caption-preview"
                 style={{
-                  background: `${settings.subtitleBoxColor}${boxAlpha}`,
-                  color: settings.subtitleTextColor,
-                  fontFamily: settings.subtitleFontFamily,
-                  fontSize: `${captionFontSize}px`,
-                  fontWeight: settings.subtitleBold ? 850 : 600,
-                  letterSpacing: `${captionLetterSpacing}px`,
-                  lineHeight: settings.subtitleLineSpacing,
-                  width: `${settings.subtitleBoxWidth}%`,
-                  maxWidth: captionMaxWidth,
-                  bottom: `${captionBottom}px`,
-                  padding: `${captionPaddingY}px ${captionPaddingX}px`,
-                  borderRadius: `${captionRadius}px`,
-                  boxShadow: captionBlur > 0 ? `0 0 ${captionBlur}px ${settings.subtitleBoxColor}${boxAlpha}` : undefined,
-                  textShadow: captionTextShadow,
+                  ...captionPreviewStyleFor(subtitleStyle, captionBottom),
                   WebkitLineClamp: captionLineClamp,
                 }}
               >
-                {settings.subtitleTextTransform === 'uppercase' ? previewCaption.toUpperCase() : previewCaption}
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    background: `${settings.subtitleBoxColor}${boxAlpha}`,
+                    borderRadius: `${captionRadius}px`,
+                    filter: captionBlur > 0 ? `blur(${captionBlur}px)` : undefined,
+                    zIndex: -1,
+                    pointerEvents: 'none',
+                  }}
+                />
+                <span style={{ position: 'relative', zIndex: 1 }}>
+                  {settings.subtitleTextTransform === 'uppercase' ? previewCaption.toUpperCase() : previewCaption}
+                </span>
               </div>
             )}
-            {activeTextBlocks.map((block) => (
-              <div
-                key={block.id}
-                className="alignment-caption-preview alignment-text-overlay-preview"
-                style={captionPreviewStyleFor(
-                  { ...subtitleStyle, ...(block.style || {}) },
-                  captionBottom + ((block.trackIndex + 1) * (captionFontSize * 1.65)),
-                  0.82,
-                )}
-              >
-                {(block.style?.textTransform || settings.subtitleTextTransform) === 'uppercase' ? block.text.toUpperCase() : block.text}
-              </div>
-            ))}
+            {activeTextBlocks.map((block) => {
+              const blockStyle = { ...subtitleStyle, ...(block.style || {}) };
+              const blockAlpha = Math.round(Math.min(Math.max(blockStyle.boxOpacity ?? 0.5, 0), 1) * 255).toString(16).padStart(2, '0');
+              const blockRadius = blockStyle.edgeSoftness >= 0.95
+                ? 9999
+                : (blockStyle.edgeSoftness * 80 * frameScale);
+              const blockBlur = Math.max(0, blockStyle.edgeBlur * frameScale);
+              return (
+                <div
+                  key={block.id}
+                  className="alignment-caption-preview alignment-text-overlay-preview"
+                  style={captionPreviewStyleFor(
+                    blockStyle,
+                    captionBottom + ((block.trackIndex + 1) * (captionFontSize * 1.65)),
+                    0.82,
+                  )}
+                >
+                  <div
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      background: `${blockStyle.boxColor}${blockAlpha}`,
+                      borderRadius: `${blockRadius}px`,
+                      filter: blockBlur > 0 ? `blur(${blockBlur}px)` : undefined,
+                      zIndex: -1,
+                      pointerEvents: 'none',
+                    }}
+                  />
+                  <span style={{ position: 'relative', zIndex: 1 }}>
+                    {(block.style?.textTransform || settings.subtitleTextTransform) === 'uppercase' ? block.text.toUpperCase() : block.text}
+                  </span>
+                </div>
+              );
+            })}
             {logo?.src && !logo.hidden && (
               <img
                 className="alignment-logo-overlay-preview"
@@ -2030,7 +2055,7 @@ export function SubtitleAlignmentEditor({
               </label>
               <label>
                 <span>Box height</span>
-                <input type="range" min={0.5} max={3.5} step={0.05} value={activeStyle.boxHeight} onChange={(event) => patchActiveStyle({ boxHeight: Number(event.currentTarget.value) })} />
+                <input type="range" min={0.5} max={5.0} step={0.05} value={activeStyle.boxHeight} onChange={(event) => patchActiveStyle({ boxHeight: Number(event.currentTarget.value) })} />
                 <b>{activeStyle.boxHeight.toFixed(2)}x</b>
               </label>
               <label>

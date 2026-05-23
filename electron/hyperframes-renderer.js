@@ -645,13 +645,11 @@ function buildCompositionHtml(project, relativeVideoPath) {
         const radiusPx = softness >= 0.95 ? 9999 : (softness * 80) * scale;
         const textShadowDepth = Math.max(0, style.shadow || 0) * scale;
         const textStroke = Math.max(0, style.outline || 0) * scale;
+
         layer.style.display = 'block';
         layer.style.bottom = bottomPx + 'px';
         layer.style.width = Math.max(10, Math.min(100, style.boxWidth || 86)) + '%';
         layer.style.padding = paddingY + 'px ' + paddingX + 'px';
-        layer.style.borderRadius = radiusPx + 'px';
-        layer.style.backgroundColor = hexToRgba(style.boxColor || '#FF8C00', style.boxOpacity ?? 0.5);
-        layer.style.boxShadow = blurPx > 0 ? ('0 0 ' + blurPx + 'px ' + hexToRgba(style.boxColor || '#FF8C00', style.boxOpacity ?? 0.5)) : 'none';
         layer.style.color = style.textColor || '#FFFFFF';
         layer.style.fontFamily = style.fontFamily || 'Cuprum';
         layer.style.fontSize = fontSize + 'px';
@@ -662,7 +660,36 @@ function buildCompositionHtml(project, relativeVideoPath) {
           ? ('0 ' + (textShadowDepth * 0.5) + 'px ' + textShadowDepth + 'px rgba(0,0,0,0.82)')
           : 'none';
         layer.style.webkitTextStroke = textStroke > 0 ? (textStroke + 'px rgba(0,0,0,0.58)') : '0 transparent';
+
+        // Override background & shadow styles to be handled by a separate background layer
+        layer.style.backgroundColor = 'transparent';
+        layer.style.borderRadius = '0px';
+        layer.style.boxShadow = 'none';
+        layer.style.position = 'relative';
+        layer.style.overflow = 'visible';
+
+        // Ensure text element has relative positioning and z-index to sit on top of background
+        textEl.style.position = 'relative';
+        textEl.style.zIndex = '1';
         textEl.textContent = transformText(text, style.textTransform || 'none');
+
+        // Manage background div
+        let bgEl = layer.querySelector('.vaniscript-box-bg');
+        if (!bgEl) {
+          bgEl = document.createElement('div');
+          bgEl.className = 'vaniscript-box-bg';
+          layer.insertBefore(bgEl, layer.firstChild);
+        }
+        bgEl.style.position = 'absolute';
+        bgEl.style.top = '0';
+        bgEl.style.left = '0';
+        bgEl.style.right = '0';
+        bgEl.style.bottom = '0';
+        bgEl.style.zIndex = '-1';
+        bgEl.style.borderRadius = radiusPx + 'px';
+        bgEl.style.backgroundColor = hexToRgba(style.boxColor || '#FF8C00', style.boxOpacity ?? 0.5);
+        bgEl.style.filter = blurPx > 0 ? ('blur(' + blurPx + 'px)') : 'none';
+        bgEl.style.pointerEvents = 'none';
       }
 
       function renderTextOverlays(timeSec, baseBottomPx, scale) {
