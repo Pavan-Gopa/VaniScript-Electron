@@ -1431,8 +1431,10 @@ export function SubtitleAlignmentEditor({
               style={{
                 transform: `translate(${framePanX}%, ${framePanY}%) scale(${frameZoom})`,
                 ...(bgSettings.featherEnabled ? {
-                  WebkitMaskImage: `linear-gradient(to bottom, transparent 0px, black ${bgSettings.featherTop}px, black calc(100% - ${bgSettings.featherBottom}px), transparent 100%)`,
-                  maskImage: `linear-gradient(to bottom, transparent 0px, black ${bgSettings.featherTop}px, black calc(100% - ${bgSettings.featherBottom}px), transparent 100%)`,
+                  WebkitMaskImage: `linear-gradient(to bottom, transparent 0px, black ${bgSettings.featherTop ?? 0}px, black calc(100% - ${bgSettings.featherBottom ?? 0}px), transparent 100%), linear-gradient(to right, transparent 0px, black ${bgSettings.featherLeft ?? 0}px, black calc(100% - ${bgSettings.featherRight ?? 0}px), transparent 100%)`,
+                  maskImage: `linear-gradient(to bottom, transparent 0px, black ${bgSettings.featherTop ?? 0}px, black calc(100% - ${bgSettings.featherBottom ?? 0}px), transparent 100%), linear-gradient(to right, transparent 0px, black ${bgSettings.featherLeft ?? 0}px, black calc(100% - ${bgSettings.featherRight ?? 0}px), transparent 100%)`,
+                  maskComposite: 'intersect',
+                  WebkitMaskComposite: 'source-in',
                 } : {}),
               }}
               onLoadedMetadata={() => syncMedia(currentSec)}
@@ -2282,13 +2284,23 @@ export function SubtitleAlignmentEditor({
                   <>
                     <label>
                       <span>Top</span>
-                      <input type="range" min={0} max={100} step={1} value={bgSettings.featherTop} onChange={(e) => updateBackgroundSettings(prev => ({ ...prev, featherTop: Number(e.target.value) }))} />
-                      <b>{bgSettings.featherTop}px</b>
+                      <input type="range" min={0} max={100} step={1} value={bgSettings.featherTop ?? 0} onChange={(e) => updateBackgroundSettings(prev => ({ ...prev, featherTop: Number(e.target.value) }))} />
+                      <b>{bgSettings.featherTop ?? 0}px</b>
                     </label>
                     <label>
                       <span>Bottom</span>
-                      <input type="range" min={0} max={100} step={1} value={bgSettings.featherBottom} onChange={(e) => updateBackgroundSettings(prev => ({ ...prev, featherBottom: Number(e.target.value) }))} />
-                      <b>{bgSettings.featherBottom}px</b>
+                      <input type="range" min={0} max={100} step={1} value={bgSettings.featherBottom ?? 0} onChange={(e) => updateBackgroundSettings(prev => ({ ...prev, featherBottom: Number(e.target.value) }))} />
+                      <b>{bgSettings.featherBottom ?? 0}px</b>
+                    </label>
+                    <label>
+                      <span>Left</span>
+                      <input type="range" min={0} max={100} step={1} value={bgSettings.featherLeft ?? 0} onChange={(e) => updateBackgroundSettings(prev => ({ ...prev, featherLeft: Number(e.target.value) }))} />
+                      <b>{bgSettings.featherLeft ?? 0}px</b>
+                    </label>
+                    <label>
+                      <span>Right</span>
+                      <input type="range" min={0} max={100} step={1} value={bgSettings.featherRight ?? 0} onChange={(e) => updateBackgroundSettings(prev => ({ ...prev, featherRight: Number(e.target.value) }))} />
+                      <b>{bgSettings.featherRight ?? 0}px</b>
                     </label>
                   </>
                 )}
