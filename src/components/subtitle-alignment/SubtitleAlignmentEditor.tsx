@@ -996,15 +996,18 @@ export function SubtitleAlignmentEditor({
     undoStackRef.current.clear();
     syncMedia(0);
     // ── Persist the reset immediately (save callbacks use the computed defaults) ──
-    onSave(next);
-    onSaveFrameKeyframes?.([]);
-    onSaveCuts?.([]);
-    onSaveTrim?.({ trimStartSec: 0, trimEndSec: 0 });
-    onSaveBackgroundSettings?.(resetBg);
-    onSaveLogo?.(undefined);
-    onSaveTextTracks?.([]);
-    onSaveAudioTracks?.([]);
-    onResetAll?.();
+    if (onResetAll) {
+      onResetAll();
+    } else {
+      onSave(next);
+      onSaveFrameKeyframes?.([]);
+      onSaveCuts?.([]);
+      onSaveTrim?.({ trimStartSec: 0, trimEndSec: 0 });
+      onSaveBackgroundSettings?.(resetBg);
+      onSaveLogo?.(undefined);
+      onSaveTextTracks?.([]);
+      onSaveAudioTracks?.([]);
+    }
   }
 
   function startDrag(event: React.PointerEvent, segment: AlignedSubtitleSegment, mode: 'move' | 'start' | 'end') {
