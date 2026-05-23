@@ -79,14 +79,14 @@ test('buildShortsAssSubtitle uses bold white text, orange box, and lower placeme
   assert.match(ass, /Style: Shorts/);
   assert.match(ass, /TAKE SHELTER OF/);
   assert.match(ass, /Style: Shorts,Cuprum,74/);
-  assert.match(ass, /,1,3,4,5,0,0,0,1/);
-  assert.match(ass, /Shorts,,0,0,0,,\{\\an5\\pos\(540,1314\)\}TAKE SHELTER OF/);
+  assert.match(ass, /,1,3,0,5,0,0,0,1/);
+  assert.match(ass, /Shorts,,0,0,0,,\{\\an5\\pos\(540,1314\)\\xshad0\.0\\yshad4\.0\}TAKE SHELTER OF/);
   assert.match(ass, /&H00FFFFFF/);
   assert.match(ass, /&H80008CFF/);
   assert.match(ass, / b 929 0 929 0 929 20 /);
 });
 
-test('buildShortsAssSubtitle supports configurable font, text color, box color, opacity, and casing', () => {
+test('buildShortsAssSubtitle supports configurable font, text color, box color, opacity, casing, outline, and shadow', () => {
   const ass = buildShortsAssSubtitle({
     cues: [{ startSec: 0, endSec: 2.5, text: 'take shelter of' }],
     width: 1080,
@@ -106,16 +106,27 @@ test('buildShortsAssSubtitle supports configurable font, text color, box color, 
       letterSpacing: 1.5,
       lineSpacing: 1,
       edgeSoftness: 0.55,
-      outline: 2,
+      outline: 2.5,
+      outlineColor: '#FF0000',
+      outlineOpacity: 0.8,
       shadow: 5,
+      shadowColor: '#00FF00',
+      shadowOpacity: 0.5,
+      shadowAngle: 45,
+      shadowDistance: 8,
+      shadowBlur: 4,
     },
   });
 
   assert.match(ass, /Style: Shorts,Cuprum,82/);
-  assert.match(ass, /,100,100,1\.50,0,1,2,5,5,/);
+  // Outline width = 3 (rounded 2.5), Shadow = 0 (since it is written inside cue line overrides)
+  assert.match(ass, /,100,100,1\.50,0,1,3,0,5,/);
+  // Outline colour: Red (#FF0000) with 0.8 opacity -> &H330000FF (alpha = (1 - 0.8) * 255 = 51 = 0x33, BB=00, GG=00, RR=FF)
+  // Shadow colour: Green (#00FF00) with 0.5 opacity -> &H8000FF00 (alpha = (1 - 0.5) * 255 = 128 = 0x80, BB=00, GG=FF, RR=00)
+  assert.match(ass, /&H330000FF,&H8000FF00/);
+  assert.match(ass, /\\xshad5\.7\\yshad5\.7/);
   assert.match(ass, /Style: ShortsBox/);
   assert.match(ass, /Take Shelter Of/);
-  assert.match(ass, /&H57/);
 });
 
 test('buildShortsAssSubtitle wraps export text with the same line limits used by the visual preview', () => {

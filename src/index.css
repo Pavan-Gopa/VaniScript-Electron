@@ -2664,14 +2664,31 @@ html, body, #root {
   font: 12px var(--font-mono);
   text-align: right;
 }
-.alignment-frame-panel input[type="color"] {
+.alignment-frame-panel input[type="color"],
+.shorts-style-grid input[type="color"] {
+  appearance: none;
+  -webkit-appearance: none;
   width: 100%;
   height: 26px;
   padding: 0;
-  border: 1px solid rgba(255,255,255,0.15);
+  border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 8px;
   background: transparent;
   cursor: pointer;
+  overflow: hidden;
+}
+.alignment-frame-panel input[type="color"]::-webkit-color-swatch-wrapper,
+.shorts-style-grid input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+.alignment-frame-panel input[type="color"]::-webkit-color-swatch,
+.shorts-style-grid input[type="color"]::-webkit-color-swatch {
+  border: none;
+  border-radius: 7px;
+}
+:root[data-theme="light"] .alignment-frame-panel input[type="color"],
+:root[data-theme="light"] .shorts-style-grid input[type="color"] {
+  border-color: rgba(15, 23, 42, 0.15);
 }
 .alignment-frame-panel select {
   appearance: none;
@@ -2704,6 +2721,79 @@ html, body, #root {
 .alignment-frame-panel select option {
   background-color: #1a1f3a;
   color: var(--text-0);
+}
+/* Unified Custom Checkbox Style */
+.alignment-frame-panel input[type="checkbox"],
+.bg-toggle input[type="checkbox"],
+.glossary-select-row input[type="checkbox"],
+.alignment-layer-actions input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 15px;
+  height: 15px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 4px;
+  background-color: rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+  outline: none;
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+
+.alignment-frame-panel input[type="checkbox"]:hover,
+.bg-toggle input[type="checkbox"]:hover,
+.glossary-select-row input[type="checkbox"]:hover,
+.alignment-layer-actions input[type="checkbox"]:hover {
+  border-color: rgba(255, 255, 255, 0.35);
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+.alignment-frame-panel input[type="checkbox"]:checked,
+.bg-toggle input[type="checkbox"]:checked,
+.glossary-select-row input[type="checkbox"]:checked,
+.alignment-layer-actions input[type="checkbox"]:checked {
+  background-color: var(--accent);
+  border-color: var(--accent);
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230a0a12' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 10px;
+}
+
+.alignment-frame-panel input[type="checkbox"]:focus-visible,
+.bg-toggle input[type="checkbox"]:focus-visible,
+.glossary-select-row input[type="checkbox"]:focus-visible,
+.alignment-layer-actions input[type="checkbox"]:focus-visible {
+  box-shadow: 0 0 0 2px rgba(255, 170, 25, 0.3);
+}
+
+.alignment-font-options-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 10px;
+  gap: 12px;
+}
+
+.alignment-checkbox-label {
+  display: inline-flex !important;
+  grid-template-columns: none !important;
+  align-items: center;
+  gap: 6px;
+  margin: 0 !important;
+  font-size: 11px;
+  text-transform: uppercase;
+  font-weight: 760;
+  color: var(--text-2);
+  cursor: pointer;
+  letter-spacing: 0.04em;
+}
+
+.alignment-font-options-row select {
+  flex: 1;
 }
 .alignment-style-target-tabs {
   display: flex;
@@ -3776,8 +3866,67 @@ html, body, #root {
   cursor: pointer; padding: 4px; display: flex;
 }
 .s-eye:hover { color: var(--text-0); }
-.s-select { appearance: none; cursor: pointer; }
-.s-select option { background: #1a1f3a; }
+/* Unified Custom Select Dropdown Style */
+.field select,
+.s-select,
+.alignment-frame-panel select,
+.bg-type-row select,
+.shorts-style-grid select,
+.shorts-export-row select,
+.shorts-inline-toggles select,
+.review-editing-model select,
+.recording-device-select,
+.glossary-field select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffaa19' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 12px;
+  padding-right: 28px !important;
+  cursor: pointer;
+}
+
+.field select option,
+.s-select option,
+.alignment-frame-panel select option,
+.bg-type-row select option,
+.shorts-style-grid select option,
+.shorts-export-row select option,
+.shorts-inline-toggles select option,
+.review-editing-model select option,
+.recording-device-select option,
+.glossary-field select option {
+  background-color: #1a1f3a;
+  color: var(--text-0);
+}
+
+:root[data-theme="light"] .field select,
+:root[data-theme="light"] .s-select,
+:root[data-theme="light"] .alignment-frame-panel select,
+:root[data-theme="light"] .bg-type-row select,
+:root[data-theme="light"] .shorts-style-grid select,
+:root[data-theme="light"] .shorts-export-row select,
+:root[data-theme="light"] .shorts-inline-toggles select,
+:root[data-theme="light"] .review-editing-model select,
+:root[data-theme="light"] .recording-device-select,
+:root[data-theme="light"] .glossary-field select {
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23d97706' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+}
+
+:root[data-theme="light"] .field select option,
+:root[data-theme="light"] .s-select option,
+:root[data-theme="light"] .alignment-frame-panel select option,
+:root[data-theme="light"] .bg-type-row select option,
+:root[data-theme="light"] .shorts-style-grid select option,
+:root[data-theme="light"] .shorts-export-row select option,
+:root[data-theme="light"] .shorts-inline-toggles select option,
+:root[data-theme="light"] .review-editing-model select option,
+:root[data-theme="light"] .recording-device-select option,
+:root[data-theme="light"] .glossary-field select option {
+  background-color: #ffffff;
+  color: #0f172a;
+}
 
 /* ─── Pill group ─── */
 .s-pills { display: flex; gap: 4px; background: rgba(255,255,255,0.05); padding: 3px; border-radius: 10px; }
@@ -4372,6 +4521,31 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
 :root[data-theme="light"] .alignment-frame-panel select option {
   background-color: #ffffff;
   color: #0f172a;
+}
+:root[data-theme="light"] .alignment-frame-panel input[type="checkbox"],
+:root[data-theme="light"] .bg-toggle input[type="checkbox"],
+:root[data-theme="light"] .glossary-select-row input[type="checkbox"],
+:root[data-theme="light"] .alignment-layer-actions input[type="checkbox"] {
+  border-color: rgba(15, 23, 42, 0.25);
+  background-color: rgba(0, 0, 0, 0.04);
+}
+:root[data-theme="light"] .alignment-frame-panel input[type="checkbox"]:hover,
+:root[data-theme="light"] .bg-toggle input[type="checkbox"]:hover,
+:root[data-theme="light"] .glossary-select-row input[type="checkbox"]:hover,
+:root[data-theme="light"] .alignment-layer-actions input[type="checkbox"]:hover {
+  border-color: rgba(15, 23, 42, 0.4);
+  background-color: rgba(0, 0, 0, 0.07);
+}
+:root[data-theme="light"] .alignment-frame-panel input[type="checkbox"]:checked,
+:root[data-theme="light"] .bg-toggle input[type="checkbox"]:checked,
+:root[data-theme="light"] .glossary-select-row input[type="checkbox"]:checked,
+:root[data-theme="light"] .alignment-layer-actions input[type="checkbox"]:checked {
+  background-color: #d97706;
+  border-color: #d97706;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+}
+:root[data-theme="light"] .alignment-checkbox-label {
+  color: rgba(71, 85, 105, 0.90);
 }
 
 :root[data-theme="light"] .alignment-layer-head button,

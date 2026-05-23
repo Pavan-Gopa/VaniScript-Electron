@@ -99,7 +99,14 @@ export type ShortsSubtitleStyle = {
   lineSpacing: number;
   edgeSoftness: number;
   outline: number;
+  outlineColor?: string;
+  outlineOpacity?: number;
   shadow: number;
+  shadowColor?: string;
+  shadowOpacity?: number;
+  shadowBlur?: number;
+  shadowDistance?: number;
+  shadowAngle?: number;
 };
 
 export type AssSubtitleOptions = {
@@ -390,8 +397,19 @@ export function buildShortsAssSubtitle(opts: AssSubtitleOptions): string {
   const bottomMargin = Math.round(opts.bottomMargin * scaleYOutput);
   const primaryColor = assColor(style.textColor, 0);
   const backColor = assColor(style.boxColor, boxAlphaFromOpacity(style.boxOpacity));
-  const outline = Math.max(0, Math.round((style.outline || 0) * styleScale));
-  const shadow = Math.max(0, Math.round((style.shadow || 0) * styleScale));
+  const outline = Math.max(0, Math.round((style.outline ?? 2) * styleScale));
+  const outlineColor = style.outlineColor ?? '#000000';
+  const outlineOpacity = style.outlineOpacity ?? 0.58;
+  const outlineAssColor = assColor(outlineColor, boxAlphaFromOpacity(outlineOpacity));
+  const shadowColor = style.shadowColor ?? '#000000';
+  const shadowOpacity = style.shadowOpacity ?? 0.72;
+  const shadowAssColor = assColor(shadowColor, boxAlphaFromOpacity(shadowOpacity));
+
+  const dist = (style.shadowDistance ?? style.shadow ?? 6) * styleScale;
+  const rad = ((style.shadowAngle ?? 90) * Math.PI) / 180;
+  const xshad = (dist * Math.cos(rad)).toFixed(1);
+  const yshad = (dist * Math.sin(rad)).toFixed(1);
+
   const scaleY = 100;
   const spacing = (Math.min(Math.max(style.letterSpacing || 0, -3), 12) * styleScale).toFixed(2);
   const lineSpacing = Math.min(Math.max(style.lineSpacing || 1, 0.75), 1.7);
@@ -440,7 +458,7 @@ export function buildShortsAssSubtitle(opts: AssSubtitleOptions): string {
     '',
     '[V4+ Styles]',
     'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
-    `Style: Shorts,${style.fontFamily},${fontSize},${primaryColor},${primaryColor},&HAA000000,&HFF000000,${style.bold ? -1 : 0},0,0,0,100,${scaleY},${spacing},0,1,${outline},${shadow},5,0,0,0,1`,
+    `Style: Shorts,${style.fontFamily},${fontSize},${primaryColor},${primaryColor},${outlineAssColor},${shadowAssColor},${style.bold ? -1 : 0},0,0,0,100,${scaleY},${spacing},0,1,${outline},0,5,0,0,0,1`,
     `Style: ShortsBox,Arial,1,${backColor},${backColor},${backColor},${backColor},0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1`,
     '',
     '[Events]',
@@ -451,9 +469,12 @@ export function buildShortsAssSubtitle(opts: AssSubtitleOptions): string {
     const { textX, textY } = captionLayout(text);
     const start = assTime(cue.startSec);
     const end = assTime(cue.endSec);
+    
+    const shadowTags = `\\xshad${xshad}\\yshad${yshad}`;
+
     return [
       `Dialogue: 0,${start},${end},ShortsBox,,0,0,0,,${boxDrawing(text)}`,
-      `Dialogue: 1,${start},${end},Shorts,,0,0,0,,{\\an5\\pos(${textX},${textY})}${assEscape(text)}`,
+      `Dialogue: 1,${start},${end},Shorts,,0,0,0,,{\\an5\\pos(${textX},${textY})${shadowTags}}${assEscape(text)}`,
     ];
   });
   return [...header, ...events].join('\n');

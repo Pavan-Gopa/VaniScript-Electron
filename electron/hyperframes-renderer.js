@@ -643,8 +643,23 @@ function buildCompositionHtml(project, relativeVideoPath) {
         const blurPx = Math.max(0, style.edgeBlur || 0) * scale;
         const softness = style.edgeSoftness ?? 0.25;
         const radiusPx = softness >= 0.95 ? 9999 : (softness * 80) * scale;
-        const textShadowDepth = Math.max(0, style.shadow || 0) * scale;
-        const textStroke = Math.max(0, style.outline || 0) * scale;
+        
+        // Dynamic Outline
+        const textStroke = Math.max(0, style.outline ?? 2) * scale;
+        const outlineColor = style.outlineColor || '#000000';
+        const outlineOpacity = style.outlineOpacity ?? 0.58;
+        const outlineHexOpacity = Math.round(outlineOpacity * 255).toString(16).padStart(2, '0');
+        const textStrokeColor = outlineColor + outlineHexOpacity;
+
+        // Dynamic Shadow
+        const dist = (style.shadowDistance ?? style.shadow ?? 6) * scale;
+        const rad = ((style.shadowAngle ?? 90) * Math.PI) / 180;
+        const shadowX = dist * Math.cos(rad);
+        const shadowY = dist * Math.sin(rad);
+        const shadowBlur = (style.shadowBlur ?? 3) * scale;
+        const shadowColor = style.shadowColor || '#000000';
+        const shadowOpacity = style.shadowOpacity ?? 0.72;
+        const shadowHexOpacity = Math.round(shadowOpacity * 255).toString(16).padStart(2, '0');
 
         layer.style.display = 'block';
         layer.style.bottom = bottomPx + 'px';
@@ -656,10 +671,10 @@ function buildCompositionHtml(project, relativeVideoPath) {
         layer.style.fontWeight = style.bold ? '850' : '600';
         layer.style.letterSpacing = ((style.letterSpacing || 0) * scale) + 'px';
         layer.style.lineHeight = String(style.lineSpacing || 1);
-        layer.style.textShadow = textShadowDepth > 0
-          ? ('0 ' + (textShadowDepth * 0.5) + 'px ' + textShadowDepth + 'px rgba(0,0,0,0.82)')
+        layer.style.textShadow = dist > 0 || shadowBlur > 0
+          ? (shadowX + 'px ' + shadowY + 'px ' + shadowBlur + 'px ' + shadowColor + shadowHexOpacity)
           : 'none';
-        layer.style.webkitTextStroke = textStroke > 0 ? (textStroke + 'px rgba(0,0,0,0.58)') : '0 transparent';
+        layer.style.webkitTextStroke = textStroke > 0 ? (textStroke + 'px ' + textStrokeColor) : '0 transparent';
 
         // Override background & shadow styles to be handled by a separate background layer
         layer.style.backgroundColor = 'transparent';

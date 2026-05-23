@@ -40,6 +40,15 @@ export type ShortsSettings = {
   subtitleEdgeSoftness: number;
   subtitleUseCharsPerLine: boolean;
   subtitleUseLinesPerCue: boolean;
+  subtitleOutline?: number;
+  subtitleOutlineColor?: string;
+  subtitleOutlineOpacity?: number;
+  subtitleShadow?: number;
+  subtitleShadowColor?: string;
+  subtitleShadowOpacity?: number;
+  subtitleShadowBlur?: number;
+  subtitleShadowDistance?: number;
+  subtitleShadowAngle?: number;
   videoFormat: ShortsVideoFormat;
   resolutionPreset: ShortsResolutionPreset;
   videoQuality: ShortsVideoQuality;

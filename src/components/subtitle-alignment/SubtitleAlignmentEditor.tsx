@@ -627,8 +627,15 @@ export function SubtitleAlignmentEditor({
     letterSpacing: settings.subtitleLetterSpacing,
     lineSpacing: settings.subtitleLineSpacing,
     edgeSoftness: settings.subtitleEdgeSoftness,
-    outline: 2,
-    shadow: 7,
+    outline: settings.subtitleOutline ?? 2,
+    outlineColor: settings.subtitleOutlineColor ?? '#000000',
+    outlineOpacity: settings.subtitleOutlineOpacity ?? 0.58,
+    shadow: settings.subtitleShadowDistance ?? settings.subtitleShadow ?? 6,
+    shadowColor: settings.subtitleShadowColor ?? '#000000',
+    shadowOpacity: settings.subtitleShadowOpacity ?? 0.72,
+    shadowBlur: settings.subtitleShadowBlur ?? 3,
+    shadowDistance: settings.subtitleShadowDistance ?? 6,
+    shadowAngle: settings.subtitleShadowAngle ?? 90,
   }), [settings]);
   const styleTargetTrack = styleTarget === 'subtitles' ? null : textTracks.find((track) => track.id === styleTarget) || null;
   const activeStyle: ShortsSubtitleStyle = {
@@ -649,11 +656,32 @@ export function SubtitleAlignmentEditor({
   const captionBlur = Math.max(0, settings.subtitleBoxBlur * frameScale);
   const captionBottom = Math.max(0, settings.subtitleBottomMargin * frameScale);
   const captionLetterSpacing = settings.subtitleLetterSpacing * frameScale;
-  const captionTextShadow = `0 ${Math.max(1, 2 * frameScale)}px ${Math.max(1, 3 * frameScale)}px rgba(0,0,0,0.72)`;
+  
   function captionPreviewStyleFor(style: ShortsSubtitleStyle, bottomPx: number, fontFactor = 1): React.CSSProperties {
     const fontSize = Math.max(10, style.fontSize * frameScale * fontFactor);
     const paddingY = Math.max(1, fontSize * 0.12 * style.boxHeight);
     const paddingX = Math.max(1, paddingY * 1.45);
+    
+    // Dynamic Outline
+    const textStroke = Math.max(0, style.outline ?? 2) * frameScale;
+    const outlineColor = style.outlineColor ?? '#000000';
+    const outlineOpacity = style.outlineOpacity ?? 0.58;
+    const outlineHexOpacity = Math.round(outlineOpacity * 255).toString(16).padStart(2, '0');
+    const textStrokeColor = `${outlineColor}${outlineHexOpacity}`;
+
+    // Dynamic Shadow
+    const dist = (style.shadowDistance ?? style.shadow ?? 6) * frameScale;
+    const rad = ((style.shadowAngle ?? 90) * Math.PI) / 180;
+    const shadowX = dist * Math.cos(rad);
+    const shadowY = dist * Math.sin(rad);
+    const shadowBlur = (style.shadowBlur ?? 3) * frameScale;
+    const shadowColor = style.shadowColor ?? '#000000';
+    const shadowOpacity = style.shadowOpacity ?? 0.72;
+    const shadowHexOpacity = Math.round(shadowOpacity * 255).toString(16).padStart(2, '0');
+    const textShadow = dist > 0 || shadowBlur > 0
+      ? `${shadowX}px ${shadowY}px ${shadowBlur}px ${shadowColor}${shadowHexOpacity}`
+      : 'none';
+
     return {
       color: style.textColor,
       fontFamily: style.fontFamily,
@@ -665,7 +693,8 @@ export function SubtitleAlignmentEditor({
       maxWidth: captionMaxWidth,
       bottom: `${bottomPx}px`,
       padding: `${paddingY}px ${paddingX}px`,
-      textShadow: captionTextShadow,
+      textShadow,
+      WebkitTextStroke: textStroke > 0 ? `${textStroke}px ${textStrokeColor}` : '0 transparent',
       position: 'absolute',
       overflow: 'visible',
     };
@@ -1129,6 +1158,14 @@ export function SubtitleAlignmentEditor({
     if (partial.letterSpacing !== undefined) next.subtitleLetterSpacing = partial.letterSpacing;
     if (partial.lineSpacing !== undefined) next.subtitleLineSpacing = partial.lineSpacing;
     if (partial.edgeSoftness !== undefined) next.subtitleEdgeSoftness = partial.edgeSoftness;
+    if (partial.outline !== undefined) next.subtitleOutline = partial.outline;
+    if (partial.outlineColor !== undefined) next.subtitleOutlineColor = partial.outlineColor;
+    if (partial.outlineOpacity !== undefined) next.subtitleOutlineOpacity = partial.outlineOpacity;
+    if (partial.shadowColor !== undefined) next.subtitleShadowColor = partial.shadowColor;
+    if (partial.shadowOpacity !== undefined) next.subtitleShadowOpacity = partial.shadowOpacity;
+    if (partial.shadowBlur !== undefined) next.subtitleShadowBlur = partial.shadowBlur;
+    if (partial.shadowDistance !== undefined) next.subtitleShadowDistance = partial.shadowDistance;
+    if (partial.shadowAngle !== undefined) next.subtitleShadowAngle = partial.shadowAngle;
     return next;
   }
 
@@ -2014,6 +2051,17 @@ export function SubtitleAlignmentEditor({
                   <option value="Arial">Arial</option>
                 </select>
               </label>
+              <div className="alignment-font-options-row">
+                <label className="alignment-checkbox-label">
+                  <input type="checkbox" checked={activeStyle.bold} onChange={(event) => patchActiveStyle({ bold: event.currentTarget.checked })} />
+                  <span>Bold</span>
+                </label>
+                <select value={activeStyle.textTransform} onChange={(event) => patchActiveStyle({ textTransform: event.currentTarget.value as ShortsSettings['subtitleTextTransform'] })}>
+                  <option value="uppercase">Uppercase</option>
+                  <option value="title">Title Case</option>
+                  <option value="none">Original Case</option>
+                </select>
+              </div>
               <label>
                 <span>Size</span>
                 <input type="range" min={70} max={200} step={1} value={activeStyle.fontSize} onChange={(event) => patchActiveStyle({ fontSize: Number(event.currentTarget.value) })} />
@@ -2033,6 +2081,46 @@ export function SubtitleAlignmentEditor({
                 <span>Line spacing</span>
                 <input type="range" min={0.8} max={1.6} step={0.05} value={activeStyle.lineSpacing} onChange={(event) => patchActiveStyle({ lineSpacing: Number(event.currentTarget.value) })} />
                 <b>{activeStyle.lineSpacing.toFixed(2)}x</b>
+              </label>
+              <label>
+                <span>Outline</span>
+                <input type="range" min={0} max={10} step={0.5} value={activeStyle.outline ?? 2} onChange={(event) => patchActiveStyle({ outline: Number(event.currentTarget.value) })} />
+                <b>{activeStyle.outline ?? 2}px</b>
+              </label>
+              <label>
+                <span>Outline opacity</span>
+                <input type="range" min={0} max={1} step={0.05} value={activeStyle.outlineOpacity ?? 0.58} onChange={(event) => patchActiveStyle({ outlineOpacity: Number(event.currentTarget.value) })} />
+                <b>{Math.round((activeStyle.outlineOpacity ?? 0.58) * 100)}%</b>
+              </label>
+              <label>
+                <span>Outline color</span>
+                <input type="color" value={activeStyle.outlineColor ?? '#000000'} onChange={(event) => patchActiveStyle({ outlineColor: event.currentTarget.value })} />
+                <b>{activeStyle.outlineColor ?? '#000000'}</b>
+              </label>
+              <label>
+                <span>Shadow size</span>
+                <input type="range" min={0} max={20} step={1} value={activeStyle.shadowDistance ?? 6} onChange={(event) => patchActiveStyle({ shadowDistance: Number(event.currentTarget.value) })} />
+                <b>{activeStyle.shadowDistance ?? 6}px</b>
+              </label>
+              <label>
+                <span>Shadow blur</span>
+                <input type="range" min={0} max={20} step={1} value={activeStyle.shadowBlur ?? 3} onChange={(event) => patchActiveStyle({ shadowBlur: Number(event.currentTarget.value) })} />
+                <b>{activeStyle.shadowBlur ?? 3}px</b>
+              </label>
+              <label>
+                <span>Shadow angle</span>
+                <input type="range" min={0} max={360} step={5} value={activeStyle.shadowAngle ?? 90} onChange={(event) => patchActiveStyle({ shadowAngle: Number(event.currentTarget.value) })} />
+                <b>{activeStyle.shadowAngle ?? 90}°</b>
+              </label>
+              <label>
+                <span>Shadow opacity</span>
+                <input type="range" min={0} max={1} step={0.05} value={activeStyle.shadowOpacity ?? 0.72} onChange={(event) => patchActiveStyle({ shadowOpacity: Number(event.currentTarget.value) })} />
+                <b>{Math.round((activeStyle.shadowOpacity ?? 0.72) * 100)}%</b>
+              </label>
+              <label>
+                <span>Shadow color</span>
+                <input type="color" value={activeStyle.shadowColor ?? '#000000'} onChange={(event) => patchActiveStyle({ shadowColor: event.currentTarget.value })} />
+                <b>{activeStyle.shadowColor ?? '#000000'}</b>
               </label>
               <label>
                 <span>Box color</span>
@@ -2071,14 +2159,6 @@ export function SubtitleAlignmentEditor({
                   <b>{settings.subtitleBottomMargin}</b>
                 </label>
               )}
-              <div className="alignment-layer-actions">
-                <label><input type="checkbox" checked={activeStyle.bold} onChange={(event) => patchActiveStyle({ bold: event.currentTarget.checked })} /> Bold</label>
-                <select value={activeStyle.textTransform} onChange={(event) => patchActiveStyle({ textTransform: event.currentTarget.value as ShortsSettings['subtitleTextTransform'] })}>
-                  <option value="uppercase">Uppercase</option>
-                  <option value="title">Title Case</option>
-                  <option value="none">Original Case</option>
-                </select>
-              </div>
             </div>
             )}
 
