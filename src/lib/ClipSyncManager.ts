@@ -210,65 +210,65 @@ export function buildSyncPatch(
   let hasChanges = false;
 
   // Mirror frame keyframes: source → target, target → source
-  if (appliedPatch.sourceFrameKeyframes) {
-    mirror.targetFrameKeyframes = structuredClone(appliedPatch.sourceFrameKeyframes);
+  if ('sourceFrameKeyframes' in appliedPatch) {
+    mirror.targetFrameKeyframes = appliedPatch.sourceFrameKeyframes ? structuredClone(appliedPatch.sourceFrameKeyframes) : undefined;
     hasChanges = true;
   }
-  if (appliedPatch.targetFrameKeyframes) {
-    mirror.sourceFrameKeyframes = structuredClone(appliedPatch.targetFrameKeyframes);
+  if ('targetFrameKeyframes' in appliedPatch) {
+    mirror.sourceFrameKeyframes = appliedPatch.targetFrameKeyframes ? structuredClone(appliedPatch.targetFrameKeyframes) : undefined;
     hasChanges = true;
   }
 
   // Mirror subtitle timing/layout, but never replace translated/source text.
-  if (appliedPatch.sourceAlignment) {
-    mirror.targetAlignment = mirrorAlignmentTiming(appliedPatch.sourceAlignment, destinationPlan.targetAlignment);
+  if ('sourceAlignment' in appliedPatch) {
+    mirror.targetAlignment = appliedPatch.sourceAlignment ? mirrorAlignmentTiming(appliedPatch.sourceAlignment, destinationPlan.targetAlignment) : undefined;
     hasChanges = true;
   }
-  if (appliedPatch.targetAlignment) {
-    mirror.sourceAlignment = mirrorAlignmentTiming(appliedPatch.targetAlignment, destinationPlan.sourceAlignment);
+  if ('targetAlignment' in appliedPatch) {
+    mirror.sourceAlignment = appliedPatch.targetAlignment ? mirrorAlignmentTiming(appliedPatch.targetAlignment, destinationPlan.sourceAlignment) : undefined;
     hasChanges = true;
   }
 
   // Mirror timeline cuts & trims
-  if (appliedPatch.timelineCuts) {
-    mirror.timelineCuts = structuredClone(appliedPatch.timelineCuts);
+  if ('timelineCuts' in appliedPatch) {
+    mirror.timelineCuts = appliedPatch.timelineCuts ? structuredClone(appliedPatch.timelineCuts) : undefined;
     hasChanges = true;
   }
-  if (appliedPatch.timelineTrim) {
-    mirror.timelineTrim = structuredClone(appliedPatch.timelineTrim);
+  if ('timelineTrim' in appliedPatch) {
+    mirror.timelineTrim = appliedPatch.timelineTrim ? structuredClone(appliedPatch.timelineTrim) : undefined;
     hasChanges = true;
   }
 
   // Mirror background settings (shared across languages)
-  if (appliedPatch.backgroundSettings) {
-    mirror.backgroundSettings = structuredClone(appliedPatch.backgroundSettings);
+  if ('backgroundSettings' in appliedPatch) {
+    mirror.backgroundSettings = appliedPatch.backgroundSettings ? structuredClone(appliedPatch.backgroundSettings) : undefined;
     hasChanges = true;
   }
 
   // Mirror language-aware overlay layers. Sync ON means Source and Target share
   // the same visual/audio structure while preserving their subtitle text.
-  if (appliedPatch.sourceLogo) {
-    mirror.targetLogo = structuredClone(appliedPatch.sourceLogo);
+  if ('sourceLogo' in appliedPatch) {
+    mirror.targetLogo = appliedPatch.sourceLogo ? structuredClone(appliedPatch.sourceLogo) : undefined;
     hasChanges = true;
   }
-  if (appliedPatch.targetLogo) {
-    mirror.sourceLogo = structuredClone(appliedPatch.targetLogo);
+  if ('targetLogo' in appliedPatch) {
+    mirror.sourceLogo = appliedPatch.targetLogo ? structuredClone(appliedPatch.targetLogo) : undefined;
     hasChanges = true;
   }
-  if (appliedPatch.sourceTextTracks) {
-    mirror.targetTextTracks = structuredClone(appliedPatch.sourceTextTracks);
+  if ('sourceTextTracks' in appliedPatch) {
+    mirror.targetTextTracks = appliedPatch.sourceTextTracks ? structuredClone(appliedPatch.sourceTextTracks) : undefined;
     hasChanges = true;
   }
-  if (appliedPatch.targetTextTracks) {
-    mirror.sourceTextTracks = structuredClone(appliedPatch.targetTextTracks);
+  if ('targetTextTracks' in appliedPatch) {
+    mirror.sourceTextTracks = appliedPatch.targetTextTracks ? structuredClone(appliedPatch.targetTextTracks) : undefined;
     hasChanges = true;
   }
-  if (appliedPatch.sourceAudioTracks) {
-    mirror.targetAudioTracks = structuredClone(appliedPatch.sourceAudioTracks);
+  if ('sourceAudioTracks' in appliedPatch) {
+    mirror.targetAudioTracks = appliedPatch.sourceAudioTracks ? structuredClone(appliedPatch.sourceAudioTracks) : undefined;
     hasChanges = true;
   }
-  if (appliedPatch.targetAudioTracks) {
-    mirror.sourceAudioTracks = structuredClone(appliedPatch.targetAudioTracks);
+  if ('targetAudioTracks' in appliedPatch) {
+    mirror.sourceAudioTracks = appliedPatch.targetAudioTracks ? structuredClone(appliedPatch.targetAudioTracks) : undefined;
     hasChanges = true;
   }
 
