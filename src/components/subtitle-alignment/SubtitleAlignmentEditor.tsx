@@ -269,9 +269,11 @@ export function SubtitleAlignmentEditor({
 
   useEffect(() => {
     if (!isOpen) return;
-    const initKey = `${title}|${languageLabel}|${clipStartSec}|${clipEndSec}`;
-    if (initKeyRef.current === initKey) return;
-    initKeyRef.current = initKey;
+    const clipKey = `${title}|${clipStartSec}|${clipEndSec}`;
+    const isClipChange = initKeyRef.current !== clipKey;
+    if (isClipChange) {
+      initKeyRef.current = clipKey;
+    }
     initializedRef.current = false;
     const next = initialSegments?.length
       ? normalizeSegments(initialSegments, clipDurationSec, { keepEmpty: true })
@@ -279,14 +281,6 @@ export function SubtitleAlignmentEditor({
     segmentsRef.current = next;
     setSegments(next);
     setSelectedId(next[0]?.id || '');
-    setCurrentSec(0);
-    setPlaying(false);
-    setFrameZoom(settings.zoom);
-    setFramePanX(0);
-    setFramePanY(0);
-    frameZoomRef.current = settings.zoom;
-    framePanXRef.current = 0;
-    framePanYRef.current = 0;
     const nextBg = initialBackgroundSettings || defaultBackgroundSettings();
     const seededBg = {
       ...nextBg,
@@ -294,7 +288,6 @@ export function SubtitleAlignmentEditor({
     };
     bgSettingsRef.current = seededBg;
     setBgSettings(seededBg);
-    setTimelineZoom(1);
     const nextFrameKeyframes = (initialFrameKeyframes || []).map((keyframe) => ({
       ...keyframe,
       time: Math.min(Math.max(0, keyframe.time), clipDurationSec),
@@ -309,14 +302,31 @@ export function SubtitleAlignmentEditor({
     setCuts(cutsRef.current);
     trimRef.current = initialTrim || { trimStartSec: 0, trimEndSec: 0 };
     setTrim(trimRef.current);
-    setRazorActive(false);
-    setRazorStart(null);
     setLogo(initialLogo ? structuredClone(initialLogo) : undefined);
     setTextTracks(initialTextTracks ? structuredClone(initialTextTracks) : []);
     setAudioTracks(initialAudioTracks ? structuredClone(initialAudioTracks) : []);
-    undoStackRef.current.clear();
-    window.setTimeout(() => { initializedRef.current = true; }, 0);
-  }, [clipDurationSec, clipEndSec, clipStartSec, initialAudioTracks, initialBackgroundSettings, initialCues, initialCuts, initialFrameKeyframes, initialLogo, initialSegments, initialTextTracks, initialTrim, isOpen, languageLabel, settings.zoom, title]);
+
+    if (isClipChange) {
+      setCurrentSec(0);
+      setPlaying(false);
+      setFrameZoom(settings.zoom);
+      setFramePanX(0);
+      setFramePanY(0);
+      frameZoomRef.current = settings.zoom;
+      framePanXRef.current = 0;
+      framePanYRef.current = 0;
+      setTimelineZoom(1);
+      setRazorActive(false);
+      setRazorStart(null);
+      undoStackRef.current.clear();
+    }
+    const timer = window.setTimeout(() => {
+      initializedRef.current = true;
+    }, 50);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [clipDurationSec, clipEndSec, clipStartSec, initialAudioTracks, initialBackgroundSettings, initialCues, initialCuts, initialFrameKeyframes, initialLogo, initialSegments, initialTextTracks, initialTrim, isOpen, settings.zoom, title]);
 
   useEffect(() => {
     if (!isOpen || !initializedRef.current || !onDraftChange) return;
