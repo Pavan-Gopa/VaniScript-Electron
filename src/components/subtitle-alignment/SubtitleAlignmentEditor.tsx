@@ -643,7 +643,9 @@ export function SubtitleAlignmentEditor({
   const captionFontSize = Math.max(1, settings.subtitleFontSize * frameScale);
   const captionPaddingY = Math.max(1, captionFontSize * 0.12 * settings.subtitleBoxHeight);
   const captionPaddingX = Math.max(1, captionPaddingY * 1.45);
-  const captionRadius = Math.max(0, (4 + (settings.subtitleEdgeSoftness * 18)) * frameScale);
+  const captionRadius = settings.subtitleEdgeSoftness >= 0.95
+    ? 9999
+    : (settings.subtitleEdgeSoftness * 80 * frameScale);
   const captionBlur = Math.max(0, settings.subtitleBoxBlur * frameScale);
   const captionBottom = Math.max(0, settings.subtitleBottomMargin * frameScale);
   const captionLetterSpacing = settings.subtitleLetterSpacing * frameScale;
@@ -653,7 +655,9 @@ export function SubtitleAlignmentEditor({
     const fontSize = Math.max(10, style.fontSize * frameScale * fontFactor);
     const paddingY = Math.max(1, fontSize * 0.12 * style.boxHeight);
     const paddingX = Math.max(1, paddingY * 1.45);
-    const radius = Math.max(0, (4 + (style.edgeSoftness * 18)) * frameScale);
+    const radius = style.edgeSoftness >= 0.95
+      ? 9999
+      : (style.edgeSoftness * 80 * frameScale);
     const blur = Math.max(0, style.edgeBlur * frameScale);
     return {
       background: `${style.boxColor}${alpha}`,
@@ -2026,7 +2030,7 @@ export function SubtitleAlignmentEditor({
               </label>
               <label>
                 <span>Box height</span>
-                <input type="range" min={0.8} max={2} step={0.05} value={activeStyle.boxHeight} onChange={(event) => patchActiveStyle({ boxHeight: Number(event.currentTarget.value) })} />
+                <input type="range" min={0.5} max={3.5} step={0.05} value={activeStyle.boxHeight} onChange={(event) => patchActiveStyle({ boxHeight: Number(event.currentTarget.value) })} />
                 <b>{activeStyle.boxHeight.toFixed(2)}x</b>
               </label>
               <label>
@@ -2036,7 +2040,7 @@ export function SubtitleAlignmentEditor({
               </label>
               <label>
                 <span>Edge blur</span>
-                <input type="range" min={0} max={18} step={1} value={activeStyle.edgeBlur} onChange={(event) => patchActiveStyle({ edgeBlur: Number(event.currentTarget.value) })} />
+                <input type="range" min={0} max={80} step={1} value={activeStyle.edgeBlur} onChange={(event) => patchActiveStyle({ edgeBlur: Number(event.currentTarget.value) })} />
                 <b>{activeStyle.edgeBlur}px</b>
               </label>
               {styleTarget === 'subtitles' && (

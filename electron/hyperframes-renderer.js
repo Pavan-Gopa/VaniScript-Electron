@@ -641,7 +641,8 @@ function buildCompositionHtml(project, relativeVideoPath) {
         const paddingY = fontSize * 0.12 * (style.boxHeight || 1);
         const paddingX = paddingY * 1.45;
         const blurPx = Math.max(0, style.edgeBlur || 0) * scale;
-        const radiusPx = (4 + (Math.max(0, Math.min(1, style.edgeSoftness ?? 0.25)) * 18)) * scale;
+        const softness = style.edgeSoftness ?? 0.25;
+        const radiusPx = softness >= 0.95 ? 9999 : (softness * 80) * scale;
         const textShadowDepth = Math.max(0, style.shadow || 0) * scale;
         const textStroke = Math.max(0, style.outline || 0) * scale;
         layer.style.display = 'block';
@@ -694,7 +695,8 @@ function buildCompositionHtml(project, relativeVideoPath) {
         const paddingY = fontSize * 0.12 * style.boxHeight;
         const paddingX = paddingY * 1.45;
         const blurPx = Math.max(0, style.edgeBlur) * scale;
-        const radiusPx = (4 + (Math.max(0, Math.min(1, style.edgeSoftness)) * 18)) * scale;
+        const softness = style.edgeSoftness ?? 0.25;
+        const radiusPx = softness >= 0.95 ? 9999 : (softness * 80) * scale;
         const bottomPx = project.subtitleBottomMargin * scale;
         const textShadowDepth = Math.max(0, style.shadow) * scale;
         const textStroke = Math.max(0, style.outline) * scale;
