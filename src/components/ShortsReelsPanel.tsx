@@ -490,7 +490,7 @@ export function ShortsReelsPanel({
 
       {editorPlan && (
         <SubtitleAlignmentEditor
-          key={`editor-${editorIndex}-${displayLanguage}`}
+          key={`editor-${editorIndex}`}
           isOpen={editorIndex !== null}
           title={displayedPlanText(editorPlan, displayLanguage).title || 'Clip editor'}
           languageLabel={displayLanguage === 'source' ? 'Source captions' : 'Target captions'}
