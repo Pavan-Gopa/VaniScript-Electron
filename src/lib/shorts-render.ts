@@ -53,7 +53,7 @@ export function defaultBackgroundSettings(): BackgroundSettings {
     featherLeft: 10,
     featherRight: 10,
     frameGuideColor: '#ffaa19',
-    frameGuideOpacity: 0.75,
+    frameGuideOpacity: 0.5,
     frameGuideBorderWidth: 2,
     frameGuideBlur: 0,
     frameGuideBorderOpacity: 1,

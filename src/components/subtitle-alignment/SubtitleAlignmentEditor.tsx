@@ -1486,7 +1486,7 @@ export function SubtitleAlignmentEditor({
               onTimeUpdate={handleTimeUpdate}
             />
             <div className="alignment-frame-guide" ref={frameGuideRef} style={{
-              '--frame-guide-opacity': bgSettings.frameGuideOpacity ?? 0.75,
+              '--frame-guide-opacity': 0.5,
               '--frame-guide-border-width': `${bgSettings.frameGuideBorderWidth ?? 2}px`,
               '--frame-guide-blur': `${bgSettings.frameGuideBlur ?? 0}px`,
               '--frame-guide-border-color': (() => {
@@ -2046,7 +2046,8 @@ export function SubtitleAlignmentEditor({
                 <select value={activeStyle.fontFamily} onChange={(event) => patchActiveStyle({ fontFamily: event.currentTarget.value })}>
                   <option value="Cuprum">Cuprum</option>
                   <option value="Oswald">Oswald</option>
-                  <option value="Roboto Condensed">Roboto Condensed</option>
+                  <option value="Unbounded">Unbounded</option>
+                  <option value="Montserrat">Montserrat</option>
                   <option value="Inter">Inter</option>
                   <option value="Arial">Arial</option>
                 </select>
@@ -2176,13 +2177,7 @@ export function SubtitleAlignmentEditor({
                   }} />
                 <b>{bgSettings.frameGuideColor ?? '#ffaa19'}</b>
               </label>
-              <label>
-                <span>Dim</span>
-                <input type="range" min={0} max={1} step={0.05}
-                  value={bgSettings.frameGuideOpacity ?? 0.75}
-                  onChange={(e) => updateBackgroundSettings((prev) => ({ ...prev, frameGuideOpacity: Number(e.currentTarget.value) }))} />
-                <b>{Math.round((bgSettings.frameGuideOpacity ?? 0.75) * 100)}%</b>
-              </label>
+
               <label>
                 <span>Border</span>
                 <input type="range" min={0} max={12} step={0.5}
