@@ -588,8 +588,28 @@ function buildCompositionHtml(project, relativeVideoPath) {
             video.style.webkitMaskComposite = 'source-in';
             videoStage.style.maskComposite = 'intersect';
             videoStage.style.webkitMaskComposite = 'source-in';
+          } else {
+            video.style.maskComposite = '';
+            video.style.webkitMaskComposite = '';
+            videoStage.style.maskComposite = '';
+            videoStage.style.webkitMaskComposite = '';
           }
+        } else {
+          clearFeatherMasks();
         }
+      } else {
+        clearFeatherMasks();
+      }
+
+      function clearFeatherMasks() {
+        video.style.maskImage = '';
+        video.style.webkitMaskImage = '';
+        video.style.maskComposite = '';
+        video.style.webkitMaskComposite = '';
+        videoStage.style.maskImage = '';
+        videoStage.style.webkitMaskImage = '';
+        videoStage.style.maskComposite = '';
+        videoStage.style.webkitMaskComposite = '';
       }
 
       if (frameGuideOverlay) {
