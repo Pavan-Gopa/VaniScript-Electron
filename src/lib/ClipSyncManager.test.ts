@@ -240,3 +240,42 @@ test('toggleSync enables bilingual sync by copying existing source editor parame
   assert.deepEqual(updated.timelineTrim, plans[0].timelineTrim);
   assert.deepEqual(updated.backgroundSettings, plans[0].backgroundSettings);
 });
+
+test('buildSyncPatch does not mirror source alignment to target if targetAlignment is empty/undefined', () => {
+  const plans: ShortsClipPlan[] = [{
+    start: '00:00',
+    end: '00:10',
+    title: 'Target',
+    summary: '',
+    hook: '',
+    languageMode: 'bilingual',
+    linkedClipGroupId: 'group-1',
+    syncEnabled: true,
+    sourceAlignment: [{
+      id: 'source-1',
+      start: 1,
+      end: 3,
+      text: 'Krishna speaks',
+      words: [],
+    }],
+    targetAlignment: undefined,
+  }];
+
+  const changedSource = [{
+    id: 'source-1',
+    start: 2,
+    end: 4.5,
+    text: 'Krishna speaks',
+    words: [],
+  }];
+
+  const result = buildSyncPatch(
+    [{ ...plans[0], sourceAlignment: changedSource }],
+    0,
+    { sourceAlignment: changedSource },
+  );
+
+  assert.equal(result?.partnerIndex, 0);
+  assert.equal(result?.patch.targetAlignment, undefined);
+});
+

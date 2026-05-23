@@ -88,7 +88,7 @@ function mirrorAlignmentTiming(
   targetSegments: AlignedSubtitleSegment[] | undefined,
 ): AlignedSubtitleSegment[] | undefined {
   if (!sourceSegments) return undefined;
-  if (!targetSegments?.length) return structuredClone(sourceSegments);
+  if (!targetSegments?.length) return undefined;
   return sourceSegments.map((sourceSegment, index) => {
     const targetSegment = targetSegments[index] || targetSegments[targetSegments.length - 1];
     const text = targetSegment?.text ?? sourceSegment.text;
