@@ -788,7 +788,9 @@ function openSettingsFromShell() {
 
 function createVaniScriptIcon(template = false, size = 0) {
   const candidates = [
+    path.join(__dirname, '..', 'assets', 'VS_Logo x256.png'),
     path.join(__dirname, '..', 'assets', 'icon.png'),
+    path.join(process.resourcesPath || '', 'assets', 'VS_Logo x256.png'),
     path.join(process.resourcesPath || '', 'assets', 'icon.png'),
   ];
   const iconPath = candidates.find((candidate) => candidate && fs.existsSync(candidate));
@@ -891,7 +893,7 @@ function installAppMenu() {
 
 function installTray() {
   if (tray) return;
-  const trayIcon = createVaniScriptIcon(process.platform === 'darwin', process.platform === 'darwin' ? 18 : 0);
+  const trayIcon = createVaniScriptIcon(false, process.platform === 'darwin' ? 18 : 0);
   const dockIcon = createVaniScriptIcon(false);
   if (process.platform === 'darwin' && app.dock && !dockIcon.isEmpty()) {
     app.dock.setIcon(dockIcon);
