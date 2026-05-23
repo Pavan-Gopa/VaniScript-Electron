@@ -2673,6 +2673,38 @@ html, body, #root {
   background: transparent;
   cursor: pointer;
 }
+.alignment-frame-panel select {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background-color: rgba(255, 255, 255, 0.05);
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffaa19' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 12px;
+  color: var(--text-0);
+  padding: 6px 28px 6px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.2s, background-color 0.2s;
+}
+.alignment-frame-panel select:hover {
+  background-color: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+.alignment-frame-panel select:focus {
+  border-color: var(--accent);
+  background-color: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 0 0 2px rgba(255, 170, 25, 0.2);
+}
+.alignment-frame-panel select option {
+  background-color: #1a1f3a;
+  color: var(--text-0);
+}
 .alignment-style-target-tabs {
   display: flex;
   flex-wrap: wrap;
@@ -4326,6 +4358,20 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
 :root[data-theme="light"] .alignment-layer-card {
   background: rgba(255,255,255,0.62);
   border-color: rgba(15,23,42,0.11);
+}
+:root[data-theme="light"] .alignment-frame-panel select {
+  color: #0f172a;
+  background-color: rgba(0, 0, 0, 0.04);
+  border-color: rgba(15, 23, 42, 0.15);
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23d97706' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+}
+:root[data-theme="light"] .alignment-frame-panel select:hover {
+  background-color: rgba(0, 0, 0, 0.07);
+  border-color: rgba(15, 23, 42, 0.25);
+}
+:root[data-theme="light"] .alignment-frame-panel select option {
+  background-color: #ffffff;
+  color: #0f172a;
 }
 
 :root[data-theme="light"] .alignment-layer-head button,
