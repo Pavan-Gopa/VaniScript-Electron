@@ -83,7 +83,7 @@ test('buildShortsAssSubtitle uses bold white text, orange box, and lower placeme
   assert.match(ass, /Shorts,,0,0,0,,\{\\an5\\pos\(540,1314\)\}TAKE SHELTER OF/);
   assert.match(ass, /&H00FFFFFF/);
   assert.match(ass, /&H80008CFF/);
-  assert.match(ass, / b 929 0 929 0 929 9 /);
+  assert.match(ass, / b 929 0 929 0 929 20 /);
 });
 
 test('buildShortsAssSubtitle supports configurable font, text color, box color, opacity, and casing', () => {

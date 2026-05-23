@@ -399,10 +399,12 @@ export function buildShortsAssSubtitle(opts: AssSubtitleOptions): string {
   const sideMargin = Math.round((opts.width * (1 - boxWidthPercent)) / 2);
   const boxWidth = Math.round(opts.width * boxWidthPercent);
   const boxBlur = Math.max(0, Math.round((style.edgeBlur || 0) * styleScale));
-  const cornerRadius = Math.max(0, Math.round((4 + ((style.edgeSoftness || 0) * 18)) * styleScale));
+  const cornerRadius = (style.edgeSoftness || 0) >= 0.95
+    ? 9999
+    : Math.max(0, Math.round(((style.edgeSoftness || 0) * 80) * styleScale));
   const maxLines = Math.min(Math.max(Math.round(opts.maxLines || 2), 1), 4);
   const maxCharsPerLine = opts.maxCharsPerLine ? Math.max(8, Math.round(opts.maxCharsPerLine)) : undefined;
-  const boxHeightScale = Math.min(Math.max(style.boxHeight || 1, 0.6), 2.2);
+  const boxHeightScale = Math.min(Math.max(style.boxHeight || 1, 0.5), 3.5);
   const paddingY = Math.max(2, Math.round(fontSize * 0.12 * boxHeightScale));
   const paddingX = Math.max(4, Math.round(paddingY * 1.45));
   const textBoxWidth = Math.max(1, boxWidth - (paddingX * 2));
