@@ -92,15 +92,24 @@ function selectedSegmentAt(segments: AlignedSubtitleSegment[], currentSec: numbe
 
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
-  if (
-    target instanceof HTMLInputElement
-    || target instanceof HTMLTextAreaElement
-    || target instanceof HTMLSelectElement
-    || target.isContentEditable
-  ) {
+  if (target instanceof HTMLTextAreaElement) return true;
+  if (target instanceof HTMLInputElement) {
+    const type = target.type ? target.type.toLowerCase() : 'text';
+    const textInputTypes = ['text', 'search', 'url', 'email', 'password', 'number', 'tel'];
+    return textInputTypes.includes(type);
+  }
+  if (target.isContentEditable) return true;
+  const closestText = target.closest('input, textarea, [contenteditable="true"], [role="textbox"]');
+  if (closestText instanceof HTMLElement) {
+    if (closestText instanceof HTMLTextAreaElement) return true;
+    if (closestText instanceof HTMLInputElement) {
+      const type = closestText.type ? closestText.type.toLowerCase() : 'text';
+      const textInputTypes = ['text', 'search', 'url', 'email', 'password', 'number', 'tel'];
+      return textInputTypes.includes(type);
+    }
     return true;
   }
-  return Boolean(target.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]'));
+  return false;
 }
 
 function releaseTypingFocus() {
