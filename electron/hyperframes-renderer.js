@@ -742,10 +742,11 @@ function buildCompositionHtml(project, relativeVideoPath) {
           audio.volume = clamp(baseVolume * gain, 0, 1);
         });
 
-        // Sync blur bg time
+        // Sync blur bg time frame-accurately
         if (bgS.blurEnabled && blurBg && blurBg.tagName === 'VIDEO') {
-          if (Math.abs((blurBg.currentTime || 0) - (video.currentTime || 0)) > 0.08) {
-            blurBg.currentTime = video.currentTime || 0;
+          const vTime = video.currentTime || 0;
+          if (Math.abs((blurBg.currentTime || 0) - vTime) > 0.001) {
+            blurBg.currentTime = vTime;
           }
         }
 
