@@ -564,36 +564,16 @@ function buildCompositionHtml(project, relativeVideoPath) {
           : 'linear-gradient(' + (bgS.gradientAngle || 180) + 'deg,' + gA + ',' + gB + ')';
         gradientOverlay.style.opacity = String(bgS.gradientOpacity || 0.6);
       }
-      // Setup feathering mask (top/bottom + left/right)
+      // Setup feathering mask (top/bottom only)
       if (bgS.featherEnabled) {
         const fT = bgS.featherTop || 0;
         const fB = bgS.featherBottom || 0;
-        const fL = bgS.featherLeft || 0;
-        const fR = bgS.featherRight || 0;
-        const masks = [];
         if (fT > 0 || fB > 0) {
-          masks.push('linear-gradient(to bottom, transparent 0px, black ' + (fT * effectScale) + 'px, black calc(100% - ' + (fB * effectScale) + 'px), transparent 100%)');
-        }
-        if (fL > 0 || fR > 0) {
-          masks.push('linear-gradient(to right, transparent 0px, black ' + (fL * effectScale) + 'px, black calc(100% - ' + (fR * effectScale) + 'px), transparent 100%)');
-        }
-        if (masks.length > 0) {
-          const combined = masks.join(', ');
-          video.style.maskImage = combined;
-          video.style.webkitMaskImage = combined;
-          videoStage.style.maskImage = combined;
-          videoStage.style.webkitMaskImage = combined;
-          if (masks.length > 1) {
-            video.style.maskComposite = 'intersect';
-            video.style.webkitMaskComposite = 'source-in';
-            videoStage.style.maskComposite = 'intersect';
-            videoStage.style.webkitMaskComposite = 'source-in';
-          } else {
-            video.style.maskComposite = '';
-            video.style.webkitMaskComposite = '';
-            videoStage.style.maskComposite = '';
-            videoStage.style.webkitMaskComposite = '';
-          }
+          const mask = 'linear-gradient(to bottom, transparent 0px, black ' + (fT * effectScale) + 'px, black calc(100% - ' + (fB * effectScale) + 'px), transparent 100%)';
+          video.style.maskImage = mask;
+          video.style.webkitMaskImage = mask;
+          videoStage.style.maskImage = mask;
+          videoStage.style.webkitMaskImage = mask;
         } else {
           clearFeatherMasks();
         }
@@ -637,14 +617,10 @@ function buildCompositionHtml(project, relativeVideoPath) {
         const featherGradients = [];
         const topPx = Math.max(0, Number(bgS.featherTop) || 0) * effectScale;
         const bottomPx = Math.max(0, Number(bgS.featherBottom) || 0) * effectScale;
-        const leftPx = Math.max(0, Number(bgS.featherLeft) || 0) * effectScale;
-        const rightPx = Math.max(0, Number(bgS.featherRight) || 0) * effectScale;
         const edgeColor = hexToRgba(bgColor, 0.62);
         const clearColor = hexToRgba(bgColor, 0);
         if (topPx > 0) featherGradients.push('linear-gradient(to bottom, ' + edgeColor + ' 0px, ' + clearColor + ' ' + topPx + 'px)');
         if (bottomPx > 0) featherGradients.push('linear-gradient(to top, ' + edgeColor + ' 0px, ' + clearColor + ' ' + bottomPx + 'px)');
-        if (leftPx > 0) featherGradients.push('linear-gradient(to right, ' + edgeColor + ' 0px, ' + clearColor + ' ' + leftPx + 'px)');
-        if (rightPx > 0) featherGradients.push('linear-gradient(to left, ' + edgeColor + ' 0px, ' + clearColor + ' ' + rightPx + 'px)');
         featherOverlay.style.display = featherGradients.length ? 'block' : 'none';
         featherOverlay.style.background = featherGradients.join(', ');
       }
