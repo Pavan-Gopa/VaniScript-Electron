@@ -665,7 +665,7 @@ function buildCompositionHtml(project, relativeVideoPath) {
         layer.style.backgroundColor = 'transparent';
         layer.style.borderRadius = '0px';
         layer.style.boxShadow = 'none';
-        layer.style.position = 'relative';
+        layer.style.position = 'absolute';
         layer.style.overflow = 'visible';
 
         // Ensure text element has relative positioning and z-index to sit on top of background

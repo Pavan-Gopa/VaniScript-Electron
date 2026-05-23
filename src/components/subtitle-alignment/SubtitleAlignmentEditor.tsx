@@ -666,12 +666,8 @@ export function SubtitleAlignmentEditor({
       bottom: `${bottomPx}px`,
       padding: `${paddingY}px ${paddingX}px`,
       textShadow: captionTextShadow,
-      position: 'relative',
+      position: 'absolute',
       overflow: 'visible',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      textAlign: 'center',
     };
   }
   const logoSafeMargin = Math.max(8, 40 * frameScale);
