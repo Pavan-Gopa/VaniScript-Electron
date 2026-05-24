@@ -194,7 +194,7 @@ function mapQualityPreset(qualityPreset) {
 
 function recommendedWorkers() {
   const cpuCount = Math.max(1, (os.cpus() || []).length);
-  return Math.max(2, Math.min(8, cpuCount - 1));
+  return Math.max(2, Math.min(4, cpuCount - 1));
 }
 
 function safeSymlinkOrCopy(srcPath, destPath) {
@@ -220,6 +220,33 @@ function localAssetPath(src) {
 function copyProjectLayerAssets(project, assetsDir) {
   const copied = { ...project };
   const copyOne = (src, prefix) => {
+    if (!src) return src;
+
+    // Check if it is a Base64 data URL
+    if (String(src).startsWith('data:')) {
+      const match = String(src).match(/^data:([^;]+);base64,(.+)$/);
+      if (match) {
+        const mimeType = match[1];
+        const base64Data = match[2];
+        const extMap = {
+          'image/png': '.png',
+          'image/jpeg': '.jpg',
+          'image/jpg': '.jpg',
+          'image/webp': '.webp',
+          'image/svg+xml': '.svg',
+        };
+        const ext = extMap[mimeType] || '.png';
+        const name = `${prefix}_embedded_${Date.now()}${ext}`;
+        const dest = path.join(assetsDir, name);
+        try {
+          fs.writeFileSync(dest, Buffer.from(base64Data, 'base64'));
+          return `./assets/${name}`;
+        } catch (err) {
+          return src;
+        }
+      }
+    }
+
     const sourcePath = localAssetPath(src);
     if (!sourcePath || !fs.existsSync(sourcePath)) return src;
     const ext = path.extname(sourcePath) || '';
@@ -231,6 +258,14 @@ function copyProjectLayerAssets(project, assetsDir) {
 
   if (copied.logo?.src) {
     copied.logo = { ...copied.logo, src: copyOne(copied.logo.src, 'logo') };
+  }
+
+  if (copied.intro?.src) {
+    copied.intro = { ...copied.intro, src: copyOne(copied.intro.src, 'intro') };
+  }
+
+  if (copied.outro?.src) {
+    copied.outro = { ...copied.outro, src: copyOne(copied.outro.src, 'outro') };
   }
 
   copied.audioTracks = (copied.audioTracks || []).map((track, index) => ({
@@ -329,8 +364,8 @@ async function createBrowserSafeProxy({
     '-b:a', '320k',
   ];
   const hardwareArgs = process.platform === 'darwin'
-    ? ['-c:v', 'h264_videotoolbox', '-allow_sw', '1', '-b:v', '8M', '-maxrate', '12M']
-    : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20'];
+    ? ['-c:v', 'h264_videotoolbox', '-allow_sw', '1', '-b:v', '2.5M', '-maxrate', '3.5M']
+    : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24'];
 
   try {
     await runFfmpeg(ffmpegPath, [...baseArgs, ...inputArgs, ...outputArgs, ...hardwareArgs, proxyPath], log, abortSignal);
@@ -339,7 +374,7 @@ async function createBrowserSafeProxy({
     if (isAbortError(error)) throw error;
     if (process.platform !== 'darwin') throw error;
     log.warn('HyperFrames proxy hardware encode failed, retrying with libx264.', error.message || String(error));
-    await runFfmpeg(ffmpegPath, [...baseArgs, ...inputArgs, ...outputArgs, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', proxyPath], log, abortSignal);
+    await runFfmpeg(ffmpegPath, [...baseArgs, ...inputArgs, ...outputArgs, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', proxyPath], log, abortSignal);
     return proxyPath;
   }
 }
@@ -474,7 +509,7 @@ function buildCompositionHtml(project, relativeVideoPath) {
   <body>
     <div id="stage">
       <div id="background"></div>
-      ${blurEnabled ? `<video id="blur-bg" class="clip" data-start="${introDuration}" data-duration="${trimmedVideoDuration}" data-track-index="2" data-media-start="${project.clipStartSec}" muted playsinline preload="auto" src="${escapeHtml(relativeVideoPath)}"></video>` : '<div id="blur-bg"></div>'}
+      ${blurEnabled ? '<img id="blur-bg" style="display: block;" />' : '<div id="blur-bg"></div>'}
       <div id="gradient-overlay"></div>
       <div id="video-stage">
         <video
@@ -583,7 +618,15 @@ function buildCompositionHtml(project, relativeVideoPath) {
       };
       const titleCase = (t) => t.toLowerCase().replace(/(^|\\s)\\S/g, (m) => m.toUpperCase());
       const transformText = (t, mode) => mode === 'uppercase' ? t.toUpperCase() : mode === 'title' ? titleCase(t) : t;
-      const activeCue = (ts) => project.subtitles.find((c) => ts >= c.startSec && ts < c.endSec) || null;
+      const activeCue = (ts) => {
+        const introDuration = project.intro && !project.intro.hidden ? (project.intro.duration || 0) : 0;
+        const outroDuration = project.outro && !project.outro.hidden ? (project.outro.duration || 0) : 0;
+        const trimmedVideoDuration = Math.max(0.05, project.durationSec - introDuration - outroDuration);
+        if (ts < introDuration || ts > introDuration + trimmedVideoDuration) {
+          return null;
+        }
+        return project.subtitles.find((c) => ts >= c.startSec && ts < c.endSec) || null;
+      };
       const activeTextBlocks = (ts) => (project.textTracks || [])
         .filter((track) => !track.hidden && !track.muted)
         .flatMap((track, trackIndex) => (track.blocks || [])
@@ -608,7 +651,7 @@ function buildCompositionHtml(project, relativeVideoPath) {
       };
 
       // Setup blur background
-      if (bgS.blurEnabled && blurBg && blurBg.tagName === 'VIDEO') {
+      if (bgS.blurEnabled && blurBg) {
         blurBg.style.filter = 'blur(' + ((bgS.blurStrength || 30) * effectScale) + 'px)';
         blurBg.style.transform = 'scale(' + (bgS.blurScale || 1.3) + ')';
       }
@@ -861,15 +904,28 @@ function buildCompositionHtml(project, relativeVideoPath) {
         }
 
         // Apply video.currentTime and opacity
-        video.currentTime = videoTime;
+        if (Math.abs(video.currentTime - videoTime) > 0.01) {
+          video.currentTime = videoTime;
+        }
         video.style.opacity = String(mainVideoOpacity);
         if (sourceAudio) {
           sourceAudio.volume = mainVideoOpacity;
         }
 
-        // Sync blur bg time frame-accurately
-        if (bgS.blurEnabled && blurBg && blurBg.tagName === 'VIDEO') {
-          blurBg.currentTime = videoTime;
+        // Sync blur bg time frame-accurately using extracted proxy frames
+        if (bgS.blurEnabled && blurBg) {
+          if (timeSec < introDuration) {
+            blurBg.src = './assets/intro-bg.jpg';
+          } else if (timeSec > introDuration + trimmedVideoDuration) {
+            blurBg.src = './assets/outro-bg.jpg';
+          } else {
+            const mainImg = document.getElementById('__render_frame_source-video__');
+            if (mainImg && mainImg.src) {
+              blurBg.src = mainImg.src;
+            } else {
+              blurBg.src = './assets/intro-bg.jpg';
+            }
+          }
           blurBg.style.opacity = '1';
         }
 
@@ -879,6 +935,15 @@ function buildCompositionHtml(project, relativeVideoPath) {
         } else {
           styleOverlayBox(subtitleLayer, subtitleText, style, cue.text, bottomPx, scale, 1);
         }
+        // Sync logo overlay visibility
+        if (logoOverlay) {
+          if (project.logo && !project.logo.hidden && timeSec >= introDuration && timeSec <= introDuration + trimmedVideoDuration) {
+            logoOverlay.style.display = 'block';
+          } else {
+            logoOverlay.style.display = 'none';
+          }
+        }
+
         renderTextOverlays(timeSec, bottomPx, scale);
 
         // Render Intro Overlay
@@ -964,6 +1029,48 @@ async function renderShortClipWithHyperFrames({
     abortSignal,
   });
   onProgress?.({ status: 'processing', progress: 0.08, stage: 'proxy', message: 'Prepared browser-safe video proxy' });
+
+  // Extract static background frames for intro/outro blocks if blur bg is enabled
+  const bgS = normalizedProject.backgroundSettings || {};
+  const blurEnabled = !!bgS.blurEnabled;
+  const introDuration = normalizedProject.intro && !normalizedProject.intro.hidden ? (normalizedProject.intro.duration || 0) : 0;
+  const outroDuration = normalizedProject.outro && !normalizedProject.outro.hidden ? (normalizedProject.outro.duration || 0) : 0;
+  const trimmedVideoDuration = Math.max(0.05, normalizedProject.durationSec - introDuration - outroDuration);
+
+  if (blurEnabled) {
+    try {
+      const introBgPath = path.join(assetsDir, 'intro-bg.jpg');
+      const outroBgPath = path.join(assetsDir, 'outro-bg.jpg');
+
+      // Extract first frame of active video region (at t=0 in proxy)
+      const introArgs = [
+        '-y',
+        '-ss', '0',
+        '-i', browserSafeSourcePath,
+        '-vframes', '1',
+        '-q:v', '2',
+        introBgPath
+      ];
+      log.info('Extracting static background frame for intro:', introArgs.join(' '));
+      await runFfmpeg(ffmpegPath, introArgs, log, abortSignal);
+
+      // Extract last frame of active video region (at trimmedVideoDuration - 0.05 in proxy)
+      const outroTime = Math.max(0, trimmedVideoDuration - 0.05);
+      const outroArgs = [
+        '-y',
+        '-ss', String(outroTime),
+        '-i', browserSafeSourcePath,
+        '-vframes', '1',
+        '-q:v', '2',
+        outroBgPath
+      ];
+      log.info('Extracting static background frame for outro:', outroArgs.join(' '));
+      await runFfmpeg(ffmpegPath, outroArgs, log, abortSignal);
+    } catch (err) {
+      log.error('Failed to extract static background frames for intro/outro:', err);
+    }
+  }
+
   const renderProject = {
     ...copyProjectLayerAssets(normalizedProject, assetsDir),
     clipStartSec: 0,

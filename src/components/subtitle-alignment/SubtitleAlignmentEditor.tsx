@@ -676,8 +676,36 @@ export function SubtitleAlignmentEditor({
     };
   }, [timelinePanDrag]);
 
-  const selected = useMemo(() => segments.find((segment) => segment.id === selectedId) || selectedSegmentAt(segments, currentSec), [currentSec, segments, selectedId]);
-  const active = useMemo(() => selectedSegmentAt(segments, currentSec), [currentSec, segments]);
+  const active = useMemo(() => {
+    const introActive = intro && !intro.hidden;
+    const outroActive = outro && !outro.hidden;
+    const introDuration = introActive ? (intro?.duration || 0) : 0;
+    const outroDuration = outroActive ? (outro?.duration || 0) : 0;
+
+    const activeVideoStartVirtual = trim.trimStartSec + introDuration;
+    const activeVideoEndVirtual = activeVideoStartVirtual + (clipDurationSec - trim.trimStartSec - trim.trimEndSec);
+
+    if (introActive && currentSec >= trim.trimStartSec && currentSec < activeVideoStartVirtual) {
+      return null;
+    }
+    if (outroActive && currentSec >= activeVideoEndVirtual && currentSec < activeVideoEndVirtual + outroDuration) {
+      return null;
+    }
+
+    const physicalSec = currentSec - introDuration;
+    return selectedSegmentAt(segments, physicalSec);
+  }, [currentSec, segments, trim, intro, outro, clipDurationSec]);
+
+  const selected = useMemo(() => {
+    if (selectedId) {
+      const found = segments.find((s) => s.id === selectedId);
+      if (found) return found;
+    }
+    const introActive = intro && !intro.hidden;
+    const introDuration = introActive ? (intro?.duration || 0) : 0;
+    const physicalSec = currentSec - introDuration;
+    return selectedSegmentAt(segments, physicalSec);
+  }, [currentSec, segments, selectedId, intro]);
   const activeTextBlocks = useMemo(() => textTracks
     .filter((track) => !track.hidden && !track.muted)
     .flatMap((track, trackIndex) => track.blocks
@@ -1002,11 +1030,13 @@ export function SubtitleAlignmentEditor({
           if (audio) audio.currentTime = clipStartSec + currentTrim.trimStartSec;
           video.play().catch(() => undefined);
           audio?.play().catch(() => undefined);
+          blurVideoRef.current?.play().catch(() => undefined);
         }
       } else if (nextSec >= activeVideoEndVirtual && nextSec < outroEndVirtual) {
         // We are in the Outro region
         if (!video.paused) video.pause();
         if (audio && !audio.paused) audio.pause();
+        if (blurVideoRef.current && !blurVideoRef.current.paused) blurVideoRef.current.pause();
 
         nextSec += delta;
       } else if (nextSec >= outroEndVirtual) {
@@ -1017,6 +1047,7 @@ export function SubtitleAlignmentEditor({
         if (video.paused && playing && !video.seeking) {
           video.play().catch(() => undefined);
           audio?.play().catch(() => undefined);
+          blurVideoRef.current?.play().catch(() => undefined);
         }
         
         // Sync virtual playhead with actual video play time
@@ -1036,22 +1067,25 @@ export function SubtitleAlignmentEditor({
           nextSec = activeVideoEndVirtual;
           if (!video.paused) video.pause();
           if (audio && !audio.paused) audio.pause();
+          if (blurVideoRef.current && !blurVideoRef.current.paused) blurVideoRef.current.pause();
         }
       }
 
       // 2. Main audio volume fades based on active intro/outro
       let mainVideoVolume = 1;
-      const physicalSec = mapVirtualToPhysical(nextSec, currentTrim);
+      const introFadeSec = introActive ? (intro?.transitionSec ?? 1.0) : 1.0;
+      const outroFadeSec = outroActive ? (outro?.transitionSec ?? 1.0) : 1.0;
+
       if (introActive && nextSec >= currentTrim.trimStartSec && nextSec < activeVideoStartVirtual) {
         mainVideoVolume = 0;
       } else if (outroActive && nextSec >= activeVideoEndVirtual && nextSec < outroEndVirtual) {
         mainVideoVolume = 0;
       } else {
-        if (introActive && nextSec >= activeVideoStartVirtual && nextSec <= activeVideoStartVirtual + 2.0) {
-          mainVideoVolume = (nextSec - activeVideoStartVirtual) / 2.0;
+        if (introActive && introFadeSec > 0 && nextSec >= activeVideoStartVirtual && nextSec <= activeVideoStartVirtual + introFadeSec) {
+          mainVideoVolume = (nextSec - activeVideoStartVirtual) / introFadeSec;
         }
-        if (outroActive && nextSec >= activeVideoEndVirtual - 2.0 && nextSec <= activeVideoEndVirtual) {
-          mainVideoVolume = Math.min(mainVideoVolume, (activeVideoEndVirtual - nextSec) / 2.0);
+        if (outroActive && outroFadeSec > 0 && nextSec >= activeVideoEndVirtual - outroFadeSec && nextSec <= activeVideoEndVirtual) {
+          mainVideoVolume = Math.min(mainVideoVolume, (activeVideoEndVirtual - nextSec) / outroFadeSec);
         }
       }
 
@@ -1888,14 +1922,24 @@ export function SubtitleAlignmentEditor({
                 </div>
               );
             })}
-            {logo?.src && !logo.hidden && (
-              <img
-                className="alignment-logo-overlay-preview"
-                src={logo.src}
-                alt={logo.name || 'Logo'}
-                style={logoPlacementStyle}
-              />
-            )}
+            {logo?.src && !logo.hidden && (() => {
+              const introActive = intro && !intro.hidden;
+              const introDuration = introActive ? (intro?.duration || 0) : 0;
+              const activeVideoStartVirtual = trim.trimStartSec + introDuration;
+              const activeVideoEndVirtual = activeVideoStartVirtual + (clipDurationSec - trim.trimStartSec - trim.trimEndSec);
+
+              if (currentSec >= activeVideoStartVirtual && currentSec <= activeVideoEndVirtual) {
+                return (
+                  <img
+                    className="alignment-logo-overlay-preview"
+                    src={logo.src}
+                    alt={logo.name || 'Logo'}
+                    style={logoPlacementStyle}
+                  />
+                );
+              }
+              return null;
+            })()}
              {intro?.src && !intro.hidden && currentSec >= trim.trimStartSec && currentSec <= trim.trimStartSec + introDuration && (() => {
               const elapsed = currentSec - trim.trimStartSec;
               const style = computeIntroOutroStyle(intro, elapsed, frameScale);
