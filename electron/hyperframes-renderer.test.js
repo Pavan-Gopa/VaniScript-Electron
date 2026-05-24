@@ -138,6 +138,11 @@ test('buildCompositionHtml carries visual editor background guide and scaled log
   assert.match(html, /logoOverlay\.style\.width = \(120 \* renderScale \* \(project\.logo\.size \|\| 1\)\) \+ 'px';/);
   assert.match(html, /const margin = 40 \* renderScale;/);
   assert.match(html, /logoOverlay\.style\.opacity = String\(project\.logo\.opacity \?\? 1\);/);
+  assert.match(html, /<video id="blur-video" class="clip"[\s\S]*data-track-index="2"/);
+  assert.match(html, /<img id="blur-static" style="display: none;" \/>/);
+  assert.match(html, /blurVideo\.currentTime = videoTime;/);
+  assert.match(html, /blurStatic\.dataset\.currentSrc !== staticSrc/);
+  assert.doesNotMatch(html, /__render_frame_source-video__/);
 });
 
 test('buildMediaSegmentsFilter concats trim and razor-safe media segments', () => {

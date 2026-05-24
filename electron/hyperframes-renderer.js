@@ -443,7 +443,8 @@ function buildCompositionHtml(project, relativeVideoPath) {
         background: #000000;
       }
       #background { position: absolute; inset: 0; background: #000000; }
-      #blur-bg {
+      #blur-video,
+      #blur-static {
         position: absolute; inset: 0; width: 100%; height: 100%;
         object-fit: cover; transform-origin: center; z-index: 0;
         display: ${blurEnabled ? 'block' : 'none'};
@@ -509,7 +510,7 @@ function buildCompositionHtml(project, relativeVideoPath) {
   <body>
     <div id="stage">
       <div id="background"></div>
-      ${blurEnabled ? '<img id="blur-bg" style="display: block;" />' : '<div id="blur-bg"></div>'}
+      ${blurEnabled ? `<video id="blur-video" class="clip" data-start="${introDuration}" data-duration="${trimmedVideoDuration}" data-track-index="2" data-media-start="${project.clipStartSec}" muted playsinline preload="auto" src="${escapeHtml(relativeVideoPath)}"></video><img id="blur-static" style="display: none;" />` : '<div id="blur-video"></div><div id="blur-static"></div>'}
       <div id="gradient-overlay"></div>
       <div id="video-stage">
         <video
@@ -551,7 +552,8 @@ function buildCompositionHtml(project, relativeVideoPath) {
       const project = ${asJsonScript(project)};
       const stage = document.getElementById('stage');
       const background = document.getElementById('background');
-      const blurBg = document.getElementById('blur-bg');
+      const blurVideo = document.getElementById('blur-video');
+      const blurStatic = document.getElementById('blur-static');
       const gradientOverlay = document.getElementById('gradient-overlay');
       const videoStage = document.getElementById('video-stage');
       const video = document.getElementById('source-video');
@@ -651,9 +653,11 @@ function buildCompositionHtml(project, relativeVideoPath) {
       };
 
       // Setup blur background
-      if (bgS.blurEnabled && blurBg) {
-        blurBg.style.filter = 'blur(' + ((bgS.blurStrength || 30) * effectScale) + 'px)';
-        blurBg.style.transform = 'scale(' + (bgS.blurScale || 1.3) + ')';
+      if (bgS.blurEnabled) {
+        [blurVideo, blurStatic].filter(Boolean).forEach((el) => {
+          el.style.filter = 'blur(' + ((bgS.blurStrength || 30) * effectScale) + 'px)';
+          el.style.transform = 'scale(' + (bgS.blurScale || 1.3) + ')';
+        });
       }
       // Setup gradient overlay
       if (bgS.gradientEnabled && gradientOverlay) {
@@ -912,21 +916,33 @@ function buildCompositionHtml(project, relativeVideoPath) {
           sourceAudio.volume = mainVideoOpacity;
         }
 
-        // Sync blur bg time frame-accurately using extracted proxy frames
-        if (bgS.blurEnabled && blurBg) {
-          if (timeSec < introDuration) {
-            blurBg.src = './assets/intro-bg.jpg';
-          } else if (timeSec > introDuration + trimmedVideoDuration) {
-            blurBg.src = './assets/outro-bg.jpg';
-          } else {
-            const mainImg = document.getElementById('__render_frame_source-video__');
-            if (mainImg && mainImg.src) {
-              blurBg.src = mainImg.src;
+        // Keep the main blurred background as a synchronized video track. This is
+        // much cheaper than swapping full-resolution frame data into an image on
+        // every rendered frame. Static images are used only while intro/outro
+        // graphics hide the active video.
+        if (bgS.blurEnabled) {
+          const inIntro = !!(project.intro && !project.intro.hidden && timeSec < introDuration);
+          const inOutro = !!(project.outro && !project.outro.hidden && timeSec > introDuration + trimmedVideoDuration);
+          const staticSrc = inIntro ? './assets/intro-bg.jpg' : inOutro ? './assets/outro-bg.jpg' : '';
+          if (blurStatic) {
+            if (staticSrc) {
+              if (blurStatic.dataset.currentSrc !== staticSrc) {
+                blurStatic.src = staticSrc;
+                blurStatic.dataset.currentSrc = staticSrc;
+              }
+              blurStatic.style.display = 'block';
+              blurStatic.style.opacity = '1';
             } else {
-              blurBg.src = './assets/intro-bg.jpg';
+              blurStatic.style.display = 'none';
             }
           }
-          blurBg.style.opacity = '1';
+          if (blurVideo) {
+            blurVideo.style.display = staticSrc ? 'none' : 'block';
+            blurVideo.style.opacity = staticSrc ? '0' : '1';
+            if (!staticSrc && blurVideo.tagName === 'VIDEO' && Math.abs(blurVideo.currentTime - videoTime) > 0.01) {
+              blurVideo.currentTime = videoTime;
+            }
+          }
         }
 
         const cue = activeCue(timeSec);
@@ -1037,35 +1053,42 @@ async function renderShortClipWithHyperFrames({
   const outroDuration = normalizedProject.outro && !normalizedProject.outro.hidden ? (normalizedProject.outro.duration || 0) : 0;
   const trimmedVideoDuration = Math.max(0.05, normalizedProject.durationSec - introDuration - outroDuration);
 
-  if (blurEnabled) {
+  const hasIntro = !!(normalizedProject.intro && !normalizedProject.intro.hidden && introDuration > 0);
+  const hasOutro = !!(normalizedProject.outro && !normalizedProject.outro.hidden && outroDuration > 0);
+
+  if (blurEnabled && (hasIntro || hasOutro)) {
     try {
       const introBgPath = path.join(assetsDir, 'intro-bg.jpg');
       const outroBgPath = path.join(assetsDir, 'outro-bg.jpg');
 
-      // Extract first frame of active video region (at t=0 in proxy)
-      const introArgs = [
-        '-y',
-        '-ss', '0',
-        '-i', browserSafeSourcePath,
-        '-vframes', '1',
-        '-q:v', '2',
-        introBgPath
-      ];
-      log.info('Extracting static background frame for intro:', introArgs.join(' '));
-      await runFfmpeg(ffmpegPath, introArgs, log, abortSignal);
+      if (hasIntro) {
+        // Extract first frame of active video region (at t=0 in proxy)
+        const introArgs = [
+          '-y',
+          '-ss', '0',
+          '-i', browserSafeSourcePath,
+          '-vframes', '1',
+          '-q:v', '2',
+          introBgPath
+        ];
+        log.info('Extracting static background frame for intro:', introArgs.join(' '));
+        await runFfmpeg(ffmpegPath, introArgs, log, abortSignal);
+      }
 
-      // Extract last frame of active video region (at trimmedVideoDuration - 0.05 in proxy)
-      const outroTime = Math.max(0, trimmedVideoDuration - 0.05);
-      const outroArgs = [
-        '-y',
-        '-ss', String(outroTime),
-        '-i', browserSafeSourcePath,
-        '-vframes', '1',
-        '-q:v', '2',
-        outroBgPath
-      ];
-      log.info('Extracting static background frame for outro:', outroArgs.join(' '));
-      await runFfmpeg(ffmpegPath, outroArgs, log, abortSignal);
+      if (hasOutro) {
+        // Extract last frame of active video region (at trimmedVideoDuration - 0.05 in proxy)
+        const outroTime = Math.max(0, trimmedVideoDuration - 0.05);
+        const outroArgs = [
+          '-y',
+          '-ss', String(outroTime),
+          '-i', browserSafeSourcePath,
+          '-vframes', '1',
+          '-q:v', '2',
+          outroBgPath
+        ];
+        log.info('Extracting static background frame for outro:', outroArgs.join(' '));
+        await runFfmpeg(ffmpegPath, outroArgs, log, abortSignal);
+      }
     } catch (err) {
       log.error('Failed to extract static background frames for intro/outro:', err);
     }
