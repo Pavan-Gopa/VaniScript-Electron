@@ -1201,9 +1201,18 @@ export function SubtitleAlignmentEditor({
         startAt = playStart;
       }
       
-      const physicalSec = mapVirtualToPhysical(startAt, trim);
-      const adjustedPhysical = skipCut(physicalSec);
-      startAt = mapPhysicalToVirtual(adjustedPhysical, trim);
+      const activeVideoStartVirtual = trim.trimStartSec + introDuration;
+      const activeVideoEndVirtual = activeVideoStartVirtual + (clipDurationSec - trim.trimStartSec - trim.trimEndSec);
+      
+      if (
+        !(introActive && startAt >= trim.trimStartSec && startAt < activeVideoStartVirtual) &&
+        !(outroActive && startAt >= activeVideoEndVirtual && startAt < playEnd)
+      ) {
+        // Only do double-mapping and skip-cut if we are NOT inside the Intro or Outro regions
+        const physicalSec = mapVirtualToPhysical(startAt, trim);
+        const adjustedPhysical = skipCut(physicalSec);
+        startAt = mapPhysicalToVirtual(adjustedPhysical, trim);
+      }
 
       lastTimeRef.current = performance.now();
       syncMedia(startAt);
@@ -1627,13 +1636,15 @@ export function SubtitleAlignmentEditor({
 
     let opacity = 1;
     // Fade in right after Intro ends
+    const introFadeSec = introActive ? (intro?.transitionSec ?? 1.0) : 1.0;
     const activeVideoStart = trim.trimStartSec + introDuration;
-    if (introActive && currentSec >= activeVideoStart && currentSec <= activeVideoStart + 2.0) {
-      opacity = (currentSec - activeVideoStart) / 2.0;
+    if (introActive && introFadeSec > 0 && currentSec >= activeVideoStart && currentSec <= activeVideoStart + introFadeSec) {
+      opacity = (currentSec - activeVideoStart) / introFadeSec;
     }
     // Fade out right before Outro starts
-    if (outroActive && currentSec >= outroStart - 2.0 && currentSec <= outroStart) {
-      opacity = Math.min(opacity, (outroStart - currentSec) / 2.0);
+    const outroFadeSec = outroActive ? (outro?.transitionSec ?? 1.0) : 1.0;
+    if (outroActive && outroFadeSec > 0 && currentSec >= outroStart - outroFadeSec && currentSec <= outroStart) {
+      opacity = Math.min(opacity, (outroStart - currentSec) / outroFadeSec);
     }
     return Math.max(0, Math.min(1, opacity));
   })();
@@ -1763,7 +1774,7 @@ export function SubtitleAlignmentEditor({
                 style={{
                   filter: `blur(${bgSettings.blurStrength}px)`,
                   transform: `scale(${bgSettings.blurScale})`,
-                  opacity: mainVideoOpacity,
+                  opacity: 1,
                 }}
                 onLoadedMetadata={() => {
                   if (blurVideoRef.current && videoRef.current) {

@@ -39,6 +39,7 @@ export type IntroOutroOverlaySettings = {
   animation: 'none' | 'fade' | 'pulse' | 'bounce';
   hidden?: boolean;
   speed?: number; // 0 to 2.0 (representing 0% to 200%)
+  transitionSec?: number; // 0 to 3.0 seconds
 };
 
 export type TextOverlayBlock = {

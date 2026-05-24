@@ -849,12 +849,14 @@ function buildCompositionHtml(project, relativeVideoPath) {
         } else {
           videoTime = timeSec - introDuration;
           
-          if (project.intro && !project.intro.hidden && (timeSec - introDuration) <= 2.0) {
-            mainVideoOpacity = (timeSec - introDuration) / 2.0;
+          const introFade = (project.intro && typeof project.intro.transitionSec === 'number') ? project.intro.transitionSec : 1.0;
+          if (project.intro && !project.intro.hidden && introFade > 0 && (timeSec - introDuration) <= introFade) {
+            mainVideoOpacity = (timeSec - introDuration) / introFade;
           }
           const mainVideoEndTime = introDuration + trimmedVideoDuration;
-          if (project.outro && !project.outro.hidden && (mainVideoEndTime - timeSec) <= 2.0) {
-            mainVideoOpacity = Math.min(mainVideoOpacity, (mainVideoEndTime - timeSec) / 2.0);
+          const outroFade = (project.outro && typeof project.outro.transitionSec === 'number') ? project.outro.transitionSec : 1.0;
+          if (project.outro && !project.outro.hidden && outroFade > 0 && (mainVideoEndTime - timeSec) <= outroFade) {
+            mainVideoOpacity = Math.min(mainVideoOpacity, (mainVideoEndTime - timeSec) / outroFade);
           }
         }
 
@@ -868,7 +870,7 @@ function buildCompositionHtml(project, relativeVideoPath) {
         // Sync blur bg time frame-accurately
         if (bgS.blurEnabled && blurBg && blurBg.tagName === 'VIDEO') {
           blurBg.currentTime = videoTime;
-          blurBg.style.opacity = String(mainVideoOpacity);
+          blurBg.style.opacity = '1';
         }
 
         const cue = activeCue(timeSec);

@@ -79,6 +79,18 @@ export function IntroOutroManager({ type, title, description, data, onChange }: 
             <b>{data.duration.toFixed(1)}s</b>
           </label>
           <label style={{ gridTemplateColumns: '140px minmax(0, 1fr) 58px' }}>
+            <span>Transition (Fade)</span>
+            <input
+              type="range"
+              min={0}
+              max={3.0}
+              step={0.1}
+              value={data.transitionSec ?? 1.0}
+              onChange={(event) => onChange({ ...data, transitionSec: Number(event.currentTarget.value) })}
+            />
+            <b>{(data.transitionSec ?? 1.0).toFixed(1)}s</b>
+          </label>
+          <label style={{ gridTemplateColumns: '140px minmax(0, 1fr) 58px' }}>
             <span>Vertical Position (Y)</span>
             <input
               type="range"
