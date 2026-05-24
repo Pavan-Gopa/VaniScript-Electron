@@ -2,7 +2,13 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildCompositionHtml, buildMediaSegmentsFilter, recommendedWorkers } = require('./hyperframes-renderer');
+const {
+  buildCompositionHtml,
+  buildMediaSegmentsFilter,
+  recommendedWorkers,
+  proxyVideoRateForProject,
+  shouldUsePrecomputedBlurProxy,
+} = require('./hyperframes-renderer');
 
 test('buildCompositionHtml emits the HyperFrames producer contract', () => {
   const html = buildCompositionHtml({
@@ -189,4 +195,21 @@ test('buildMediaSegmentsFilter concats trim and razor-safe media segments', () =
 test('recommendedWorkers keeps enough 4K frame capture concurrency', () => {
   assert.equal(recommendedWorkers({ width: 2160, height: 3840 }, 'high'), 4);
   assert.ok(recommendedWorkers({ width: 1080, height: 1920 }, 'standard') >= 2);
+});
+
+test('proxyVideoRateForProject keeps 4K browser-safe proxies visually usable', () => {
+  assert.deepEqual(
+    proxyVideoRateForProject({ width: 2160, height: 3840, sourceWidth: 3840, sourceHeight: 2160 }),
+    { bitrate: '32M', maxrate: '48M', bufsize: '96M' },
+  );
+  assert.deepEqual(
+    proxyVideoRateForProject({ width: 1080, height: 1920, sourceWidth: 1920, sourceHeight: 1080 }),
+    { bitrate: '12M', maxrate: '18M', bufsize: '36M' },
+  );
+});
+
+test('precomputed blur proxy is disabled for standard and high fidelity exports', () => {
+  assert.equal(shouldUsePrecomputedBlurProxy('standard'), false);
+  assert.equal(shouldUsePrecomputedBlurProxy('high'), false);
+  assert.equal(shouldUsePrecomputedBlurProxy('compact'), true);
 });

@@ -237,6 +237,31 @@ function recommendedWorkers(project = {}, quality = 'standard') {
   return Math.max(1, Math.min(maxCpuWorkers, resolutionLimit));
 }
 
+function proxyVideoRateForProject(project = {}) {
+  const outputLongEdge = Math.max(Number(project.width) || 1080, Number(project.height) || 1920);
+  const sourceLongEdge = Math.max(Number(project.sourceWidth) || 0, Number(project.sourceHeight) || 0);
+  const longEdge = Math.max(outputLongEdge, sourceLongEdge);
+
+  if (longEdge >= 3840) {
+    return { bitrate: '32M', maxrate: '48M', bufsize: '96M' };
+  }
+  if (longEdge >= 2560) {
+    return { bitrate: '20M', maxrate: '30M', bufsize: '60M' };
+  }
+  return { bitrate: '12M', maxrate: '18M', bufsize: '36M' };
+}
+
+function shouldUsePrecomputedBlurProxy(qualityPreset) {
+  const override = String(process.env.VANISCRIPT_HYPERFRAMES_PREBLUR || '').trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(override)) return true;
+  if (['0', 'false', 'no', 'off'].includes(override)) return false;
+
+  // The precomputed blur proxy is intentionally limited to draft exports.
+  // At source-based 4K it can create visible macroblocking and did not reduce
+  // frame capture time enough to justify the quality loss.
+  return qualityPreset === 'compact';
+}
+
 function safeSymlinkOrCopy(srcPath, destPath) {
   try {
     fs.symlinkSync(srcPath, destPath);
@@ -377,6 +402,7 @@ async function createBrowserSafeProxy({
   const mediaSegments = Array.isArray(project.mediaSegments) ? project.mediaSegments : [];
   const sourceStat = safeStat(sourcePath);
   const proxyCacheKey = cacheDir ? stableHash({
+    proxyVersion: 2,
     sourcePath,
     mtimeMs: sourceStat?.mtimeMs || 0,
     size: sourceStat?.size || 0,
@@ -434,8 +460,15 @@ async function createBrowserSafeProxy({
     '-c:a', 'aac',
     '-b:a', '320k',
   ];
+  const proxyRate = proxyVideoRateForProject(project);
   const hardwareArgs = process.platform === 'darwin'
-    ? ['-c:v', 'h264_videotoolbox', '-allow_sw', '1', '-b:v', '2.5M', '-maxrate', '3.5M']
+    ? [
+        '-c:v', 'h264_videotoolbox',
+        '-allow_sw', '1',
+        '-b:v', proxyRate.bitrate,
+        '-maxrate', proxyRate.maxrate,
+        '-bufsize', proxyRate.bufsize,
+      ]
     : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24'];
 
   try {
@@ -1238,7 +1271,7 @@ async function renderShortClipWithHyperFrames({
   const trimmedVideoDuration = Math.max(0.05, normalizedProject.durationSec - introDuration - outroDuration);
   let blurBackgroundPath = '';
 
-  if (blurEnabled) {
+  if (blurEnabled && shouldUsePrecomputedBlurProxy(qualityPreset)) {
     const blurProxyStartedAt = Date.now();
     try {
       blurBackgroundPath = await createBlurBackgroundProxy({
@@ -1258,6 +1291,11 @@ async function renderShortClipWithHyperFrames({
       log.warn('HyperFrames blur background proxy failed; falling back to CSS blur.', error.message || String(error));
       blurBackgroundPath = '';
     }
+  } else if (blurEnabled) {
+    log.info('HyperFrames precomputed blur background disabled; using CSS blur for export fidelity.', {
+      qualityPreset,
+      outputSize: `${normalizedProject.width}x${normalizedProject.height}`,
+    });
   }
 
   const hasIntro = !!(normalizedProject.intro && !normalizedProject.intro.hidden && introDuration > 0);
@@ -1437,6 +1475,8 @@ module.exports = {
   buildCompositionHtml,
   buildMediaSegmentsFilter,
   recommendedWorkers,
+  proxyVideoRateForProject,
+  shouldUsePrecomputedBlurProxy,
   renderShortClipWithHyperFrames,
   interpolateFrameState,
 };
