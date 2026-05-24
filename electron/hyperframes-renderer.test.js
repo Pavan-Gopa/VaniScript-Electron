@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildCompositionHtml, buildMediaSegmentsFilter } = require('./hyperframes-renderer');
+const { buildCompositionHtml, buildMediaSegmentsFilter, recommendedWorkers } = require('./hyperframes-renderer');
 
 test('buildCompositionHtml emits the HyperFrames producer contract', () => {
   const html = buildCompositionHtml({
@@ -155,4 +155,9 @@ test('buildMediaSegmentsFilter concats trim and razor-safe media segments', () =
   assert.match(filter, /\[0:a\]atrim=start=108\.000:end=117\.000,asetpts=PTS-STARTPTS\[a1\]/);
   assert.match(filter, /\[v0\]\[a0\]\[v1\]\[a1\]concat=n=2:v=1:a=1\[vcat\]\[aout\]/);
   assert.match(filter, /\[vcat\]scale='min\(1080,iw\)':-2:flags=lanczos\[vout\]/);
+});
+
+test('recommendedWorkers lowers 4K high-quality capture concurrency', () => {
+  assert.equal(recommendedWorkers({ width: 2160, height: 3840 }, 'high'), 2);
+  assert.ok(recommendedWorkers({ width: 1080, height: 1920 }, 'standard') >= 2);
 });

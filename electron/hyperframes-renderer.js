@@ -192,9 +192,24 @@ function mapQualityPreset(qualityPreset) {
   return 'standard';
 }
 
-function recommendedWorkers() {
+function recommendedWorkers(project = {}, quality = 'standard') {
+  const override = Number(process.env.VANISCRIPT_HYPERFRAMES_WORKERS || '');
+  if (Number.isFinite(override) && override > 0) {
+    return Math.max(1, Math.min(8, Math.round(override)));
+  }
+
   const cpuCount = Math.max(1, (os.cpus() || []).length);
-  return Math.max(2, Math.min(4, cpuCount - 1));
+  const pixels = Math.max(0, (Number(project.width) || 0) * (Number(project.height) || 0));
+  const maxCpuWorkers = Math.max(1, Math.min(4, cpuCount - 1));
+
+  // 4K vertical captures are memory/GPU heavy because each frame contains the
+  // foreground video, blurred video layer, overlays, and subtitles. Using fewer
+  // concurrent captures is usually faster and quieter than saturating Chromium.
+  const isNear4k = pixels >= 6_000_000;
+  const isNear2k = pixels >= 3_000_000;
+  const resolutionLimit = isNear4k ? (quality === 'high' ? 2 : 3) : isNear2k ? 3 : 4;
+
+  return Math.max(1, Math.min(maxCpuWorkers, resolutionLimit));
 }
 
 function safeSymlinkOrCopy(srcPath, destPath) {
@@ -1121,11 +1136,12 @@ async function renderShortClipWithHyperFrames({
     const { createRenderJob, executeRenderJob } = await import('@hyperframes/producer');
     const quality = mapQualityPreset(qualityPreset);
     const renderFps = Math.max(1, Math.round(renderProject.fps || 30));
+    const workers = recommendedWorkers(renderProject, quality);
     const job = createRenderJob({
       fps: renderFps,
       quality,
       format: format === 'mov' ? 'mov' : 'mp4',
-      workers: recommendedWorkers(),
+      workers,
       useGpu: true,
       entryFile: 'index.html',
       producerConfig: {
@@ -1133,7 +1149,7 @@ async function renderShortClipWithHyperFrames({
         quality,
         format: 'jpeg',
         jpegQuality: quality === 'high' ? 92 : quality === 'draft' ? 80 : 86,
-        concurrency: recommendedWorkers(),
+        concurrency: workers,
         coresPerWorker: 2,
         minParallelFrames: 30,
         largeRenderThreshold: 240,
@@ -1167,7 +1183,7 @@ async function renderShortClipWithHyperFrames({
       format: format === 'mov' ? 'mov' : 'mp4',
       fps: renderProject.fps,
       size: `${renderProject.width}x${renderProject.height}`,
-      workers: recommendedWorkers(),
+      workers,
       useGpu: true,
       projectDir,
       htmlPath,
@@ -1197,6 +1213,7 @@ async function renderShortClipWithHyperFrames({
 module.exports = {
   buildCompositionHtml,
   buildMediaSegmentsFilter,
+  recommendedWorkers,
   renderShortClipWithHyperFrames,
   interpolateFrameState,
 };

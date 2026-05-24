@@ -82,6 +82,14 @@ type ShortsExportProgress = {
   stage: string;
   cancelling: boolean;
 };
+
+function normalizeExportProgressFraction(progress: number | undefined): number {
+  const raw = Number(progress ?? 0);
+  if (!Number.isFinite(raw)) return 0;
+  const fraction = raw > 1 ? raw / 100 : raw;
+  return Math.min(Math.max(fraction, 0), 1);
+}
+
 type GlossaryDraft = {
   mode: 'existing' | 'new';
   selectedText: string;
@@ -436,7 +444,7 @@ export default function App() {
       if (!payload?.jobId || payload.jobId !== shortsExportJobIdRef.current) return;
       const total = Math.max(1, shortsExportTotalRef.current || 1);
       const completed = Math.max(0, shortsExportCompletedRef.current || 0);
-      const currentProgress = Math.min(Math.max(payload.progress ?? 0, 0), 1);
+      const currentProgress = normalizeExportProgressFraction(payload.progress);
       const overall = ((completed + currentProgress) / total) * 100;
       setShortsExportProgress((prev) => prev ? {
         ...prev,
