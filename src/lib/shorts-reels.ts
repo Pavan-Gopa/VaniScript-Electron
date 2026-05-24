@@ -28,6 +28,19 @@ export type LogoOverlaySettings = {
   hidden?: boolean;
 };
 
+export type IntroOutroOverlaySettings = {
+  id: string;
+  src: string;
+  name?: string;
+  duration: number; // 1 to 5 seconds
+  x: number; // 0 to 100
+  y: number; // 0 to 100
+  scale: number; // 0.1 to 2.0
+  animation: 'none' | 'fade' | 'pulse' | 'bounce';
+  hidden?: boolean;
+  speed?: number; // 0 to 2.0 (representing 0% to 200%)
+};
+
 export type TextOverlayBlock = {
   id: string;
   startSec: number;
@@ -98,6 +111,8 @@ export type ShortsClipPlan = {
   logo?: LogoOverlaySettings;
   textTracks?: TextOverlayTrack[];
   audioTracks?: ExtraAudioTrack[];
+  intro?: IntroOutroOverlaySettings;
+  outro?: IntroOutroOverlaySettings;
   /** Language-specific overlay state for bilingual clips. */
   sourceLogo?: LogoOverlaySettings;
   targetLogo?: LogoOverlaySettings;
@@ -105,6 +120,10 @@ export type ShortsClipPlan = {
   targetTextTracks?: TextOverlayTrack[];
   sourceAudioTracks?: ExtraAudioTrack[];
   targetAudioTracks?: ExtraAudioTrack[];
+  sourceIntro?: IntroOutroOverlaySettings;
+  targetIntro?: IntroOutroOverlaySettings;
+  sourceOutro?: IntroOutroOverlaySettings;
+  targetOutro?: IntroOutroOverlaySettings;
 };
 
 export type ShortsPlanLanguageMode = 'source' | 'target' | 'bilingual';

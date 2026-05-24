@@ -4,6 +4,7 @@ import { formatPlaybackClock } from '../lib/karaoke';
 import type { ProviderOption } from '../lib/provider-registry';
 import {
   ExtraAudioTrack,
+  IntroOutroOverlaySettings,
   LogoOverlaySettings,
   parseTimestampToSeconds,
   ShortsClipPlan,
@@ -88,6 +89,8 @@ type Props = {
   onSavePlanLogo?: (index: number, language: ShortsDisplayLanguage, logo?: LogoOverlaySettings) => void;
   onSavePlanTextTracks?: (index: number, language: ShortsDisplayLanguage, tracks: TextOverlayTrack[]) => void;
   onSavePlanAudioTracks?: (index: number, language: ShortsDisplayLanguage, tracks: ExtraAudioTrack[]) => void;
+  onSavePlanIntro?: (index: number, language: ShortsDisplayLanguage, intro?: IntroOutroOverlaySettings) => void;
+  onSavePlanOutro?: (index: number, language: ShortsDisplayLanguage, outro?: IntroOutroOverlaySettings) => void;
   getPlanCues: (plan: ShortsClipPlan, language?: ShortsDisplayLanguage) => { startSec: number; endSec: number; text: string }[];
   getPlanDetailText: (plan: ShortsClipPlan) => { source: string; target: string };
   onExportIdeas: () => void;
@@ -196,6 +199,8 @@ export function ShortsReelsPanel({
   onSavePlanLogo,
   onSavePlanTextTracks,
   onSavePlanAudioTracks,
+  onSavePlanIntro,
+  onSavePlanOutro,
   getPlanCues,
   getPlanDetailText,
   onExportIdeas,
@@ -514,9 +519,11 @@ export function ShortsReelsPanel({
           initialCuts={editorPlan.timelineCuts}
           initialTrim={editorPlan.timelineTrim}
           initialBackgroundSettings={editorPlan.backgroundSettings}
-          initialLogo={displayLanguage === 'source' ? editorPlan.sourceLogo || editorPlan.logo : editorPlan.targetLogo || editorPlan.logo}
-          initialTextTracks={displayLanguage === 'source' ? editorPlan.sourceTextTracks || editorPlan.textTracks : editorPlan.targetTextTracks || editorPlan.textTracks}
-          initialAudioTracks={displayLanguage === 'source' ? editorPlan.sourceAudioTracks || editorPlan.audioTracks : editorPlan.targetAudioTracks || editorPlan.audioTracks}
+  initialLogo={displayLanguage === 'source' ? editorPlan.sourceLogo || editorPlan.logo : editorPlan.targetLogo || editorPlan.logo}
+  initialTextTracks={displayLanguage === 'source' ? editorPlan.sourceTextTracks || editorPlan.textTracks : editorPlan.targetTextTracks || editorPlan.textTracks}
+  initialAudioTracks={displayLanguage === 'source' ? editorPlan.sourceAudioTracks || editorPlan.audioTracks : editorPlan.targetAudioTracks || editorPlan.audioTracks}
+  initialIntro={displayLanguage === 'source' ? editorPlan.sourceIntro || editorPlan.intro : editorPlan.targetIntro || editorPlan.intro}
+  initialOutro={displayLanguage === 'source' ? editorPlan.sourceOutro || editorPlan.outro : editorPlan.targetOutro || editorPlan.outro}
           settings={settings}
           subtitleMaxCharsPerLine={subtitleMaxCharsPerLine}
           subtitleMaxLines={subtitleMaxLines}
@@ -560,6 +567,12 @@ export function ShortsReelsPanel({
           onSaveAudioTracks={(tracks) => {
             if (editorIndex !== null) onSavePlanAudioTracks?.(editorIndex, displayLanguage, tracks);
           }}
+          onSaveIntro={(intro) => {
+            if (editorIndex !== null) onSavePlanIntro?.(editorIndex, displayLanguage, intro);
+          }}
+          onSaveOutro={(outro) => {
+            if (editorIndex !== null) onSavePlanOutro?.(editorIndex, displayLanguage, outro);
+          }}
           onSettingsChange={onChange}
           onResetAll={() => {
             if (editorIndex !== null) {
@@ -577,6 +590,10 @@ export function ShortsReelsPanel({
                 targetTextTracks: [],
                 sourceAudioTracks: [],
                 targetAudioTracks: [],
+                sourceIntro: undefined,
+                targetIntro: undefined,
+                sourceOutro: undefined,
+                targetOutro: undefined,
               });
             }
           }}

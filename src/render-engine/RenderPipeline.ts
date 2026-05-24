@@ -108,6 +108,7 @@ export function buildRenderMediaSegments(
   clipEndSec: number,
   cuts: TimelineCut[] | undefined,
   trim: TimelineTrim | undefined,
+  introDuration: number = 0,
 ): RenderMediaSegment[] {
   const clipDurationSec = Math.max(0, clipEndSec - clipStartSec);
   const normalizedTrim = normalizeTrim(trim, clipDurationSec);
@@ -116,7 +117,7 @@ export function buildRenderMediaSegments(
   const windowEnd = clipDurationSec - normalizedTrim.trimEndSec;
   const mediaSegments: RenderMediaSegment[] = [];
   let cursor = windowStart;
-  let outputCursor = 0;
+  let outputCursor = introDuration;
 
   const pushSegment = (start: number, end: number) => {
     if (end <= start + 0.01) return;
@@ -139,36 +140,49 @@ export function buildRenderMediaSegments(
   return mediaSegments.length > 0
     ? mediaSegments
     : [{
-        sourceStartSec: clipStartSec,
-        sourceEndSec: clipEndSec,
-        outputStartSec: 0,
-        outputEndSec: clipDurationSec,
+        sourceStartSec: clipStartSec + windowStart,
+        sourceEndSec: clipStartSec + windowEnd,
+        outputStartSec: introDuration,
+        outputEndSec: introDuration + Math.max(0, windowEnd - windowStart),
       }];
 }
 
 function shiftCuesForTrim(
   cues: Array<{ startSec: number; endSec: number; text: string }>,
   trimStartSec: number,
+  introDuration: number = 0,
 ): Array<{ startSec: number; endSec: number; text: string }> {
-  if (trimStartSec <= 0) return cues;
   return cues.map((cue) => ({
     ...cue,
-    startSec: cue.startSec - trimStartSec,
-    endSec: cue.endSec - trimStartSec,
+    startSec: cue.startSec - trimStartSec + introDuration,
+    endSec: cue.endSec - trimStartSec + introDuration,
   }));
 }
 
-function shiftKeyframesForTrim(keyframes: FrameKeyframe[], trimStartSec: number, durationSec: number): FrameKeyframe[] {
-  if (trimStartSec <= 0) return keyframes.filter((point) => point.time <= durationSec + 0.01);
+function shiftKeyframesForTrim(
+  keyframes: FrameKeyframe[],
+  trimStartSec: number,
+  durationSec: number,
+  introDuration: number = 0,
+): FrameKeyframe[] {
   const baseFrame = {
     ...interpolateFrameState(keyframes, trimStartSec),
     id: 'frame_trim_start',
-    time: 0,
+    time: introDuration,
   };
   const shifted = keyframes
-    .map((point) => ({ ...point, time: point.time - trimStartSec }))
-    .filter((point) => point.time >= -0.01 && point.time <= durationSec + 0.01)
-    .map((point) => ({ ...point, time: Math.max(0, point.time) }));
+    .map((point) => ({ ...point, time: point.time - trimStartSec + introDuration }))
+    .filter((point) => point.time >= introDuration - 0.01 && point.time <= durationSec + 0.01)
+    .map((point) => ({ ...point, time: Math.max(introDuration, point.time) }));
+
+  if (introDuration > 0) {
+    const introFrame = {
+      ...baseFrame,
+      id: 'frame_intro_start',
+      time: 0,
+    };
+    return [introFrame, baseFrame, ...shifted.filter((point) => point.time > introDuration + 0.01)];
+  }
   return [baseFrame, ...shifted.filter((point) => point.time > 0.01)];
 }
 
@@ -176,13 +190,19 @@ export function buildShortsRenderProject(input: ShortsRenderProjectInput): Short
   const clipDurationSec = Math.max(0, input.clipEndSec - input.clipStartSec);
   const trim = normalizeTrim(input.timelineTrim, clipDurationSec);
   const cuts = normalizeCuts(input.timelineCuts, clipDurationSec, trim);
-  const mediaSegments = buildRenderMediaSegments(input.clipStartSec, input.clipEndSec, cuts, trim);
-  const durationSec = Math.max(0.05, mediaSegments[mediaSegments.length - 1]?.outputEndSec || clipDurationSec || 1);
+
+  const introActive = input.intro && !input.intro.hidden;
+  const outroActive = input.outro && !input.outro.hidden;
+  const introDuration = introActive ? (input.intro?.duration || 0) : 0;
+  const outroDuration = outroActive ? (input.outro?.duration || 0) : 0;
+
+  const mediaSegments = buildRenderMediaSegments(input.clipStartSec, input.clipEndSec, cuts, trim, introDuration);
+  const durationSec = Math.max(0.05, (mediaSegments[mediaSegments.length - 1]?.outputEndSec || (clipDurationSec - trim.trimStartSec - trim.trimEndSec)) + outroDuration);
   const fps = Math.max(1, Math.round(input.fps || 30));
   const initialKeyframes = input.frameKeyframes?.length
     ? input.frameKeyframes
     : [{ ...DEFAULT_FRAME, backgroundColor: '#000000' }];
-  const keyframes = shiftKeyframesForTrim(initialKeyframes, trim.trimStartSec, durationSec);
+  const keyframes = shiftKeyframesForTrim(initialKeyframes, trim.trimStartSec, durationSec, introDuration);
 
   return {
     id: input.id,
@@ -197,7 +217,7 @@ export function buildShortsRenderProject(input: ShortsRenderProjectInput): Short
     clipEndSec: input.clipEndSec,
     durationSec,
     durationInFrames: Math.max(1, Math.ceil(durationSec * fps)),
-    subtitles: normalizeRenderSubtitles(shiftCuesForTrim(input.cues, trim.trimStartSec), durationSec),
+    subtitles: normalizeRenderSubtitles(shiftCuesForTrim(input.cues, trim.trimStartSec, introDuration), durationSec),
     captionStyle: input.style,
     subtitleBottomMargin: input.subtitleBottomMargin,
     frameKeyframes: keyframes.length ? keyframes : [{ ...DEFAULT_FRAME, backgroundColor: initialKeyframes[0]?.backgroundColor || '#000000' }],
@@ -206,7 +226,19 @@ export function buildShortsRenderProject(input: ShortsRenderProjectInput): Short
     timelineTrim: trim,
     backgroundSettings: input.backgroundSettings,
     logo: input.logo,
-    textTracks: input.textTracks || [],
-    audioTracks: input.audioTracks || [],
+    textTracks: (input.textTracks || []).map((track) => ({
+      ...track,
+      blocks: (track.blocks || []).map((block) => ({
+        ...block,
+        startSec: block.startSec - trim.trimStartSec + introDuration,
+        endSec: block.endSec - trim.trimStartSec + introDuration,
+      })),
+    })),
+    audioTracks: (input.audioTracks || []).map((track) => ({
+      ...track,
+      startSec: track.startSec - trim.trimStartSec + introDuration,
+    })),
+    intro: input.intro,
+    outro: input.outro,
   };
 }

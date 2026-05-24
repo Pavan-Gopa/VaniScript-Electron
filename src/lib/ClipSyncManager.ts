@@ -23,6 +23,7 @@
 import type { FrameKeyframe, AlignedSubtitleSegment } from './subtitle-alignment';
 import type {
   ExtraAudioTrack,
+  IntroOutroOverlaySettings,
   LogoOverlaySettings,
   ShortsClipPlan,
   TextOverlayTrack,
@@ -57,6 +58,10 @@ export type SyncableMotionPatch = {
   targetTextTracks?: TextOverlayTrack[];
   sourceAudioTracks?: ExtraAudioTrack[];
   targetAudioTracks?: ExtraAudioTrack[];
+  sourceIntro?: IntroOutroOverlaySettings;
+  targetIntro?: IntroOutroOverlaySettings;
+  sourceOutro?: IntroOutroOverlaySettings;
+  targetOutro?: IntroOutroOverlaySettings;
 };
 
 function retimeWords(
@@ -271,6 +276,22 @@ export function buildSyncPatch(
     mirror.sourceAudioTracks = appliedPatch.targetAudioTracks ? structuredClone(appliedPatch.targetAudioTracks) : undefined;
     hasChanges = true;
   }
+  if ('sourceIntro' in appliedPatch) {
+    mirror.targetIntro = appliedPatch.sourceIntro ? structuredClone(appliedPatch.sourceIntro) : undefined;
+    hasChanges = true;
+  }
+  if ('targetIntro' in appliedPatch) {
+    mirror.sourceIntro = appliedPatch.targetIntro ? structuredClone(appliedPatch.targetIntro) : undefined;
+    hasChanges = true;
+  }
+  if ('sourceOutro' in appliedPatch) {
+    mirror.targetOutro = appliedPatch.sourceOutro ? structuredClone(appliedPatch.sourceOutro) : undefined;
+    hasChanges = true;
+  }
+  if ('targetOutro' in appliedPatch) {
+    mirror.sourceOutro = appliedPatch.targetOutro ? structuredClone(appliedPatch.targetOutro) : undefined;
+    hasChanges = true;
+  }
 
   if (!hasChanges) return null;
 
@@ -320,6 +341,10 @@ function syncBilingualPlanOnEnable(plan: ShortsClipPlan): ShortsClipPlan {
   else if (plan.targetTextTracks && !plan.sourceTextTracks) updated.sourceTextTracks = structuredClone(plan.targetTextTracks);
   if (plan.sourceAudioTracks && !plan.targetAudioTracks) updated.targetAudioTracks = structuredClone(plan.sourceAudioTracks);
   else if (plan.targetAudioTracks && !plan.sourceAudioTracks) updated.sourceAudioTracks = structuredClone(plan.targetAudioTracks);
+  if (plan.sourceIntro && !plan.targetIntro) updated.targetIntro = structuredClone(plan.sourceIntro);
+  else if (plan.targetIntro && !plan.sourceIntro) updated.sourceIntro = structuredClone(plan.targetIntro);
+  if (plan.sourceOutro && !plan.targetOutro) updated.targetOutro = structuredClone(plan.sourceOutro);
+  else if (plan.targetOutro && !plan.sourceOutro) updated.sourceOutro = structuredClone(plan.targetOutro);
   return updated;
 }
 

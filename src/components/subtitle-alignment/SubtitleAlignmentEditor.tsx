@@ -26,10 +26,11 @@ import {
   type BoundaryResolution,
 } from '../../lib/TimelineCutEngine';
 import { ShortsSettings } from '../ShortsReelsPanel';
-import type { ExtraAudioTrack, LogoOverlaySettings, TextOverlayBlock, TextOverlayTrack } from '../../lib/shorts-reels';
+import type { ExtraAudioTrack, LogoOverlaySettings, TextOverlayBlock, TextOverlayTrack, IntroOutroOverlaySettings } from '../../lib/shorts-reels';
 import { AudioTrackManager } from './AudioTrackManager';
 import { LogoManager } from './LogoManager';
 import { TextTrackManager } from './TextTrackManager';
+import { IntroOutroManager } from './IntroOutroManager';
 
 type AlignmentCue = { startSec: number; endSec: number; text: string };
 
@@ -73,6 +74,10 @@ type Props = {
   onSaveLogo?: (logo?: LogoOverlaySettings) => void;
   onSaveTextTracks?: (tracks: TextOverlayTrack[]) => void;
   onSaveAudioTracks?: (tracks: ExtraAudioTrack[]) => void;
+  initialIntro?: IntroOutroOverlaySettings;
+  initialOutro?: IntroOutroOverlaySettings;
+  onSaveIntro?: (intro?: IntroOutroOverlaySettings) => void;
+  onSaveOutro?: (outro?: IntroOutroOverlaySettings) => void;
   onResetAll?: () => void;
   onSettingsChange?: (settings: ShortsSettings) => void;
   /** Switch between source/target language inside the editor */
@@ -142,6 +147,52 @@ function interpolateFrameKeyframes(keyframes: FrameKeyframe[], time: number): Fr
   };
 }
 
+function computeIntroOutroStyle(
+  item: IntroOutroOverlaySettings,
+  elapsed: number,
+  frameScale: number
+): { opacity: number; transform: string; width: string } {
+  const baseWidth = 300 * frameScale * item.scale;
+  let opacity = 1;
+  let scale = 1;
+  let translateY = 0;
+
+  const fadeDuration = Math.min(0.5, item.duration * 0.15);
+  if (elapsed < fadeDuration) {
+    opacity = elapsed / fadeDuration;
+  } else if (elapsed > item.duration - fadeDuration) {
+    opacity = Math.max(0, (item.duration - elapsed) / fadeDuration);
+  }
+
+  const speedFactor = item.speed !== undefined ? item.speed : 1.0;
+
+  if (item.animation === 'pulse') {
+    const period = 1.5;
+    const progress = ((elapsed * speedFactor) % period) / period;
+    scale = 1 + 0.06 * Math.sin(progress * 2 * Math.PI);
+  }
+
+  if (item.animation === 'bounce') {
+    const period = 1.2;
+    const progress = ((elapsed * speedFactor) % period) / period;
+    if (progress < 0.4) {
+      translateY = 15 * Math.sin((progress / 0.4) * Math.PI);
+    } else if (progress < 0.7) {
+      translateY = -4 * Math.sin(((progress - 0.4) / 0.3) * Math.PI);
+    } else if (progress < 0.9) {
+      translateY = 4 * Math.sin(((progress - 0.7) / 0.2) * Math.PI);
+    } else {
+      translateY = 0;
+    }
+  }
+
+  return {
+    opacity: Math.max(0, Math.min(1, opacity)),
+    transform: `translate(-50%, -50%) scale(${scale}) translateY(${translateY * frameScale}px)`,
+    width: `${baseWidth}px`,
+  };
+}
+
 export function SubtitleAlignmentEditor({
   isOpen,
   title,
@@ -178,6 +229,10 @@ export function SubtitleAlignmentEditor({
   onSaveLogo,
   onSaveTextTracks,
   onSaveAudioTracks,
+  initialIntro,
+  initialOutro,
+  onSaveIntro,
+  onSaveOutro,
   onResetAll,
   onSettingsChange,
   currentLanguage,
@@ -230,8 +285,16 @@ export function SubtitleAlignmentEditor({
   const [logo, setLogo] = useState<LogoOverlaySettings | undefined>(initialLogo);
   const [textTracks, setTextTracks] = useState<TextOverlayTrack[]>(initialTextTracks || []);
   const [audioTracks, setAudioTracks] = useState<ExtraAudioTrack[]>(initialAudioTracks || []);
+  const [intro, setIntro] = useState<IntroOutroOverlaySettings | undefined>(initialIntro);
+  const [outro, setOutro] = useState<IntroOutroOverlaySettings | undefined>(initialOutro);
   const [selectedTextBlock, setSelectedTextBlock] = useState<{ trackId: string; blockId: string } | null>(null);
   const [styleTarget, setStyleTarget] = useState<string>('subtitles');
+
+  const introActive = intro && !intro.hidden;
+  const outroActive = outro && !outro.hidden;
+  const introDuration = introActive ? (intro?.duration || 0) : 0;
+  const outroDuration = outroActive ? (outro?.duration || 0) : 0;
+  const virtualDuration = introDuration + clipDurationSec + outroDuration;
   const blurVideoRef = useRef<HTMLVideoElement>(null);
   const undoStackRef = useRef(new UndoRedoStack());
   const [undoTick, setUndoTick] = useState(0); // force re-render on undo/redo
@@ -314,6 +377,8 @@ export function SubtitleAlignmentEditor({
     setLogo(initialLogo ? structuredClone(initialLogo) : undefined);
     setTextTracks(initialTextTracks ? structuredClone(initialTextTracks) : []);
     setAudioTracks(initialAudioTracks ? structuredClone(initialAudioTracks) : []);
+    setIntro(initialIntro ? structuredClone(initialIntro) : undefined);
+    setOutro(initialOutro ? structuredClone(initialOutro) : undefined);
 
     if (isClipChange) {
       setCurrentSec(0);
@@ -335,7 +400,7 @@ export function SubtitleAlignmentEditor({
     return () => {
       window.clearTimeout(timer);
     };
-  }, [clipDurationSec, clipEndSec, clipStartSec, initialAudioTracks, initialBackgroundSettings, initialCues, initialCuts, initialFrameKeyframes, initialLogo, initialSegments, initialTextTracks, initialTrim, isOpen, settings.zoom, title]);
+  }, [clipDurationSec, clipEndSec, clipStartSec, initialAudioTracks, initialBackgroundSettings, initialCues, initialCuts, initialFrameKeyframes, initialLogo, initialSegments, initialTextTracks, initialTrim, isOpen, settings.zoom, title, initialIntro, initialOutro]);
 
   useEffect(() => {
     if (!isOpen || !initializedRef.current || !onDraftChange) return;
@@ -386,6 +451,18 @@ export function SubtitleAlignmentEditor({
     const timer = window.setTimeout(() => onSaveAudioTracks(audioTracks), 150);
     return () => window.clearTimeout(timer);
   }, [audioTracks, isOpen, onSaveAudioTracks]);
+
+  useEffect(() => {
+    if (!isOpen || !initializedRef.current || !onSaveIntro) return;
+    const timer = window.setTimeout(() => onSaveIntro(intro), 150);
+    return () => window.clearTimeout(timer);
+  }, [isOpen, intro, onSaveIntro]);
+
+  useEffect(() => {
+    if (!isOpen || !initializedRef.current || !onSaveOutro) return;
+    const timer = window.setTimeout(() => onSaveOutro(outro), 150);
+    return () => window.clearTimeout(timer);
+  }, [isOpen, outro, onSaveOutro]);
 
   useEffect(() => {
     if (!isOpen || !initializedRef.current || !onSaveBackgroundSettings) return;
@@ -468,7 +545,7 @@ export function SubtitleAlignmentEditor({
     const trackEl = waveformTrackRef.current || timelineRef.current;
     if (!trackEl) return;
     const rect = trackEl.getBoundingClientRect();
-    const pxPerSec = rect.width / clipDurationSec;
+    const pxPerSec = rect.width / virtualDuration;
     const move = (event: PointerEvent) => {
       const deltaPx = event.clientX - trimDragState.pointerX;
       const deltaSec = deltaPx / pxPerSec;
@@ -499,7 +576,7 @@ export function SubtitleAlignmentEditor({
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
     };
-  }, [clipDurationSec, trimDragState]);
+  }, [clipDurationSec, virtualDuration, trimDragState]);
 
   useEffect(() => {
     if (!dragState) return;
@@ -678,9 +755,22 @@ export function SubtitleAlignmentEditor({
     const shadowColor = style.shadowColor ?? '#000000';
     const shadowOpacity = style.shadowOpacity ?? 0.72;
     const shadowHexOpacity = Math.round(shadowOpacity * 255).toString(16).padStart(2, '0');
-    const textShadow = dist > 0 || shadowBlur > 0
-      ? `${shadowX}px ${shadowY}px ${shadowBlur}px ${shadowColor}${shadowHexOpacity}`
-      : 'none';
+
+    // Combine Outline & Drop Shadow as multiple text-shadow entries to fix internal overlaps
+    const shadows: string[] = [];
+    if (textStroke > 0) {
+      const steps = 16;
+      for (let i = 0; i < steps; i++) {
+        const angle = (i * 2 * Math.PI) / steps;
+        const x = (textStroke * Math.cos(angle)).toFixed(2);
+        const y = (textStroke * Math.sin(angle)).toFixed(2);
+        shadows.push(`${x}px ${y}px 0px ${textStrokeColor}`);
+      }
+    }
+    if (dist > 0 || shadowBlur > 0) {
+      shadows.push(`${shadowX}px ${shadowY}px ${shadowBlur}px ${shadowColor}${shadowHexOpacity}`);
+    }
+    const textShadow = shadows.length > 0 ? shadows.join(', ') : 'none';
 
     return {
       color: style.textColor,
@@ -694,7 +784,7 @@ export function SubtitleAlignmentEditor({
       bottom: `${bottomPx}px`,
       padding: `${paddingY}px ${paddingX}px`,
       textShadow,
-      WebkitTextStroke: textStroke > 0 ? `${textStroke}px ${textStrokeColor}` : '0 transparent',
+      WebkitTextStroke: '0 transparent',
       position: 'absolute',
       overflow: 'visible',
     };
@@ -742,9 +832,10 @@ export function SubtitleAlignmentEditor({
       : { ...bgSettingsRef.current, frameGuideColor: '#ffaa19' };
   }, [currentSec, frameKeyframes, isOpen]);
 
-  // Playback boundaries derived from trim
+  // Playback boundaries derived from trim, adjusted for intro/outro graphic durations
+
   const playStart = trim.trimStartSec;
-  const playEnd = clipDurationSec - trim.trimEndSec;
+  const playEnd = introDuration + clipDurationSec - trim.trimEndSec + outroDuration;
 
   /** Find the cut region the given time falls inside, reading from ref for RAF safety. */
   function findCutAtRef(sec: number): TimelineCut | null {
@@ -773,7 +864,7 @@ export function SubtitleAlignmentEditor({
   }
 
   function extraAudioGain(track: ExtraAudioTrack, localSec: number): number {
-    const start = Math.max(0, track.startSec);
+    const start = track.startSec; // Allow negative start times (relative to original video start)
     const end = extraAudioEnd(track);
     if (track.muted || localSec < start || localSec > end) return 0;
     const local = localSec - start;
@@ -808,10 +899,54 @@ export function SubtitleAlignmentEditor({
     });
   }
 
+  function mapVirtualToPhysical(virtualSec: number, currentTrim: TimelineTrim): number {
+    const introActive = intro && !intro.hidden;
+    const outroActive = outro && !outro.hidden;
+    const introDuration = introActive ? (intro?.duration || 0) : 0;
+    const outroDuration = outroActive ? (outro?.duration || 0) : 0;
+
+    if (virtualSec < currentTrim.trimStartSec) {
+      return Math.max(0, virtualSec);
+    }
+    if (virtualSec >= currentTrim.trimStartSec && virtualSec < currentTrim.trimStartSec + introDuration) {
+      return currentTrim.trimStartSec;
+    }
+    const activeVideoEndVirtual = currentTrim.trimStartSec + introDuration + (clipDurationSec - currentTrim.trimStartSec - currentTrim.trimEndSec);
+    if (virtualSec >= currentTrim.trimStartSec + introDuration && virtualSec < activeVideoEndVirtual) {
+      return virtualSec - introDuration;
+    }
+    const outroEndVirtual = activeVideoEndVirtual + outroDuration;
+    if (virtualSec >= activeVideoEndVirtual && virtualSec < outroEndVirtual) {
+      return clipDurationSec - currentTrim.trimEndSec;
+    }
+    return Math.min(clipDurationSec, virtualSec - introDuration - outroDuration);
+  }
+
+  function mapPhysicalToVirtual(physicalSec: number, currentTrim: TimelineTrim): number {
+    const introActive = intro && !intro.hidden;
+    const outroActive = outro && !outro.hidden;
+    const introDuration = introActive ? (intro?.duration || 0) : 0;
+    const outroDuration = outroActive ? (outro?.duration || 0) : 0;
+
+    if (physicalSec < currentTrim.trimStartSec) {
+      return physicalSec;
+    }
+    if (physicalSec >= currentTrim.trimStartSec && physicalSec <= clipDurationSec - currentTrim.trimEndSec) {
+      return physicalSec + introDuration;
+    }
+    return physicalSec + introDuration + outroDuration;
+  }
+
+  const lastTimeRef = useRef(0);
+  const currentSecRef = useRef(0);
+  currentSecRef.current = currentSec;
+
   useEffect(() => {
     if (!isOpen || !playing) return;
     let frameId = 0;
     let stopped = false;
+    lastTimeRef.current = performance.now();
+
     const tick = () => {
       if (stopped) return;
       const video = videoRef.current;
@@ -820,51 +955,138 @@ export function SubtitleAlignmentEditor({
       // Always schedule next frame first (never let the loop die)
       frameId = window.requestAnimationFrame(tick);
 
-      // Only process when video is actually playing
-      if (!video || video.paused || video.seeking) return;
+      const now = performance.now();
+      const delta = (now - lastTimeRef.current) / 1000;
+      lastTimeRef.current = now;
 
-      let local = video.currentTime - clipStartSec;
+      if (!video) return;
+
       const currentTrim = trimRef.current;
-      const currentPlayEnd = clipDurationSec - currentTrim.trimEndSec;
-      const currentPlayStart = currentTrim.trimStartSec;
+      const introActive = intro && !intro.hidden;
+      const outroActive = outro && !outro.hidden;
+      const introDuration = introActive ? (intro?.duration || 0) : 0;
+      const outroDuration = outroActive ? (outro?.duration || 0) : 0;
 
-      // Skip over cut regions (read from ref for latest data)
-      const hit = findCutAtRef(local);
-      if (hit) {
+      const currentPlayStart = currentTrim.trimStartSec; // virtual coordinates start at trimStartSec
+      const currentPlayEnd = introDuration + clipDurationSec - currentTrim.trimEndSec + outroDuration; // virtual coordinates end
+
+      let nextSec = currentSecRef.current;
+
+      const activeVideoStartVirtual = currentTrim.trimStartSec + introDuration;
+      const activeVideoEndVirtual = activeVideoStartVirtual + (clipDurationSec - currentTrim.trimStartSec - currentTrim.trimEndSec);
+      const outroEndVirtual = activeVideoEndVirtual + outroDuration;
+
+      // 1. Playback Clock advancement in Virtual Coordinates
+      if (nextSec < currentTrim.trimStartSec) {
+        // We are in trimmed start
+        nextSec = currentPlayStart;
+      } else if (nextSec < activeVideoStartVirtual) {
+        // We are in the Intro region
+        if (!video.paused) video.pause();
+        if (audio && !audio.paused) audio.pause();
+
+        nextSec += delta;
+
+        if (nextSec >= activeVideoStartVirtual) {
+          // Transition into main video
+          nextSec = activeVideoStartVirtual;
+          video.currentTime = clipStartSec + currentTrim.trimStartSec;
+          if (audio) audio.currentTime = clipStartSec + currentTrim.trimStartSec;
+          video.play().catch(() => undefined);
+          audio?.play().catch(() => undefined);
+        }
+      } else if (nextSec > activeVideoEndVirtual && nextSec < outroEndVirtual) {
+        // We are in the Outro region
+        if (!video.paused) video.pause();
+        if (audio && !audio.paused) audio.pause();
+
+        nextSec += delta;
+      } else if (nextSec >= outroEndVirtual) {
+        // Trimmed end region
+        nextSec = outroEndVirtual;
+      } else {
+        // We are in the Main video region
+        if (video.paused && playing && !video.seeking) {
+          video.play().catch(() => undefined);
+          audio?.play().catch(() => undefined);
+        }
+        
+        // Sync virtual playhead with actual video play time
+        const physicalSec = Math.max(0, video.currentTime - clipStartSec);
+        nextSec = physicalSec + introDuration;
+
+        // Skip over cut regions (read from ref for latest data)
+        const hit = findCutAtRef(physicalSec);
+        if (hit) {
           const jumpTo = hit.endSec + 0.02;
           video.currentTime = clipStartSec + jumpTo;
           if (audio) audio.currentTime = clipStartSec + jumpTo;
-          syncExtraAudio(jumpTo, true);
-          setCurrentSec(jumpTo);
-          return; // wait for next frame after seek
+          nextSec = jumpTo + introDuration;
         }
 
-      // Respect trim end / loop
-      if (local >= currentPlayEnd - 0.02) {
+        if (nextSec >= activeVideoEndVirtual) {
+          nextSec = activeVideoEndVirtual;
+          if (!video.paused) video.pause();
+          if (audio && !audio.paused) audio.pause();
+        }
+      }
+
+      // 2. Main audio volume fades based on active intro/outro
+      let mainVideoVolume = 1;
+      const physicalSec = mapVirtualToPhysical(nextSec, currentTrim);
+      if (introActive && nextSec >= currentTrim.trimStartSec && nextSec < activeVideoStartVirtual) {
+        mainVideoVolume = 0;
+      } else if (outroActive && nextSec >= activeVideoEndVirtual && nextSec < outroEndVirtual) {
+        mainVideoVolume = 0;
+      } else {
+        if (introActive && nextSec >= activeVideoStartVirtual && nextSec <= activeVideoStartVirtual + 2.0) {
+          mainVideoVolume = (nextSec - activeVideoStartVirtual) / 2.0;
+        }
+        if (outroActive && nextSec >= activeVideoEndVirtual - 2.0 && nextSec <= activeVideoEndVirtual) {
+          mainVideoVolume = Math.min(mainVideoVolume, (activeVideoEndVirtual - nextSec) / 2.0);
+        }
+      }
+
+      if (audio) {
+        audio.volume = Math.max(0, Math.min(1, mainVideoVolume));
+      }
+
+      // 3. Respect trim end / loop
+      if (nextSec >= currentPlayEnd - 0.02) {
         if (loopingRef.current) {
-          const restart = skipCutRef(currentPlayStart);
-          video.currentTime = clipStartSec + restart;
-          if (audio) audio.currentTime = clipStartSec + restart;
-          syncExtraAudio(restart, true);
-          setCurrentSec(restart);
+          const restart = currentPlayStart;
+          nextSec = restart;
+          const physicalRestart = mapVirtualToPhysical(restart, currentTrim);
+          if (restart >= activeVideoStartVirtual && restart <= activeVideoEndVirtual) {
+            video.currentTime = clipStartSec + physicalRestart;
+            if (audio) audio.currentTime = clipStartSec + physicalRestart;
+            video.play().catch(() => undefined);
+            audio?.play().catch(() => undefined);
+          } else {
+            if (!video.paused) video.pause();
+            if (audio && !audio.paused) audio.pause();
+          }
         } else {
           stopped = true;
           window.cancelAnimationFrame(frameId);
           video.pause();
           audio?.pause();
           extraAudioRefs.current.forEach((node) => node.pause());
-          setCurrentSec(currentPlayEnd);
+          nextSec = currentPlayEnd;
           setPlaying(false);
         }
-      } else {
-        const nextLocal = Math.min(Math.max(0, local), clipDurationSec);
-        syncExtraAudio(nextLocal, true);
-        setCurrentSec(nextLocal);
       }
+
+      // 4. Sync extra audios
+      syncExtraAudio(mapVirtualToPhysical(nextSec, currentTrim), playing && (nextSec < activeVideoStartVirtual || nextSec > activeVideoEndVirtual || !video.paused));
+      
+      currentSecRef.current = nextSec;
+      setCurrentSec(nextSec);
     };
+
     frameId = window.requestAnimationFrame(tick);
     return () => { stopped = true; window.cancelAnimationFrame(frameId); };
-  }, [audioTracks, clipDurationSec, clipStartSec, isOpen, playing]);
+  }, [audioTracks, clipDurationSec, clipStartSec, isOpen, playing, intro, outro]);
 
   useEffect(() => {
     let cancelled = false;
@@ -891,26 +1113,28 @@ export function SubtitleAlignmentEditor({
 
   if (!isOpen) return null;
 
-  function syncMedia(nextLocalSec: number) {
-    const safe = Math.min(Math.max(0, nextLocalSec), clipDurationSec);
-    if (videoRef.current) videoRef.current.currentTime = clipStartSec + safe;
-    if (audioRef.current) audioRef.current.currentTime = clipStartSec + safe;
-    if (blurVideoRef.current) blurVideoRef.current.currentTime = clipStartSec + safe;
-    syncExtraAudio(safe, false);
-    setCurrentSec(safe);
+  function syncMedia(virtualSec: number) {
+    const safeV = Math.min(Math.max(0, virtualSec), virtualDuration);
+    const videoTime = mapVirtualToPhysical(safeV, trim);
+    if (videoRef.current) videoRef.current.currentTime = clipStartSec + videoTime;
+    if (audioRef.current) audioRef.current.currentTime = clipStartSec + videoTime;
+    if (blurVideoRef.current) blurVideoRef.current.currentTime = clipStartSec + videoTime;
+    syncExtraAudio(videoTime, false);
+    setCurrentSec(safeV);
   }
 
-  function seek(nextLocalSec: number) {
+  function seek(virtualSec: number) {
     releaseTypingFocus();
-    // If seeking lands inside a cut, skip to end of cut
-    const adjusted = skipCut(nextLocalSec);
-    syncMedia(adjusted);
+    const safeV = Math.min(Math.max(0, virtualSec), virtualDuration);
+    const physicalSec = mapVirtualToPhysical(safeV, trim);
+    const adjustedPhysical = skipCut(physicalSec);
+    syncMedia(mapPhysicalToVirtual(adjustedPhysical, trim));
   }
 
   function seekFromPointer(clientX: number, element: HTMLElement | null) {
     const rect = element?.getBoundingClientRect();
     if (!rect || rect.width <= 0) return;
-    seek(((clientX - rect.left) / rect.width) * clipDurationSec);
+    seek(((clientX - rect.left) / rect.width) * virtualDuration);
   }
 
   function handleTimelineWheel(event: React.WheelEvent) {
@@ -948,32 +1172,38 @@ export function SubtitleAlignmentEditor({
     const video = videoRef.current;
     const audio = audioRef.current;
     if (!video) return;
-    if (video.paused) {
-      // If at end or past trim end, restart from trim start
+    if (!playing) {
+      // If at end or past play end, restart from play start
       let startAt = currentSec;
       if (startAt >= playEnd - 0.05 || startAt < playStart) {
-        startAt = skipCut(playStart);
+        startAt = playStart;
       }
-      // Skip cut if starting inside one
-      startAt = skipCut(startAt);
+      
+      const physicalSec = mapVirtualToPhysical(startAt, trim);
+      const adjustedPhysical = skipCut(physicalSec);
+      startAt = mapPhysicalToVirtual(adjustedPhysical, trim);
+
+      lastTimeRef.current = performance.now();
       syncMedia(startAt);
-      if (audio) {
-        audio.currentTime = clipStartSec + startAt;
-        await audio.play().catch(() => undefined);
+
+      if (startAt >= trim.trimStartSec + introDuration && startAt <= introDuration + clipDurationSec - trim.trimEndSec) {
+        const videoTime = mapVirtualToPhysical(startAt, trim);
+        if (audio) {
+          audio.currentTime = clipStartSec + videoTime;
+          await audio.play().catch(() => undefined);
+        }
+        video.currentTime = clipStartSec + videoTime;
+        try {
+          await video.play();
+          blurVideoRef.current?.play().catch(() => undefined);
+        } catch (error) {
+          console.warn('Visual editor video playback failed.', error);
+          audio?.pause();
+          blurVideoRef.current?.pause();
+        }
       }
-      video.currentTime = clipStartSec + startAt;
-      try {
-        await video.play();
-        blurVideoRef.current?.play().catch(() => undefined);
-        syncExtraAudio(startAt, true);
-        setPlaying(true);
-      } catch (error) {
-        console.warn('Visual editor video playback failed.', error);
-        audio?.pause();
-        extraAudioRefs.current.forEach((node) => node.pause());
-        blurVideoRef.current?.pause();
-        setPlaying(false);
-      }
+      syncExtraAudio(mapVirtualToPhysical(startAt, trim), true);
+      setPlaying(true);
     } else {
       video.pause();
       audio?.pause();
@@ -984,15 +1214,12 @@ export function SubtitleAlignmentEditor({
   }
 
   function handleTimeUpdate() {
-    // Cut/trim/loop skipping is handled exclusively by the RAF tick loop.
-    // This handler just updates currentSec for scrub display when not playing
-    // (e.g. after a manual seek or when video fires timeupdate while paused).
     const video = videoRef.current;
     if (!video || playing) return; // RAF tick handles it when playing
     const local = video.currentTime - clipStartSec;
     const safe = Math.min(Math.max(0, local), clipDurationSec);
     syncExtraAudio(safe, false);
-    setCurrentSec(safe);
+    setCurrentSec(mapPhysicalToVirtual(safe, trim));
   }
 
   /** Reset everything to the initial state as if opening the editor for the first time. */
@@ -1027,6 +1254,8 @@ export function SubtitleAlignmentEditor({
     setRazorActive(false);
     setRazorStart(null);
     setLogo(undefined);
+    setIntro(undefined);
+    setOutro(undefined);
     setTextTracks([]);
     setAudioTracks([]);
     undoStackRef.current.clear();
@@ -1043,6 +1272,8 @@ export function SubtitleAlignmentEditor({
       onSaveLogo?.(undefined);
       onSaveTextTracks?.([]);
       onSaveAudioTracks?.([]);
+      onSaveIntro?.(undefined);
+      onSaveOutro?.(undefined);
     }
   }
 
@@ -1060,7 +1291,7 @@ export function SubtitleAlignmentEditor({
       pointerX: event.clientX,
       originalStart: segment.start,
       originalEnd: segment.end,
-      pixelsPerSecond: Math.max(1, rect.width / clipDurationSec),
+      pixelsPerSecond: Math.max(1, rect.width / virtualDuration),
     });
   }
 
@@ -1080,7 +1311,7 @@ export function SubtitleAlignmentEditor({
       pointerX: event.clientX,
       originalStart: block.startSec,
       originalEnd: block.endSec,
-      pixelsPerSecond: Math.max(1, rect.width / clipDurationSec),
+      pixelsPerSecond: Math.max(1, rect.width / virtualDuration),
     });
   }
 
@@ -1096,7 +1327,7 @@ export function SubtitleAlignmentEditor({
       pointerX: event.clientX,
       originalStart: track.startSec,
       originalEnd: extraAudioEnd(track),
-      pixelsPerSecond: Math.max(1, rect.width / clipDurationSec),
+      pixelsPerSecond: Math.max(1, rect.width / virtualDuration),
     });
   }
 
@@ -1336,6 +1567,34 @@ export function SubtitleAlignmentEditor({
     setRazorStart(null);
   }
 
+  // Main video opacity calculations
+  const mainVideoOpacity = (() => {
+    const introActive = intro && !intro.hidden;
+    const outroActive = outro && !outro.hidden;
+    if (introActive && currentSec < trim.trimStartSec) return 0;
+    if (outroActive && currentSec > clipDurationSec - trim.trimEndSec) return 0;
+    let opacity = 1;
+    if (introActive && currentSec >= trim.trimStartSec && currentSec <= trim.trimStartSec + 2.0) {
+      opacity = (currentSec - trim.trimStartSec) / 2.0;
+    }
+    const playEndTrim = clipDurationSec - trim.trimEndSec;
+    if (outroActive && currentSec >= playEndTrim - 2.0 && currentSec <= playEndTrim) {
+      opacity = Math.min(opacity, (playEndTrim - currentSec) / 2.0);
+    }
+    return Math.max(0, Math.min(1, opacity));
+  })();
+
+  const activeVideoDuration = Math.max(0, clipDurationSec - trim.trimStartSec - trim.trimEndSec);
+
+  const N = waveformPeaks.length;
+  const safeClipDur = clipDurationSec || 1;
+  const startIndex = N > 0 ? Math.round((trim.trimStartSec / safeClipDur) * N) : 0;
+  const endIndex = N > 0 ? Math.round(((clipDurationSec - trim.trimEndSec) / safeClipDur) * N) : 0;
+
+  const startPeaks = waveformPeaks.slice(0, startIndex);
+  const activePeaks = waveformPeaks.slice(startIndex, endIndex);
+  const endPeaks = waveformPeaks.slice(endIndex);
+
   return (
     <div className="alignment-backdrop">
       <div className="alignment-editor">
@@ -1450,6 +1709,7 @@ export function SubtitleAlignmentEditor({
                 style={{
                   filter: `blur(${bgSettings.blurStrength}px)`,
                   transform: `scale(${bgSettings.blurScale})`,
+                  opacity: mainVideoOpacity,
                 }}
                 onLoadedMetadata={() => {
                   if (blurVideoRef.current && videoRef.current) {
@@ -1477,6 +1737,7 @@ export function SubtitleAlignmentEditor({
               playsInline
               style={{
                 transform: `translate(${framePanX}%, ${framePanY}%) scale(${frameZoom})`,
+                opacity: mainVideoOpacity,
                 ...(bgSettings.featherEnabled ? {
                   WebkitMaskImage: `linear-gradient(to bottom, transparent 0px, black ${bgSettings.featherTop ?? 0}px, black calc(100% - ${bgSettings.featherBottom ?? 0}px), transparent 100%)`,
                   maskImage: `linear-gradient(to bottom, transparent 0px, black ${bgSettings.featherTop ?? 0}px, black calc(100% - ${bgSettings.featherBottom ?? 0}px), transparent 100%)`,
@@ -1570,6 +1831,46 @@ export function SubtitleAlignmentEditor({
                 style={logoPlacementStyle}
               />
             )}
+             {intro?.src && !intro.hidden && currentSec >= (trim.trimStartSec - intro.duration) && currentSec <= trim.trimStartSec && (() => {
+              const elapsed = currentSec - (trim.trimStartSec - intro.duration);
+              const style = computeIntroOutroStyle(intro, elapsed, frameScale);
+              return (
+                <img
+                  className="alignment-intro-overlay-preview"
+                  src={intro.src}
+                  alt={intro.name || 'Intro'}
+                  style={{
+                    position: 'absolute',
+                    left: '50%',
+                    top: `${intro.y}%`,
+                    pointerEvents: 'none',
+                    height: 'auto',
+                    zIndex: 10,
+                    ...style,
+                  }}
+                />
+              );
+            })()}
+            {outro?.src && !outro.hidden && currentSec >= (clipDurationSec - trim.trimEndSec) && currentSec <= (clipDurationSec - trim.trimEndSec + outro.duration) && (() => {
+              const elapsed = currentSec - (clipDurationSec - trim.trimEndSec);
+              const style = computeIntroOutroStyle(outro, elapsed, frameScale);
+              return (
+                <img
+                  className="alignment-outro-overlay-preview"
+                  src={outro.src}
+                  alt={outro.name || 'Outro'}
+                  style={{
+                    position: 'absolute',
+                    left: '50%',
+                    top: `${outro.y}%`,
+                    pointerEvents: 'none',
+                    height: 'auto',
+                    zIndex: 10,
+                    ...style,
+                  }}
+                />
+              );
+            })()}
             </div>
           </div>
         </div>
@@ -1583,7 +1884,7 @@ export function SubtitleAlignmentEditor({
           >
             {playing ? <Pause size={15} /> : <Play size={15} />}
           </button>
-          <span className="alignment-time-chip">{formatPlaybackClock(currentSec)} / {formatPlaybackClock(clipDurationSec)}</span>
+          <span className="alignment-time-chip">{formatPlaybackClock(currentSec)} / {formatPlaybackClock(virtualDuration)}</span>
           <button
             type="button"
             className={`alignment-razor-btn ${razorActive ? 'active' : ''}`}
@@ -1605,7 +1906,7 @@ export function SubtitleAlignmentEditor({
           )}
           {(trim.trimStartSec > 0 || trim.trimEndSec > 0) && (
             <span className="alignment-time-chip" style={{ fontSize: '10px' }}>
-              In: {formatPlaybackClock(playStart)} — Out: {formatPlaybackClock(playEnd)}
+              In: {formatPlaybackClock(playStart + introDuration)} — Out: {formatPlaybackClock(playEnd)}
             </span>
           )}
         </div>
@@ -1633,16 +1934,128 @@ export function SubtitleAlignmentEditor({
               style={{ width: `${timelineZoom * 100}%` }}
             >
               <div className="alignment-track-bar" />
-              {/* Trim handles */}
+              
+              {/* Trimmed-out start of original video */}
               {trim.trimStartSec > 0 && (
-                <div className="alignment-trim-region trim-start" style={{ width: `${pct(trim.trimStartSec, clipDurationSec)}%` }} />
+                <div
+                  className="alignment-trim-region trim-start"
+                  style={{
+                    position: 'absolute',
+                    left: 0,
+                    width: `${pct(trim.trimStartSec, virtualDuration)}%`,
+                    height: '100%',
+                    top: 0,
+                    zIndex: 2,
+                  }}
+                />
               )}
+
+              {/* Shaded boundary for Intro in Video Track */}
+              {introActive && (
+                <div
+                  className="alignment-intro-block"
+                  style={{
+                    position: 'absolute',
+                    left: `${pct(trim.trimStartSec, virtualDuration)}%`,
+                    width: `${pct(introDuration, virtualDuration)}%`,
+                    height: '100%',
+                    top: 0,
+                    background: 'linear-gradient(90deg, rgba(147, 51, 234, 0.15) 0%, rgba(147, 51, 234, 0.3) 100%)',
+                    borderLeft: '2px dashed #9333ea',
+                    borderRight: '2px dashed #9333ea',
+                    pointerEvents: 'none',
+                    userSelect: 'none',
+                    boxSizing: 'border-box',
+                    zIndex: 2,
+                  }}
+                />
+              )}
+
+              {/* Shifting media container (Active Video) */}
+              <div
+                className="alignment-media-container"
+                style={{
+                  position: 'absolute',
+                  left: `${pct(trim.trimStartSec + introDuration, virtualDuration)}%`,
+                  width: `${pct(activeVideoDuration, virtualDuration)}%`,
+                  height: '100%',
+                  top: 0,
+                }}
+              >
+                {/* Cut regions */}
+                {cuts.map((cut, i) => {
+                  if (cut.endSec <= trim.trimStartSec || cut.startSec >= clipDurationSec - trim.trimEndSec) return null;
+                  const visibleStart = Math.max(trim.trimStartSec, cut.startSec);
+                  const visibleEnd = Math.min(clipDurationSec - trim.trimEndSec, cut.endSec);
+                  return (
+                    <div
+                      key={i}
+                      className="alignment-cut-region"
+                      style={{
+                        left: `${pct(visibleStart - trim.trimStartSec, activeVideoDuration)}%`,
+                        width: `${pct(visibleEnd - visibleStart, activeVideoDuration)}%`
+                      }}
+                      title={`Cut: ${formatPlaybackClock(cut.startSec)} → ${formatPlaybackClock(cut.endSec)} — press Backspace to delete`}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        pushUndo();
+                        setCuts((prev) => {
+                          const next = removeCut(prev, i);
+                          cutsRef.current = next;
+                          return next;
+                        });
+                      }}
+                      onClick={() => {
+                        seek(mapPhysicalToVirtual(cut.startSec, trim));
+                      }}
+                    />
+                  );
+                })}
+              </div>
+
+              {/* Shaded boundary for Outro in Video Track */}
+              {outroActive && (
+                <div
+                  className="alignment-outro-block"
+                  style={{
+                    position: 'absolute',
+                    left: `${pct(clipDurationSec - trim.trimEndSec + introDuration, virtualDuration)}%`,
+                    width: `${pct(outroDuration, virtualDuration)}%`,
+                    height: '100%',
+                    top: 0,
+                    background: 'linear-gradient(90deg, rgba(147, 51, 234, 0.3) 0%, rgba(147, 51, 234, 0.15) 100%)',
+                    borderLeft: '2px dashed #9333ea',
+                    borderRight: '2px dashed #9333ea',
+                    pointerEvents: 'none',
+                    userSelect: 'none',
+                    boxSizing: 'border-box',
+                    zIndex: 2,
+                  }}
+                />
+              )}
+
+              {/* Trimmed-out end of original video */}
               {trim.trimEndSec > 0 && (
-                <div className="alignment-trim-region trim-end" style={{ width: `${pct(trim.trimEndSec, clipDurationSec)}%` }} />
+                <div
+                  className="alignment-trim-region trim-end"
+                  style={{
+                    position: 'absolute',
+                    left: `${pct(virtualDuration - trim.trimEndSec, virtualDuration)}%`,
+                    width: `${pct(trim.trimEndSec, virtualDuration)}%`,
+                    height: '100%',
+                    top: 0,
+                    zIndex: 2,
+                  }}
+                />
               )}
+
+              {/* Trim handles (positioned relative to virtual timeline) */}
               <div
                 className="alignment-trim-handle trim-handle-start"
-                style={{ left: `${pct(trim.trimStartSec, clipDurationSec)}%` }}
+                style={{
+                  left: `${pct(trim.trimStartSec + introDuration, virtualDuration)}%`,
+                  zIndex: 4,
+                }}
                 onPointerDown={(e) => {
                   e.preventDefault();
                   pushUndo();
@@ -1651,35 +2064,18 @@ export function SubtitleAlignmentEditor({
               />
               <div
                 className="alignment-trim-handle trim-handle-end"
-                style={{ right: `${pct(trim.trimEndSec, clipDurationSec)}%` }}
+                style={{
+                  left: `${pct(clipDurationSec - trim.trimEndSec + introDuration, virtualDuration)}%`,
+                  zIndex: 4,
+                }}
                 onPointerDown={(e) => {
                   e.preventDefault();
                   pushUndo();
                   setTrimDragState({ edge: 'end', pointerX: e.clientX, original: trim.trimEndSec });
                 }}
               />
-              {/* Cut regions */}
-              {cuts.map((cut, i) => (
-                <div
-                  key={i}
-                  className="alignment-cut-region"
-                  style={{ left: `${pct(cut.startSec, clipDurationSec)}%`, width: `${pct(cut.endSec - cut.startSec, clipDurationSec)}%` }}
-                  title={`Cut: ${formatPlaybackClock(cut.startSec)} → ${formatPlaybackClock(cut.endSec)} — press Backspace to delete`}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    pushUndo();
-                    setCuts((prev) => {
-                      const next = removeCut(prev, i);
-                      cutsRef.current = next;
-                      return next;
-                    });
-                  }}
-                  onClick={() => {
-                    seek(cut.startSec);
-                  }}
-                />
-              ))}
-              <b className="alignment-track-playhead" style={{ left: `${pct(currentSec, clipDurationSec)}%` }} />
+
+              <b className="alignment-track-playhead" style={{ left: `${pct(currentSec, virtualDuration)}%`, zIndex: 10 }} />
             </div>
           </div>
 
@@ -1692,49 +2088,163 @@ export function SubtitleAlignmentEditor({
               style={{ width: `${timelineZoom * 100}%` }}
               onPointerDown={(event) => {
                 event.preventDefault();
+                const rect = waveformTrackRef.current?.getBoundingClientRect();
+                if (!rect || rect.width <= 0) return;
+                const virtualSec = ((event.clientX - rect.left) / rect.width) * virtualDuration;
+                const physicalSec = virtualSec - introDuration;
                 if (razorActive) {
-                  const rect = waveformTrackRef.current?.getBoundingClientRect();
-                  if (!rect || rect.width <= 0) return;
-                  const sec = ((event.clientX - rect.left) / rect.width) * clipDurationSec;
-                  if (razorStart === null) {
-                    setRazorStart(sec);
-                  } else {
-                    const start = Math.min(razorStart, sec);
-                    const end = Math.max(razorStart, sec);
-                    handleRazorCut(start, end);
+                  if (physicalSec >= 0 && physicalSec <= clipDurationSec) {
+                    if (razorStart === null) {
+                      setRazorStart(physicalSec);
+                    } else {
+                      const start = Math.min(razorStart, physicalSec);
+                      const end = Math.max(razorStart, physicalSec);
+                      handleRazorCut(start, end);
+                    }
                   }
                 } else {
-                  seekFromPointer(event.clientX, waveformTrackRef.current);
+                  seek(virtualSec);
                   setScrubbing(true);
                 }
               }}
             >
-              <div className="alignment-waveform-fill" style={{ width: `${pct(currentSec, clipDurationSec)}%` }} />
-              {waveformPeaks.length > 0 ? waveformPeaks.map((peak, index) => (
-                <i key={index} style={{ height: `${Math.max(5, peak * 100)}%` }} />
-              )) : (
-                <em>{waveformError || 'Loading waveform...'}</em>
+              {waveformPeaks.length > 0 ? (
+                <>
+                  {/* Trimmed start peaks */}
+                  {trim.trimStartSec > 0 && (
+                    <div
+                      className="alignment-waveform-section trimmed-start"
+                      style={{
+                        position: 'absolute',
+                        left: 0,
+                        width: `${pct(trim.trimStartSec, virtualDuration)}%`,
+                        height: '100%',
+                        display: 'flex',
+                        alignItems: 'center',
+                        opacity: 0.35,
+                      }}
+                    >
+                      {startPeaks.map((peak, index) => (
+                        <i key={`start-${index}`} style={{ height: `${Math.max(5, peak * 100)}%` }} />
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Intro block */}
+                  {introActive && (
+                    <div
+                      className="alignment-intro-block-audio"
+                      style={{
+                        position: 'absolute',
+                        left: `${pct(trim.trimStartSec, virtualDuration)}%`,
+                        width: `${pct(introDuration, virtualDuration)}%`,
+                        height: '100%',
+                        background: 'rgba(147, 51, 234, 0.12)',
+                        borderLeft: '1px dashed rgba(147, 51, 234, 0.4)',
+                        borderRight: '1px dashed rgba(147, 51, 234, 0.4)',
+                        boxSizing: 'border-box',
+                        pointerEvents: 'none',
+                        zIndex: 2,
+                      }}
+                    />
+                  )}
+
+                  {/* Active video peaks */}
+                  <div
+                    className="alignment-waveform-section active"
+                    style={{
+                      position: 'absolute',
+                      left: `${pct(trim.trimStartSec + introDuration, virtualDuration)}%`,
+                      width: `${pct(activeVideoDuration, virtualDuration)}%`,
+                      height: '100%',
+                      display: 'flex',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <div
+                      className="alignment-waveform-fill"
+                      style={{
+                        width: `${Math.min(100, pct(Math.max(0, currentSec - (trim.trimStartSec + introDuration)), activeVideoDuration))}%`
+                      }}
+                    />
+                    {activePeaks.map((peak, index) => (
+                      <i key={`active-${index}`} style={{ height: `${Math.max(5, peak * 100)}%` }} />
+                    ))}
+
+                    {razorStart !== null && (
+                      <div className="alignment-razor-mark" style={{ left: `${pct(razorStart - trim.trimStartSec, activeVideoDuration)}%` }} />
+                    )}
+                    {cuts.map((cut, i) => {
+                      if (cut.endSec <= trim.trimStartSec || cut.startSec >= clipDurationSec - trim.trimEndSec) return null;
+                      const visibleStart = Math.max(trim.trimStartSec, cut.startSec);
+                      const visibleEnd = Math.min(clipDurationSec - trim.trimEndSec, cut.endSec);
+                      return (
+                        <div
+                          key={`ac${i}`}
+                          className="alignment-cut-region"
+                          style={{
+                            left: `${pct(visibleStart - trim.trimStartSec, activeVideoDuration)}%`,
+                            width: `${pct(visibleEnd - visibleStart, activeVideoDuration)}%`
+                          }}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            pushUndo();
+                            setCuts((prev) => {
+                              const next = removeCut(prev, i);
+                              cutsRef.current = next;
+                              return next;
+                            });
+                          }}
+                        />
+                      );
+                    })}
+                  </div>
+
+                  {/* Outro block */}
+                  {outroActive && (
+                    <div
+                      className="alignment-outro-block-audio"
+                      style={{
+                        position: 'absolute',
+                        left: `${pct(clipDurationSec - trim.trimEndSec + introDuration, virtualDuration)}%`,
+                        width: `${pct(outroDuration, virtualDuration)}%`,
+                        height: '100%',
+                        background: 'rgba(147, 51, 234, 0.12)',
+                        borderLeft: '1px dashed rgba(147, 51, 234, 0.4)',
+                        borderRight: '1px dashed rgba(147, 51, 234, 0.4)',
+                        boxSizing: 'border-box',
+                        pointerEvents: 'none',
+                        zIndex: 2,
+                      }}
+                    />
+                  )}
+
+                  {/* Trimmed end peaks */}
+                  {trim.trimEndSec > 0 && (
+                    <div
+                      className="alignment-waveform-section trimmed-end"
+                      style={{
+                        position: 'absolute',
+                        left: `${pct(virtualDuration - trim.trimEndSec, virtualDuration)}%`,
+                        width: `${pct(trim.trimEndSec, virtualDuration)}%`,
+                        height: '100%',
+                        display: 'flex',
+                        alignItems: 'center',
+                        opacity: 0.35,
+                      }}
+                    >
+                      {endPeaks.map((peak, index) => (
+                        <i key={`end-${index}`} style={{ height: `${Math.max(5, peak * 100)}%` }} />
+                      ))}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <em style={{ position: 'absolute', width: '100%', textAlign: 'center', left: 0 }}>
+                  {waveformError || 'Loading waveform...'}
+                </em>
               )}
-              {razorStart !== null && (
-                <div className="alignment-razor-mark" style={{ left: `${pct(razorStart, clipDurationSec)}%` }} />
-              )}
-              {cuts.map((cut, i) => (
-                <div
-                  key={`ac${i}`}
-                  className="alignment-cut-region"
-                  style={{ left: `${pct(cut.startSec, clipDurationSec)}%`, width: `${pct(cut.endSec - cut.startSec, clipDurationSec)}%` }}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    pushUndo();
-                    setCuts((prev) => {
-                      const next = removeCut(prev, i);
-                      cutsRef.current = next;
-                      return next;
-                    });
-                  }}
-                />
-              ))}
-              <b style={{ left: `${pct(currentSec, clipDurationSec)}%` }} />
+              <b className="alignment-track-playhead" style={{ left: `${pct(currentSec, virtualDuration)}%`, zIndex: 10 }} />
             </div>
           </div>
 
@@ -1742,16 +2252,79 @@ export function SubtitleAlignmentEditor({
           <div className="alignment-track-row alignment-track-extra-audio" key={track.id}>
             <span className="alignment-track-label">Audio {trackIndex + 1}</span>
             <div className="alignment-track-content" style={{ width: `${timelineZoom * 100}%` }}>
+              {/* Shaded boundaries for Intro/Outro */}
+              {trim.trimStartSec > 0 && (
+                <div
+                  className="alignment-trim-region trim-start"
+                  style={{
+                    position: 'absolute',
+                    left: 0,
+                    width: `${pct(trim.trimStartSec, virtualDuration)}%`,
+                    height: '100%',
+                    top: 0,
+                    zIndex: 2,
+                  }}
+                />
+              )}
+              {introActive && (
+                <div
+                  className="alignment-intro-block-audio"
+                  style={{
+                    position: 'absolute',
+                    left: `${pct(trim.trimStartSec, virtualDuration)}%`,
+                    width: `${pct(introDuration, virtualDuration)}%`,
+                    height: '100%',
+                    top: 0,
+                    background: 'rgba(147, 51, 234, 0.08)',
+                    borderLeft: '1px dashed rgba(147, 51, 234, 0.4)',
+                    borderRight: '1px dashed rgba(147, 51, 234, 0.4)',
+                    pointerEvents: 'none',
+                    zIndex: 2,
+                  }}
+                />
+              )}
+              {outroActive && (
+                <div
+                  className="alignment-outro-block-audio"
+                  style={{
+                    position: 'absolute',
+                    left: `${pct(clipDurationSec - trim.trimEndSec + introDuration, virtualDuration)}%`,
+                    width: `${pct(outroDuration, virtualDuration)}%`,
+                    height: '100%',
+                    top: 0,
+                    background: 'rgba(147, 51, 234, 0.08)',
+                    borderLeft: '1px dashed rgba(147, 51, 234, 0.4)',
+                    borderRight: '1px dashed rgba(147, 51, 234, 0.4)',
+                    pointerEvents: 'none',
+                    zIndex: 2,
+                  }}
+                />
+              )}
+              {trim.trimEndSec > 0 && (
+                <div
+                  className="alignment-trim-region trim-end"
+                  style={{
+                    position: 'absolute',
+                    left: `${pct(virtualDuration - trim.trimEndSec, virtualDuration)}%`,
+                    width: `${pct(trim.trimEndSec, virtualDuration)}%`,
+                    height: '100%',
+                    top: 0,
+                    zIndex: 2,
+                  }}
+                />
+              )}
+
               <div
                 className={`alignment-overlay-block ${track.muted ? 'muted' : ''}`}
                 style={{
-                  left: `${pct(track.startSec, clipDurationSec)}%`,
-                  width: `${Math.max(1, pct(Math.max(1, clipDurationSec - track.startSec - track.trimEndSec), clipDurationSec))}%`,
+                  left: `${pct(track.startSec + introDuration, virtualDuration)}%`,
+                  width: `${Math.max(1, pct(Math.max(1, clipDurationSec - track.startSec - track.trimEndSec), virtualDuration))}%`,
                   '--fade-in-pct': `${Math.min(100, pct(track.fadeInSec, Math.max(0.05, extraAudioEnd(track) - track.startSec)))}%`,
                   '--fade-out-pct': `${Math.min(100, pct(track.fadeOutSec, Math.max(0.05, extraAudioEnd(track) - track.startSec)))}%`,
+                  zIndex: 3,
                 } as React.CSSProperties}
                 onPointerDown={(event) => startAudioTrackDrag(event, track, 'move')}
-                onDoubleClick={() => seek(track.startSec)}
+                onDoubleClick={() => seek(mapPhysicalToVirtual(track.startSec, trim))}
               >
                 <span className="alignment-resize left" onPointerDown={(event) => startAudioTrackDrag(event, track, 'start')} />
                 <span className="alignment-audio-fade in" />
@@ -1768,7 +2341,7 @@ export function SubtitleAlignmentEditor({
                 </button>
                 <span className="alignment-resize right" onPointerDown={(event) => startAudioTrackDrag(event, track, 'end')} />
               </div>
-              <b className="alignment-track-playhead" style={{ left: `${pct(currentSec, clipDurationSec)}%` }} />
+              <b className="alignment-track-playhead" style={{ left: `${pct(currentSec, virtualDuration)}%`, zIndex: 10 }} />
             </div>
           </div>
           ))}
@@ -1781,44 +2354,132 @@ export function SubtitleAlignmentEditor({
               ref={timelineRef}
               style={{ width: `${timelineZoom * 100}%` }}
               onPointerDown={(event) => {
-                if (event.target === event.currentTarget) seekFromPointer(event.clientX, event.currentTarget);
+                if (event.target === event.currentTarget) {
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  if (!rect || rect.width <= 0) return;
+                  const virtualSec = ((event.clientX - rect.left) / rect.width) * virtualDuration;
+                  seek(virtualSec);
+                }
               }}
             >
-            {segments.map((segment) => {
-              const left = pct(segment.start, clipDurationSec);
-              const width = Math.max(0.6, pct(segment.end - segment.start, clipDurationSec));
-              const activeClass = active?.id === segment.id ? 'active' : selected?.id === segment.id ? 'selected' : '';
-              return (
+              {/* Shaded boundaries for Intro/Outro */}
+              {trim.trimStartSec > 0 && (
                 <div
-                  key={segment.id}
-                  className={`alignment-block ${activeClass}`}
-                  style={{ left: `${left}%`, width: `${width}%` }}
-                  onPointerDown={(event) => startDrag(event, segment, 'move')}
-                  onDoubleClick={() => seek(segment.start)}
-                >
-                  <span className="alignment-resize left" onPointerDown={(event) => startDrag(event, segment, 'start')} />
-                  <strong>{segment.text}</strong>
-                  <span className="alignment-resize right" onPointerDown={(event) => startDrag(event, segment, 'end')} />
-                </div>
-              );
-            })}
-            {cuts.map((cut, i) => (
+                  className="alignment-trim-region trim-start"
+                  style={{
+                    position: 'absolute',
+                    left: 0,
+                    width: `${pct(trim.trimStartSec, virtualDuration)}%`,
+                    height: '100%',
+                    top: 0,
+                    zIndex: 2,
+                  }}
+                />
+              )}
+              {introActive && (
+                <div
+                  className="alignment-intro-block-audio"
+                  style={{
+                    position: 'absolute',
+                    left: `${pct(trim.trimStartSec, virtualDuration)}%`,
+                    width: `${pct(introDuration, virtualDuration)}%`,
+                    height: '100%',
+                    top: 0,
+                    background: 'rgba(147, 51, 234, 0.08)',
+                    borderLeft: '1px dashed rgba(147, 51, 234, 0.4)',
+                    borderRight: '1px dashed rgba(147, 51, 234, 0.4)',
+                    pointerEvents: 'none',
+                    zIndex: 2,
+                  }}
+                />
+              )}
+              {outroActive && (
+                <div
+                  className="alignment-outro-block-audio"
+                  style={{
+                    position: 'absolute',
+                    left: `${pct(clipDurationSec - trim.trimEndSec + introDuration, virtualDuration)}%`,
+                    width: `${pct(outroDuration, virtualDuration)}%`,
+                    height: '100%',
+                    top: 0,
+                    background: 'rgba(147, 51, 234, 0.08)',
+                    borderLeft: '1px dashed rgba(147, 51, 234, 0.4)',
+                    borderRight: '1px dashed rgba(147, 51, 234, 0.4)',
+                    pointerEvents: 'none',
+                    zIndex: 2,
+                  }}
+                />
+              )}
+              {trim.trimEndSec > 0 && (
+                <div
+                  className="alignment-trim-region trim-end"
+                  style={{
+                    position: 'absolute',
+                    left: `${pct(virtualDuration - trim.trimEndSec, virtualDuration)}%`,
+                    width: `${pct(trim.trimEndSec, virtualDuration)}%`,
+                    height: '100%',
+                    top: 0,
+                    zIndex: 2,
+                  }}
+                />
+              )}
+
+              {/* Shifting media container */}
               <div
-                key={`sc${i}`}
-                className="alignment-cut-region"
-                style={{ left: `${pct(cut.startSec, clipDurationSec)}%`, width: `${pct(cut.endSec - cut.startSec, clipDurationSec)}%` }}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  pushUndo();
-                  setCuts((prev) => {
-                    const next = removeCut(prev, i);
-                    cutsRef.current = next;
-                    return next;
-                  });
+                className="alignment-media-container"
+                style={{
+                  position: 'absolute',
+                  left: `${pct(trim.trimStartSec + introDuration, virtualDuration)}%`,
+                  width: `${pct(activeVideoDuration, virtualDuration)}%`,
+                  height: '100%',
+                  top: 0,
                 }}
-              />
-            ))}
-            <b className="alignment-track-playhead" style={{ left: `${pct(currentSec, clipDurationSec)}%` }} />
+              >
+                {segments.map((segment) => {
+                  if (segment.end <= trim.trimStartSec || segment.start >= clipDurationSec - trim.trimEndSec) return null;
+                  const left = pct(segment.start - trim.trimStartSec, activeVideoDuration);
+                  const width = Math.max(0.6, pct(segment.end - segment.start, activeVideoDuration));
+                  const activeClass = active?.id === segment.id ? 'active' : selected?.id === segment.id ? 'selected' : '';
+                  return (
+                    <div
+                      key={segment.id}
+                      className={`alignment-block ${activeClass}`}
+                      style={{ left: `${left}%`, width: `${width}%` }}
+                      onPointerDown={(event) => startDrag(event, segment, 'move')}
+                      onDoubleClick={() => seek(mapPhysicalToVirtual(segment.start, trim))}
+                    >
+                      <span className="alignment-resize left" onPointerDown={(event) => startDrag(event, segment, 'start')} />
+                      <strong>{segment.text}</strong>
+                      <span className="alignment-resize right" onPointerDown={(event) => startDrag(event, segment, 'end')} />
+                    </div>
+                  );
+                })}
+                {cuts.map((cut, i) => {
+                  if (cut.endSec <= trim.trimStartSec || cut.startSec >= clipDurationSec - trim.trimEndSec) return null;
+                  const visibleStart = Math.max(trim.trimStartSec, cut.startSec);
+                  const visibleEnd = Math.min(clipDurationSec - trim.trimEndSec, cut.endSec);
+                  return (
+                    <div
+                      key={`sc${i}`}
+                      className="alignment-cut-region"
+                      style={{
+                        left: `${pct(visibleStart - trim.trimStartSec, activeVideoDuration)}%`,
+                        width: `${pct(visibleEnd - visibleStart, activeVideoDuration)}%`
+                      }}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        pushUndo();
+                        setCuts((prev) => {
+                          const next = removeCut(prev, i);
+                          cutsRef.current = next;
+                          return next;
+                        });
+                      }}
+                    />
+                  );
+                })}
+              </div>
+              <b className="alignment-track-playhead" style={{ left: `${pct(currentSec, virtualDuration)}%`, zIndex: 10 }} />
             </div>
           </div>
 
@@ -1826,23 +2487,86 @@ export function SubtitleAlignmentEditor({
           <div className="alignment-track-row alignment-track-text-overlay" key={track.id}>
             <span className="alignment-track-label">Text {trackIndex + 1}</span>
             <div className="alignment-track-content alignment-timeline-track" style={{ width: `${timelineZoom * 100}%` }}>
+              {/* Shaded boundaries for Intro/Outro */}
+              {trim.trimStartSec > 0 && (
+                <div
+                  className="alignment-trim-region trim-start"
+                  style={{
+                    position: 'absolute',
+                    left: 0,
+                    width: `${pct(trim.trimStartSec, virtualDuration)}%`,
+                    height: '100%',
+                    top: 0,
+                    zIndex: 2,
+                  }}
+                />
+              )}
+              {introActive && (
+                <div
+                  className="alignment-intro-block-audio"
+                  style={{
+                    position: 'absolute',
+                    left: `${pct(trim.trimStartSec, virtualDuration)}%`,
+                    width: `${pct(introDuration, virtualDuration)}%`,
+                    height: '100%',
+                    top: 0,
+                    background: 'rgba(147, 51, 234, 0.08)',
+                    borderLeft: '1px dashed rgba(147, 51, 234, 0.4)',
+                    borderRight: '1px dashed rgba(147, 51, 234, 0.4)',
+                    pointerEvents: 'none',
+                    zIndex: 2,
+                  }}
+                />
+              )}
+              {outroActive && (
+                <div
+                  className="alignment-outro-block-audio"
+                  style={{
+                    position: 'absolute',
+                    left: `${pct(clipDurationSec - trim.trimEndSec + introDuration, virtualDuration)}%`,
+                    width: `${pct(outroDuration, virtualDuration)}%`,
+                    height: '100%',
+                    top: 0,
+                    background: 'rgba(147, 51, 234, 0.08)',
+                    borderLeft: '1px dashed rgba(147, 51, 234, 0.4)',
+                    borderRight: '1px dashed rgba(147, 51, 234, 0.4)',
+                    pointerEvents: 'none',
+                    zIndex: 2,
+                  }}
+                />
+              )}
+              {trim.trimEndSec > 0 && (
+                <div
+                  className="alignment-trim-region trim-end"
+                  style={{
+                    position: 'absolute',
+                    left: `${pct(virtualDuration - trim.trimEndSec, virtualDuration)}%`,
+                    width: `${pct(trim.trimEndSec, virtualDuration)}%`,
+                    height: '100%',
+                    top: 0,
+                    zIndex: 2,
+                  }}
+                />
+              )}
+
               {track.blocks.map((block) => (
                 <div
                   key={block.id}
                   className={`alignment-overlay-block ${track.hidden || block.hidden ? 'muted' : ''} ${selectedTextBlock?.blockId === block.id ? 'selected' : ''}`}
                   style={{
-                    left: `${pct(block.startSec, clipDurationSec)}%`,
-                    width: `${Math.max(0.8, pct(block.endSec - block.startSec, clipDurationSec))}%`,
+                    left: `${pct(block.startSec + introDuration, virtualDuration)}%`,
+                    width: `${Math.max(0.8, pct(block.endSec - block.startSec, virtualDuration))}%`,
+                    zIndex: 3,
                   }}
                   onPointerDown={(event) => startTextBlockDrag(event, track.id, block, 'move')}
-                  onDoubleClick={() => seek(block.startSec)}
+                  onDoubleClick={() => seek(mapPhysicalToVirtual(block.startSec, trim))}
                 >
                   <span className="alignment-resize left" onPointerDown={(event) => startTextBlockDrag(event, track.id, block, 'start')} />
                   {block.text || '[ Empty Text Block ]'}
                   <span className="alignment-resize right" onPointerDown={(event) => startTextBlockDrag(event, track.id, block, 'end')} />
                 </div>
               ))}
-              <b className="alignment-track-playhead" style={{ left: `${pct(currentSec, clipDurationSec)}%` }} />
+              <b className="alignment-track-playhead" style={{ left: `${pct(currentSec, virtualDuration)}%`, zIndex: 10 }} />
             </div>
           </div>
           ))}
@@ -2065,7 +2789,7 @@ export function SubtitleAlignmentEditor({
               </div>
               <label>
                 <span>Size</span>
-                <input type="range" min={70} max={200} step={1} value={activeStyle.fontSize} onChange={(event) => patchActiveStyle({ fontSize: Number(event.currentTarget.value) })} />
+                <input type="range" min={30} max={200} step={1} value={activeStyle.fontSize} onChange={(event) => patchActiveStyle({ fontSize: Number(event.currentTarget.value) })} />
                 <b>{activeStyle.fontSize}</b>
               </label>
               <label>
@@ -2417,6 +3141,20 @@ export function SubtitleAlignmentEditor({
             {inspectorTab === 'layers' && (
             <div className="alignment-frame-panel alignment-layers-panel">
               <LogoManager logo={logo} onChange={setLogo} />
+              <IntroOutroManager
+                type="intro"
+                title="Intro Graphic"
+                description="Custom overlay displayed at the start of the video clip."
+                data={intro}
+                onChange={setIntro}
+              />
+              <IntroOutroManager
+                type="outro"
+                title="Outro Graphic"
+                description="Custom overlay displayed at the end of the video clip."
+                data={outro}
+                onChange={setOutro}
+              />
               <TextTrackManager
                 tracks={textTracks}
                 onChange={setTextTracks}

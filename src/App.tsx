@@ -2156,6 +2156,8 @@ export default function App() {
           logo: language === 'source' ? plan.sourceLogo || plan.logo : plan.targetLogo || plan.logo,
           textTracks: language === 'source' ? plan.sourceTextTracks || plan.textTracks || [] : plan.targetTextTracks || plan.textTracks || [],
           audioTracks: language === 'source' ? plan.sourceAudioTracks || plan.audioTracks || [] : plan.targetAudioTracks || plan.audioTracks || [],
+          intro: language === 'source' ? plan.sourceIntro || plan.intro : plan.targetIntro || plan.intro,
+          outro: language === 'source' ? plan.sourceOutro || plan.outro : plan.targetOutro || plan.outro,
         });
         if (!window.electronAPI.hyperframesExportShortClip) {
           throw new Error('HyperFrames export is not available in this build.');
@@ -2740,6 +2742,32 @@ export default function App() {
                         const patch: Partial<ShortsClipPlan> = language === 'source'
                           ? { sourceLogo: logo }
                           : { targetLogo: logo };
+                        setShortsPlans((prev) => {
+                          const next = prev.map((plan, i) => i === index ? { ...plan, ...patch } : plan);
+                          const syncResult = buildSyncPatch(next, index, patch);
+                          if (syncResult) {
+                            return next.map((plan, i) => i === syncResult.partnerIndex ? { ...plan, ...syncResult.patch } : plan);
+                          }
+                          return next;
+                        });
+                      }}
+                      onSavePlanIntro={(index, language, intro) => {
+                        const patch: Partial<ShortsClipPlan> = language === 'source'
+                          ? { sourceIntro: intro }
+                          : { targetIntro: intro };
+                        setShortsPlans((prev) => {
+                          const next = prev.map((plan, i) => i === index ? { ...plan, ...patch } : plan);
+                          const syncResult = buildSyncPatch(next, index, patch);
+                          if (syncResult) {
+                            return next.map((plan, i) => i === syncResult.partnerIndex ? { ...plan, ...syncResult.patch } : plan);
+                          }
+                          return next;
+                        });
+                      }}
+                      onSavePlanOutro={(index, language, outro) => {
+                        const patch: Partial<ShortsClipPlan> = language === 'source'
+                          ? { sourceOutro: outro }
+                          : { targetOutro: outro };
                         setShortsPlans((prev) => {
                           const next = prev.map((plan, i) => i === index ? { ...plan, ...patch } : plan);
                           const syncResult = buildSyncPatch(next, index, patch);

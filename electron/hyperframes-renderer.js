@@ -370,6 +370,10 @@ function buildCompositionHtml(project, relativeVideoPath) {
   const blurEnabled = !!bg.blurEnabled;
   const gradientEnabled = !!bg.gradientEnabled;
 
+  const introDuration = project.intro && !project.intro.hidden ? (project.intro.duration || 0) : 0;
+  const outroDuration = project.outro && !project.outro.hidden ? (project.outro.duration || 0) : 0;
+  const trimmedVideoDuration = Math.max(0.05, project.durationSec - introDuration - outroDuration);
+
   return `<!doctype html>
 <html>
   <head>
@@ -377,8 +381,9 @@ function buildCompositionHtml(project, relativeVideoPath) {
     <meta name="viewport" content="width=${project.width}, height=${project.height}, initial-scale=1" />
     <meta data-composition-id="vaniscript-short" data-width="${project.width}" data-height="${project.height}" />
     <title>${escapeHtml(project.title || 'VaniScript HyperFrames')}</title>
-    <script src="./assets/gsap.min.js"><\/script>
+    <script src="./assets/gsap.min.js"></script>
     <style>
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&family=Oswald:wght@400;500;600;700&family=Unbounded:wght@400;600;800;900&family=Montserrat:wght@500;700;900&display=swap');
       ${embeddedFonts}
       :root {
         --canvas-width: ${project.width}px;
@@ -445,6 +450,13 @@ function buildCompositionHtml(project, relativeVideoPath) {
         max-width: 28%; max-height: 18%; object-fit: contain;
         background: transparent;
       }
+      #intro-overlay, #outro-overlay {
+        position: absolute; z-index: 10;
+        pointer-events: none;
+        height: auto;
+        transform: translate(-50%, -50%);
+        background: transparent;
+      }
       #text-overlays {
         position: absolute; inset: 0; z-index: 6; pointer-events: none;
       }
@@ -462,19 +474,19 @@ function buildCompositionHtml(project, relativeVideoPath) {
   <body>
     <div id="stage">
       <div id="background"></div>
-      ${blurEnabled ? `<video id="blur-bg" class="clip" data-start="0" data-duration="${project.durationSec}" data-track-index="2" data-media-start="${project.clipStartSec}" muted playsinline preload="auto" src="${escapeHtml(relativeVideoPath)}"></video>` : '<div id="blur-bg"></div>'}
+      ${blurEnabled ? `<video id="blur-bg" class="clip" data-start="${introDuration}" data-duration="${trimmedVideoDuration}" data-track-index="2" data-media-start="${project.clipStartSec}" muted playsinline preload="auto" src="${escapeHtml(relativeVideoPath)}"></video>` : '<div id="blur-bg"></div>'}
       <div id="gradient-overlay"></div>
       <div id="video-stage">
         <video
           id="source-video" class="clip"
-          data-start="0" data-duration="${project.durationSec}"
+          data-start="${introDuration}" data-duration="${trimmedVideoDuration}"
           data-track-index="0" data-media-start="${project.clipStartSec}"
           muted playsinline preload="auto"
           src="${escapeHtml(relativeVideoPath)}"
         ></video>
         <audio
           id="source-audio"
-          data-start="0" data-duration="${project.durationSec}"
+          data-start="${introDuration}" data-duration="${trimmedVideoDuration}"
           data-track-index="1" data-media-start="${project.clipStartSec}"
           data-volume="1" preload="auto"
           src="${escapeHtml(relativeVideoPath)}"
@@ -484,6 +496,8 @@ function buildCompositionHtml(project, relativeVideoPath) {
       <div id="frame-guide-overlay"></div>
       <div id="subtitle-layer"><span id="subtitle-text"></span></div>
       ${project.logo?.src && !project.logo.hidden ? `<img id="logo-overlay" src="${escapeHtml(project.logo.src)}" alt="${escapeHtml(project.logo.name || 'Logo')}" />` : ''}
+      ${project.intro?.src && !project.intro.hidden ? `<img id="intro-overlay" style="display: none;" src="${escapeHtml(project.intro.src)}" alt="${escapeHtml(project.intro.name || 'Intro')}" />` : ''}
+      ${project.outro?.src && !project.outro.hidden ? `<img id="outro-overlay" style="display: none;" src="${escapeHtml(project.outro.src)}" alt="${escapeHtml(project.outro.name || 'Outro')}" />` : ''}
       <div id="text-overlays"></div>
       ${(project.audioTracks || []).filter((track) => !track.muted).map((track, index) => `<audio
           class="extra-audio"
@@ -511,7 +525,10 @@ function buildCompositionHtml(project, relativeVideoPath) {
       const subtitleLayer = document.getElementById('subtitle-layer');
       const subtitleText = document.getElementById('subtitle-text');
       const logoOverlay = document.getElementById('logo-overlay');
+      const introOverlay = document.getElementById('intro-overlay');
+      const outroOverlay = document.getElementById('outro-overlay');
       const textOverlays = document.getElementById('text-overlays');
+      const sourceAudio = document.getElementById('source-audio');
       const extraAudio = Array.from(document.querySelectorAll('.extra-audio'));
       const bgS = project.backgroundSettings || {};
       const renderScale = project.height / 1920;
@@ -519,6 +536,47 @@ function buildCompositionHtml(project, relativeVideoPath) {
 
       const clamp = (v, mn, mx) => Math.min(Math.max(v, mn), mx);
       const smoothstep = (v) => { const t = clamp(v, 0, 1); return t * t * (3 - (2 * t)); };
+      const computeIntroOutroStyle = (item, elapsed, frameScale) => {
+        const baseWidth = 300 * frameScale * item.scale;
+        let opacity = 1;
+        let scale = 1;
+        let translateY = 0;
+
+        const fadeDuration = Math.min(0.5, item.duration * 0.15);
+        if (elapsed < fadeDuration) {
+          opacity = elapsed / fadeDuration;
+        } else if (elapsed > item.duration - fadeDuration) {
+          opacity = Math.max(0, (item.duration - elapsed) / fadeDuration);
+        }
+
+        const speedFactor = item.speed !== undefined ? item.speed : 1.0;
+
+        if (item.animation === 'pulse') {
+          const period = 1.5;
+          const progress = ((elapsed * speedFactor) % period) / period;
+          scale = 1 + 0.06 * Math.sin(progress * 2 * Math.PI);
+        }
+
+        if (item.animation === 'bounce') {
+          const period = 1.2;
+          const progress = ((elapsed * speedFactor) % period) / period;
+          if (progress < 0.4) {
+            translateY = 15 * Math.sin((progress / 0.4) * Math.PI);
+          } else if (progress < 0.7) {
+            translateY = -4 * Math.sin(((progress - 0.4) / 0.3) * Math.PI);
+          } else if (progress < 0.9) {
+            translateY = 4 * Math.sin(((progress - 0.7) / 0.2) * Math.PI);
+          } else {
+            translateY = 0;
+          }
+        }
+
+        return {
+          opacity: clamp(opacity, 0, 1),
+          transform: 'translate(-50%, -50%) scale(' + scale + ') translateY(' + (translateY * frameScale) + 'px)',
+          width: baseWidth + 'px'
+        };
+      };
       const hexToRgba = (hex, opacity) => {
         const c = String(hex || '#000000').replace('#', '').padEnd(6, '0').slice(0, 6);
         return 'rgba(' + parseInt(c.slice(0,2),16) + ',' + parseInt(c.slice(2,4),16) + ',' + parseInt(c.slice(4,6),16) + ',' + clamp(opacity,0,1) + ')';
@@ -671,10 +729,22 @@ function buildCompositionHtml(project, relativeVideoPath) {
         layer.style.fontWeight = style.bold ? '850' : '600';
         layer.style.letterSpacing = ((style.letterSpacing || 0) * scale) + 'px';
         layer.style.lineHeight = String(style.lineSpacing || 1);
-        layer.style.textShadow = dist > 0 || shadowBlur > 0
-          ? (shadowX + 'px ' + shadowY + 'px ' + shadowBlur + 'px ' + shadowColor + shadowHexOpacity)
-          : 'none';
-        layer.style.webkitTextStroke = textStroke > 0 ? (textStroke + 'px ' + textStrokeColor) : '0 transparent';
+        // Combine Outline & Drop Shadow as multiple text-shadow entries to fix internal overlaps
+        const shadows = [];
+        if (textStroke > 0) {
+          const steps = 16;
+          for (let i = 0; i < steps; i++) {
+            const angle = (i * 2 * Math.PI) / steps;
+            const x = (textStroke * Math.cos(angle)).toFixed(2);
+            const y = (textStroke * Math.sin(angle)).toFixed(2);
+            shadows.push(x + 'px ' + y + 'px 0px ' + textStrokeColor);
+          }
+        }
+        if (dist > 0 || shadowBlur > 0) {
+          shadows.push(shadowX + 'px ' + shadowY + 'px ' + shadowBlur + 'px ' + shadowColor + shadowHexOpacity);
+        }
+        layer.style.textShadow = shadows.length > 0 ? shadows.join(', ') : 'none';
+        layer.style.webkitTextStroke = '0 transparent';
 
         // Override background & shadow styles to be handled by a separate background layer
         layer.style.backgroundColor = 'transparent';
@@ -762,12 +832,43 @@ function buildCompositionHtml(project, relativeVideoPath) {
           audio.volume = clamp(baseVolume * gain, 0, 1);
         });
 
+        // Compute Main Video Opacity and Volume Fades
+        const introDuration = project.intro && !project.intro.hidden ? (project.intro.duration || 0) : 0;
+        const outroDuration = project.outro && !project.outro.hidden ? (project.outro.duration || 0) : 0;
+        const trimmedVideoDuration = Math.max(0.05, project.durationSec - introDuration - outroDuration);
+
+        let videoTime = 0;
+        let mainVideoOpacity = 1;
+
+        if (timeSec < introDuration) {
+          videoTime = 0;
+          mainVideoOpacity = 0;
+        } else if (timeSec > introDuration + trimmedVideoDuration) {
+          videoTime = trimmedVideoDuration;
+          mainVideoOpacity = 0;
+        } else {
+          videoTime = timeSec - introDuration;
+          
+          if (project.intro && !project.intro.hidden && (timeSec - introDuration) <= 2.0) {
+            mainVideoOpacity = (timeSec - introDuration) / 2.0;
+          }
+          const mainVideoEndTime = introDuration + trimmedVideoDuration;
+          if (project.outro && !project.outro.hidden && (mainVideoEndTime - timeSec) <= 2.0) {
+            mainVideoOpacity = Math.min(mainVideoOpacity, (mainVideoEndTime - timeSec) / 2.0);
+          }
+        }
+
+        // Apply video.currentTime and opacity
+        video.currentTime = videoTime;
+        video.style.opacity = String(mainVideoOpacity);
+        if (sourceAudio) {
+          sourceAudio.volume = mainVideoOpacity;
+        }
+
         // Sync blur bg time frame-accurately
         if (bgS.blurEnabled && blurBg && blurBg.tagName === 'VIDEO') {
-          const vTime = video.currentTime || 0;
-          if (Math.abs((blurBg.currentTime || 0) - vTime) > 0.001) {
-            blurBg.currentTime = vTime;
-          }
+          blurBg.currentTime = videoTime;
+          blurBg.style.opacity = String(mainVideoOpacity);
         }
 
         const cue = activeCue(timeSec);
@@ -777,6 +878,46 @@ function buildCompositionHtml(project, relativeVideoPath) {
           styleOverlayBox(subtitleLayer, subtitleText, style, cue.text, bottomPx, scale, 1);
         }
         renderTextOverlays(timeSec, bottomPx, scale);
+
+        // Render Intro Overlay
+        if (introOverlay && project.intro && !project.intro.hidden) {
+          const start = 0;
+          const end = project.intro.duration || 3;
+          if (timeSec >= start && timeSec <= end) {
+            const styleOpts = computeIntroOutroStyle(project.intro, timeSec, scale);
+            introOverlay.style.display = 'block';
+            introOverlay.style.left = '50%';
+            introOverlay.style.top = project.intro.y + '%';
+            introOverlay.style.opacity = String(styleOpts.opacity);
+            introOverlay.style.transform = styleOpts.transform;
+            introOverlay.style.width = styleOpts.width;
+          } else {
+            introOverlay.style.display = 'none';
+          }
+        } else if (introOverlay) {
+          introOverlay.style.display = 'none';
+        }
+
+        // Render Outro Overlay
+        if (outroOverlay && project.outro && !project.outro.hidden) {
+          const duration = project.outro.duration || 3;
+          const start = Math.max(0, project.durationSec - duration);
+          const end = project.durationSec;
+          if (timeSec >= start && timeSec <= end) {
+            const elapsed = timeSec - start;
+            const styleOpts = computeIntroOutroStyle(project.outro, elapsed, scale);
+            outroOverlay.style.display = 'block';
+            outroOverlay.style.left = '50%';
+            outroOverlay.style.top = project.outro.y + '%';
+            outroOverlay.style.opacity = String(styleOpts.opacity);
+            outroOverlay.style.transform = styleOpts.transform;
+            outroOverlay.style.width = styleOpts.width;
+          } else {
+            outroOverlay.style.display = 'none';
+          }
+        } else if (outroOverlay) {
+          outroOverlay.style.display = 'none';
+        }
       }
       window.__timelines = window.__timelines || {};
       const tl = gsap.timeline({ paused: true });

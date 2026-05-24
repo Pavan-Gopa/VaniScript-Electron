@@ -1,6 +1,6 @@
 import type { FrameKeyframe } from '../lib/subtitle-alignment';
 import type { BackgroundSettings, ShortsSubtitleStyle } from '../lib/shorts-render';
-import type { ExtraAudioTrack, LogoOverlaySettings, TextOverlayTrack, TimelineCut, TimelineTrim } from '../lib/shorts-reels';
+import type { ExtraAudioTrack, LogoOverlaySettings, TextOverlayTrack, TimelineCut, TimelineTrim, IntroOutroOverlaySettings } from '../lib/shorts-reels';
 
 export type RenderSubtitleCue = {
   id: string;
@@ -40,6 +40,8 @@ export type ShortsRenderProject = {
   logo?: LogoOverlaySettings;
   textTracks?: TextOverlayTrack[];
   audioTracks?: ExtraAudioTrack[];
+  intro?: IntroOutroOverlaySettings;
+  outro?: IntroOutroOverlaySettings;
 };
 
 export type ShortsRenderProjectInput = {
@@ -63,4 +65,6 @@ export type ShortsRenderProjectInput = {
   logo?: LogoOverlaySettings;
   textTracks?: TextOverlayTrack[];
   audioTracks?: ExtraAudioTrack[];
+  intro?: IntroOutroOverlaySettings;
+  outro?: IntroOutroOverlaySettings;
 };

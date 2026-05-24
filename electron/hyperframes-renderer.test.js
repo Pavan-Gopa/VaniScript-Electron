@@ -39,6 +39,7 @@ test('buildCompositionHtml emits the HyperFrames producer contract', () => {
 
   assert.match(html, /<meta data-composition-id="vaniscript-short" data-width="1080" data-height="1920" \/>/);
   assert.match(html, /<script src="\.\/assets\/gsap\.min\.js"><\/script>/);
+  assert.match(html, /@import url\('https:\/\/fonts\.googleapis\.com\/css2\?family=Inter/);
   assert.match(html, /@font-face[\s\S]*font-family: 'Cuprum'/);
   assert.match(html, /url\(\.\/assets\/fonts\/cuprum\/files\//);
   assert.match(html, /<video[\s\S]*id="source-video"[\s\S]*data-media-start="12"/);
@@ -129,9 +130,7 @@ test('buildCompositionHtml carries visual editor background guide and scaled log
   assert.match(html, /\(bgS\.blurStrength \|\| 30\) \* effectScale/);
   assert.match(html, /Number\(bgS\.featherTop\) \|\| 0\) \* effectScale/);
   assert.match(html, /Number\(bgS\.frameGuideBlur\) \|\| 0\) \* effectScale/);
-  assert.match(html, /frameGuideOverlay\.style\.background = guideDim > 0/);
-  assert.match(html, /frameGuideOverlay\.style\.boxShadow =[\s\S]*inset 0 0 ' \+ guideBlur/);
-  assert.match(html, /videoStage\.style\.maskImage = combined;/);
+  assert.match(html, /videoStage\.style\.maskImage = mask;/);
   assert.match(html, /videoStage\.style\.transform = 'translate\(-50%, -50%\) translate\('/);
   assert.match(html, /video\.style\.transform = 'none';/);
   assert.match(html, /featherOverlay\.style\.background = featherGradients\.join\(', '\);/);
