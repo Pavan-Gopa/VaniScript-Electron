@@ -1003,7 +1003,7 @@ export function SubtitleAlignmentEditor({
           video.play().catch(() => undefined);
           audio?.play().catch(() => undefined);
         }
-      } else if (nextSec > activeVideoEndVirtual && nextSec < outroEndVirtual) {
+      } else if (nextSec >= activeVideoEndVirtual && nextSec < outroEndVirtual) {
         // We are in the Outro region
         if (!video.paused) video.pause();
         if (audio && !audio.paused) audio.pause();
