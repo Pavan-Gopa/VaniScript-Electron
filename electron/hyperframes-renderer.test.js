@@ -145,6 +145,35 @@ test('buildCompositionHtml carries visual editor background guide and scaled log
   assert.doesNotMatch(html, /__render_frame_source-video__/);
 });
 
+test('buildCompositionHtml can use a precomputed blur background proxy', () => {
+  const html = buildCompositionHtml({
+    id: 'clip-preblur',
+    title: 'Clip preblur',
+    sourceWidth: 3840,
+    sourceHeight: 2160,
+    width: 2160,
+    height: 3840,
+    fps: 24,
+    clipStartSec: 120,
+    durationSec: 5,
+    subtitles: [{ id: 'cue-1', startSec: 0, endSec: 2, text: 'Visual match' }],
+    captionStyle: { fontFamily: 'Cuprum', fontSize: 84 },
+    subtitleBottomMargin: 420,
+    frameKeyframes: [{ id: 'frame-0', time: 0, x: 0, y: 0, zoom: 1, backgroundColor: '#CA9E3F' }],
+    backgroundSettings: {
+      blurEnabled: true,
+      blurStrength: 40,
+      blurScale: 1.45,
+      effectReferenceHeight: 960,
+    },
+  }, './assets/source.mp4', './assets/blur-background.mp4');
+
+  assert.match(html, /id="blur-video"[\s\S]*data-media-start="0"[\s\S]*src="\.\/assets\/blur-background\.mp4"/);
+  assert.match(html, /const blurPrecomputed = true;/);
+  assert.match(html, /el\.style\.filter = 'none';/);
+  assert.match(html, /el\.style\.transform = 'none';/);
+});
+
 test('buildMediaSegmentsFilter concats trim and razor-safe media segments', () => {
   const filter = buildMediaSegmentsFilter([
     { sourceStartSec: 102, sourceEndSec: 106, outputStartSec: 0, outputEndSec: 4 },
@@ -157,7 +186,7 @@ test('buildMediaSegmentsFilter concats trim and razor-safe media segments', () =
   assert.match(filter, /\[vcat\]scale='min\(1080,iw\)':-2:flags=lanczos\[vout\]/);
 });
 
-test('recommendedWorkers lowers 4K high-quality capture concurrency', () => {
-  assert.equal(recommendedWorkers({ width: 2160, height: 3840 }, 'high'), 2);
+test('recommendedWorkers keeps enough 4K frame capture concurrency', () => {
+  assert.equal(recommendedWorkers({ width: 2160, height: 3840 }, 'high'), 4);
   assert.ok(recommendedWorkers({ width: 1080, height: 1920 }, 'standard') >= 2);
 });

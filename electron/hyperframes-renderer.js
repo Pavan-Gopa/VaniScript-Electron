@@ -3,6 +3,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 const { fileURLToPath, pathToFileURL } = require('url');
 
@@ -46,6 +47,30 @@ function toSafeFilePart(value) {
     .replace(/[^\w.-]+/g, '_')
     .replace(/^_+|_+$/g, '')
     .slice(0, 120) || 'clip';
+}
+
+function stableHash(value, length = 20) {
+  return crypto
+    .createHash('sha256')
+    .update(JSON.stringify(value))
+    .digest('hex')
+    .slice(0, length);
+}
+
+function safeStat(filePath) {
+  try {
+    return fs.statSync(filePath);
+  } catch (_error) {
+    return null;
+  }
+}
+
+function safeUnlink(filePath) {
+  try {
+    fs.unlinkSync(filePath);
+  } catch (_error) {
+    // Best-effort cleanup only.
+  }
 }
 
 function readFontsourceCss(packageName, cssFileName, relativeFilesPath) {
@@ -202,12 +227,12 @@ function recommendedWorkers(project = {}, quality = 'standard') {
   const pixels = Math.max(0, (Number(project.width) || 0) * (Number(project.height) || 0));
   const maxCpuWorkers = Math.max(1, Math.min(4, cpuCount - 1));
 
-  // 4K vertical captures are memory/GPU heavy because each frame contains the
-  // foreground video, blurred video layer, overlays, and subtitles. Using fewer
-  // concurrent captures is usually faster and quieter than saturating Chromium.
+  // This is frame-capture concurrency for one clip, not the number of exported
+  // clips. 4K captures need enough parallelism to avoid falling below real time,
+  // while still capping Chromium memory pressure.
   const isNear4k = pixels >= 6_000_000;
   const isNear2k = pixels >= 3_000_000;
-  const resolutionLimit = isNear4k ? (quality === 'high' ? 2 : 3) : isNear2k ? 3 : 4;
+  const resolutionLimit = isNear4k ? 4 : isNear2k ? 4 : 4;
 
   return Math.max(1, Math.min(maxCpuWorkers, resolutionLimit));
 }
@@ -334,11 +359,11 @@ async function createBrowserSafeProxy({
   project,
   ffmpegPath,
   assetsDir,
+  cacheDir,
   log,
   abortSignal,
 }) {
   if (abortSignal?.aborted) throw new Error('render_cancelled');
-  const proxyPath = path.join(assetsDir, 'source-browser.mp4');
   const durationSec = Math.max(0.1, Number(project.durationSec) || 0.1);
   const clipStartSec = Math.max(0, Number(project.clipStartSec) || 0);
   const outputLongEdge = Math.max(Number(project.width) || 1080, Number(project.height) || 1920);
@@ -350,6 +375,37 @@ async function createBrowserSafeProxy({
   const scaleWidth = Math.max(2, Math.round(proxyMaxWidth / 2) * 2);
   const vf = `scale='min(${scaleWidth},iw)':-2:flags=lanczos`;
   const mediaSegments = Array.isArray(project.mediaSegments) ? project.mediaSegments : [];
+  const sourceStat = safeStat(sourcePath);
+  const proxyCacheKey = cacheDir ? stableHash({
+    sourcePath,
+    mtimeMs: sourceStat?.mtimeMs || 0,
+    size: sourceStat?.size || 0,
+    durationSec,
+    clipStartSec,
+    scaleWidth,
+    width: project.width,
+    height: project.height,
+    sourceWidth: project.sourceWidth,
+    sourceHeight: project.sourceHeight,
+    mediaSegments,
+  }) : '';
+  const proxyPath = cacheDir
+    ? path.join(cacheDir, `${proxyCacheKey}.mp4`)
+    : path.join(assetsDir, 'source-browser.mp4');
+  const proxyStat = cacheDir ? safeStat(proxyPath) : null;
+  if (proxyStat && proxyStat.size > 1024) {
+    log.info('HyperFrames proxy cache hit:', {
+      proxyPath,
+      size: proxyStat.size,
+      scaleWidth,
+      durationSec,
+    });
+    return proxyPath;
+  }
+
+  const outputPath = cacheDir
+    ? path.join(cacheDir, `${proxyCacheKey}.${process.pid}.${Date.now()}.tmp.mp4`)
+    : proxyPath;
   const singleSegment = mediaSegments.length === 1 ? mediaSegments[0] : null;
   const baseArgs = ['-y'];
   const inputArgs = singleSegment
@@ -383,14 +439,113 @@ async function createBrowserSafeProxy({
     : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24'];
 
   try {
-    await runFfmpeg(ffmpegPath, [...baseArgs, ...inputArgs, ...outputArgs, ...hardwareArgs, proxyPath], log, abortSignal);
+    await runFfmpeg(ffmpegPath, [...baseArgs, ...inputArgs, ...outputArgs, ...hardwareArgs, outputPath], log, abortSignal);
+    if (cacheDir) {
+      fs.renameSync(outputPath, proxyPath);
+    }
     return proxyPath;
   } catch (error) {
+    if (cacheDir) safeUnlink(outputPath);
     if (isAbortError(error)) throw error;
     if (process.platform !== 'darwin') throw error;
     log.warn('HyperFrames proxy hardware encode failed, retrying with libx264.', error.message || String(error));
-    await runFfmpeg(ffmpegPath, [...baseArgs, ...inputArgs, ...outputArgs, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', proxyPath], log, abortSignal);
+    await runFfmpeg(ffmpegPath, [...baseArgs, ...inputArgs, ...outputArgs, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', outputPath], log, abortSignal);
+    if (cacheDir) {
+      fs.renameSync(outputPath, proxyPath);
+    }
     return proxyPath;
+  }
+}
+
+async function createBlurBackgroundProxy({
+  sourcePath,
+  project,
+  ffmpegPath,
+  cacheDir,
+  log,
+  abortSignal,
+}) {
+  if (abortSignal?.aborted) throw new Error('render_cancelled');
+  const bgS = project.backgroundSettings || {};
+  const sourceStat = safeStat(sourcePath);
+  const outputHeight = Math.max(2, Number(project.height) || 1920);
+  const outputWidth = Math.max(2, Number(project.width) || 1080);
+  const proxyHeight = outputHeight >= 3840
+    ? 1920
+    : outputHeight >= 2560
+      ? 1440
+      : Math.min(1280, outputHeight);
+  const proxyWidth = Math.max(2, Math.round((proxyHeight * outputWidth / outputHeight) / 2) * 2);
+  const blurScale = clamp(Number(bgS.blurScale) || 1.3, 1, 2.5);
+  const scaledWidth = Math.max(2, Math.round((proxyWidth * blurScale) / 2) * 2);
+  const scaledHeight = Math.max(2, Math.round((proxyHeight * blurScale) / 2) * 2);
+  const outputBlurPx = Math.max(0, (Number(bgS.blurStrength) || 30) * (outputHeight / Math.max(1, Number(bgS.effectReferenceHeight) || 960)));
+  const proxySigma = Math.max(0.1, outputBlurPx * (proxyHeight / outputHeight));
+  const cacheKey = stableHash({
+    sourcePath,
+    mtimeMs: sourceStat?.mtimeMs || 0,
+    size: sourceStat?.size || 0,
+    width: proxyWidth,
+    height: proxyHeight,
+    scaledWidth,
+    scaledHeight,
+    blurScale,
+    proxySigma,
+  });
+  const blurPath = path.join(cacheDir, `${cacheKey}.mp4`);
+  const blurStat = safeStat(blurPath);
+  if (blurStat && blurStat.size > 1024) {
+    log.info('HyperFrames blur background cache hit:', {
+      blurPath,
+      size: blurStat.size,
+      proxySize: `${proxyWidth}x${proxyHeight}`,
+      proxySigma,
+    });
+    return blurPath;
+  }
+
+  const tmpPath = path.join(cacheDir, `${cacheKey}.${process.pid}.${Date.now()}.tmp.mp4`);
+  const vf = [
+    `scale=${scaledWidth}:${scaledHeight}:force_original_aspect_ratio=increase:flags=fast_bilinear`,
+    `crop=${proxyWidth}:${proxyHeight}`,
+    `gblur=sigma=${proxySigma.toFixed(2)}`,
+  ].join(',');
+  const args = [
+    '-y',
+    '-i', sourcePath,
+    '-an',
+    '-vf', vf,
+    '-pix_fmt', 'yuv420p',
+    '-movflags', '+faststart',
+    ...(process.platform === 'darwin'
+      ? ['-c:v', 'h264_videotoolbox', '-allow_sw', '1', '-b:v', '1.8M', '-maxrate', '2.4M']
+      : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26']),
+    tmpPath,
+  ];
+  try {
+    await runFfmpeg(ffmpegPath, args, log, abortSignal);
+    fs.renameSync(tmpPath, blurPath);
+    return blurPath;
+  } catch (error) {
+    safeUnlink(tmpPath);
+    if (isAbortError(error)) throw error;
+    if (process.platform !== 'darwin') throw error;
+    log.warn('HyperFrames blur background hardware encode failed, retrying with libx264.', error.message || String(error));
+    const fallbackArgs = [
+      '-y',
+      '-i', sourcePath,
+      '-an',
+      '-vf', vf,
+      '-pix_fmt', 'yuv420p',
+      '-movflags', '+faststart',
+      '-c:v', 'libx264',
+      '-preset', 'veryfast',
+      '-crf', '26',
+      tmpPath,
+    ];
+    await runFfmpeg(ffmpegPath, fallbackArgs, log, abortSignal);
+    fs.renameSync(tmpPath, blurPath);
+    return blurPath;
   }
 }
 
@@ -412,7 +567,7 @@ function buildMediaSegmentsFilter(mediaSegments, scaleFilter) {
   return trimParts.join(';');
 }
 
-function buildCompositionHtml(project, relativeVideoPath) {
+function buildCompositionHtml(project, relativeVideoPath, relativeBlurVideoPath = '') {
   const sourceAspect = Math.max(0.1, project.sourceWidth / Math.max(1, project.sourceHeight));
   const stageWidth = Math.max(project.width, project.height * sourceAspect);
   const embeddedFonts = fontFaceCssForProject(project);
@@ -525,7 +680,7 @@ function buildCompositionHtml(project, relativeVideoPath) {
   <body>
     <div id="stage">
       <div id="background"></div>
-      ${blurEnabled ? `<video id="blur-video" class="clip" data-start="${introDuration}" data-duration="${trimmedVideoDuration}" data-track-index="2" data-media-start="${project.clipStartSec}" muted playsinline preload="auto" src="${escapeHtml(relativeVideoPath)}"></video><img id="blur-static" style="display: none;" />` : '<div id="blur-video"></div><div id="blur-static"></div>'}
+      ${blurEnabled ? `<video id="blur-video" class="clip" data-start="${introDuration}" data-duration="${trimmedVideoDuration}" data-track-index="2" data-media-start="${relativeBlurVideoPath ? 0 : project.clipStartSec}" muted playsinline preload="auto" src="${escapeHtml(relativeBlurVideoPath || relativeVideoPath)}"></video><img id="blur-static" style="display: none;" />` : '<div id="blur-video"></div><div id="blur-static"></div>'}
       <div id="gradient-overlay"></div>
       <div id="video-stage">
         <video
@@ -583,6 +738,7 @@ function buildCompositionHtml(project, relativeVideoPath) {
       const sourceAudio = document.getElementById('source-audio');
       const extraAudio = Array.from(document.querySelectorAll('.extra-audio'));
       const bgS = project.backgroundSettings || {};
+      const blurPrecomputed = ${relativeBlurVideoPath ? 'true' : 'false'};
       const renderScale = project.height / 1920;
       const effectScale = project.height / Math.max(1, Number(bgS.effectReferenceHeight) || 960);
 
@@ -670,8 +826,13 @@ function buildCompositionHtml(project, relativeVideoPath) {
       // Setup blur background
       if (bgS.blurEnabled) {
         [blurVideo, blurStatic].filter(Boolean).forEach((el) => {
-          el.style.filter = 'blur(' + ((bgS.blurStrength || 30) * effectScale) + 'px)';
-          el.style.transform = 'scale(' + (bgS.blurScale || 1.3) + ')';
+          if (blurPrecomputed) {
+            el.style.filter = 'none';
+            el.style.transform = 'none';
+          } else {
+            el.style.filter = 'blur(' + ((bgS.blurStrength || 30) * effectScale) + 'px)';
+            el.style.transform = 'scale(' + (bgS.blurScale || 1.3) + ')';
+          }
         });
       }
       // Setup gradient overlay
@@ -1046,18 +1207,26 @@ async function renderShortClipWithHyperFrames({
   onProgress,
 }) {
   if (abortSignal?.aborted) throw new Error('render_cancelled');
+  const totalStartedAt = Date.now();
   const sourcePath = path.resolve(inputVideoPath);
   const normalizedProject = normalizeProject(project);
   const runtimeRoot = ensureDir(path.join(app.getPath('userData'), 'HyperFramesRuntime'));
+  const proxyCacheDir = ensureDir(path.join(app.getPath('userData'), 'HyperFramesProxyCache'));
   const projectDir = ensureDir(path.join(runtimeRoot, `${Date.now()}_${toSafeFilePart(normalizedProject.id || normalizedProject.title)}`));
   const assetsDir = ensureDir(path.join(projectDir, 'assets'));
+  const proxyStartedAt = Date.now();
   const browserSafeSourcePath = await createBrowserSafeProxy({
     sourcePath,
     project: normalizedProject,
     ffmpegPath,
     assetsDir,
+    cacheDir: proxyCacheDir,
     log,
     abortSignal,
+  });
+  log.info('HyperFrames proxy prepared:', {
+    ms: Date.now() - proxyStartedAt,
+    browserSafeSourcePath,
   });
   onProgress?.({ status: 'processing', progress: 0.08, stage: 'proxy', message: 'Prepared browser-safe video proxy' });
 
@@ -1067,11 +1236,35 @@ async function renderShortClipWithHyperFrames({
   const introDuration = normalizedProject.intro && !normalizedProject.intro.hidden ? (normalizedProject.intro.duration || 0) : 0;
   const outroDuration = normalizedProject.outro && !normalizedProject.outro.hidden ? (normalizedProject.outro.duration || 0) : 0;
   const trimmedVideoDuration = Math.max(0.05, normalizedProject.durationSec - introDuration - outroDuration);
+  let blurBackgroundPath = '';
+
+  if (blurEnabled) {
+    const blurProxyStartedAt = Date.now();
+    try {
+      blurBackgroundPath = await createBlurBackgroundProxy({
+        sourcePath: browserSafeSourcePath,
+        project: normalizedProject,
+        ffmpegPath,
+        cacheDir: proxyCacheDir,
+        log,
+        abortSignal,
+      });
+      log.info('HyperFrames blur background proxy prepared:', {
+        ms: Date.now() - blurProxyStartedAt,
+        blurBackgroundPath,
+      });
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+      log.warn('HyperFrames blur background proxy failed; falling back to CSS blur.', error.message || String(error));
+      blurBackgroundPath = '';
+    }
+  }
 
   const hasIntro = !!(normalizedProject.intro && !normalizedProject.intro.hidden && introDuration > 0);
   const hasOutro = !!(normalizedProject.outro && !normalizedProject.outro.hidden && outroDuration > 0);
 
   if (blurEnabled && (hasIntro || hasOutro)) {
+    const staticStartedAt = Date.now();
     try {
       const introBgPath = path.join(assetsDir, 'intro-bg.jpg');
       const outroBgPath = path.join(assetsDir, 'outro-bg.jpg');
@@ -1081,7 +1274,7 @@ async function renderShortClipWithHyperFrames({
         const introArgs = [
           '-y',
           '-ss', '0',
-          '-i', browserSafeSourcePath,
+          '-i', blurBackgroundPath || browserSafeSourcePath,
           '-vframes', '1',
           '-q:v', '2',
           introBgPath
@@ -1096,7 +1289,7 @@ async function renderShortClipWithHyperFrames({
         const outroArgs = [
           '-y',
           '-ss', String(outroTime),
-          '-i', browserSafeSourcePath,
+          '-i', blurBackgroundPath || browserSafeSourcePath,
           '-vframes', '1',
           '-q:v', '2',
           outroBgPath
@@ -1106,6 +1299,12 @@ async function renderShortClipWithHyperFrames({
       }
     } catch (err) {
       log.error('Failed to extract static background frames for intro/outro:', err);
+    } finally {
+      log.info('HyperFrames static backgrounds prepared:', {
+        ms: Date.now() - staticStartedAt,
+        hasIntro,
+        hasOutro,
+      });
     }
   }
 
@@ -1118,6 +1317,12 @@ async function renderShortClipWithHyperFrames({
   const videoAssetName = `source${sourceExt}`;
   const assetVideoPath = path.join(assetsDir, videoAssetName);
   safeSymlinkOrCopy(browserSafeSourcePath, assetVideoPath);
+  let blurAssetName = '';
+  if (blurBackgroundPath) {
+    const blurExt = path.extname(blurBackgroundPath) || '.mp4';
+    blurAssetName = `blur-background${blurExt}`;
+    safeSymlinkOrCopy(blurBackgroundPath, path.join(assetsDir, blurAssetName));
+  }
   copyFontsourceFiles('@fontsource/cuprum', ensureDir(path.join(assetsDir, 'fonts', 'cuprum', 'files')));
   const gsapAssetPath = path.join(assetsDir, 'gsap.min.js');
   safeSymlinkOrCopy(require.resolve('gsap/dist/gsap.min.js'), gsapAssetPath);
@@ -1125,7 +1330,11 @@ async function renderShortClipWithHyperFrames({
   const htmlPath = path.join(projectDir, 'index.html');
   fs.writeFileSync(
     htmlPath,
-    buildCompositionHtml(renderProject, `./assets/${videoAssetName}`),
+    buildCompositionHtml(
+      renderProject,
+      `./assets/${videoAssetName}`,
+      blurAssetName ? `./assets/${blurAssetName}` : '',
+    ),
     'utf8',
   );
 
@@ -1183,12 +1392,20 @@ async function renderShortClipWithHyperFrames({
       format: format === 'mov' ? 'mov' : 'mp4',
       fps: renderProject.fps,
       size: `${renderProject.width}x${renderProject.height}`,
+      durationSec: renderProject.durationSec,
+      durationFrames: Math.ceil(renderProject.durationSec * renderFps),
+      introDuration,
+      outroDuration,
+      trimmedVideoDuration,
       workers,
       useGpu: true,
+      proxyCacheDir,
+      blurBackgroundProxy: !!blurBackgroundPath,
       projectDir,
       htmlPath,
     });
 
+    const renderStartedAt = Date.now();
     await executeRenderJob(job, projectDir, outputPath, (currentJob, message) => {
       onProgress?.({
         status: currentJob.status,
@@ -1203,6 +1420,12 @@ async function renderShortClipWithHyperFrames({
         message,
       });
     }, abortSignal);
+    log.info('HyperFrames render completed:', {
+      ms: Date.now() - renderStartedAt,
+      totalMs: Date.now() - totalStartedAt,
+      perfSummary: job.perfSummary || null,
+      outputPath,
+    });
 
     return { success: true, outputPath };
   } finally {
