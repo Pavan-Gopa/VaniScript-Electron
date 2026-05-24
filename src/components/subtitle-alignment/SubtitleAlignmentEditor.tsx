@@ -875,13 +875,21 @@ export function SubtitleAlignmentEditor({
     return Math.min(Math.max(gain, 0), 1);
   }
 
-  function syncExtraAudio(localSec: number, shouldPlay: boolean) {
+  function syncExtraAudio(virtualSec: number, shouldPlay: boolean) {
     audioTracks.forEach((track) => {
       const node = extraAudioRefs.current.get(track.id);
       if (!node) return;
+      
+      const introActive = intro && !intro.hidden;
+      const introDuration = introActive ? (intro?.duration || 0) : 0;
+      
+      // Calculate active physical second that corresponds to this virtual coordinate
+      const localSec = virtualSec - introDuration;
+      
       const gain = extraAudioGain(track, localSec);
       const active = gain > 0;
       const targetTime = Math.max(0, track.trimStartSec + Math.max(0, localSec - track.startSec));
+      
       node.volume = gain;
       if (!active) {
         node.pause();
@@ -1077,8 +1085,8 @@ export function SubtitleAlignmentEditor({
         }
       }
 
-      // 4. Sync extra audios
-      syncExtraAudio(mapVirtualToPhysical(nextSec, currentTrim), playing && (nextSec < activeVideoStartVirtual || nextSec > activeVideoEndVirtual || !video.paused));
+      // 4. Sync extra audios (using virtual time so they play smoothly during Intro/Outro)
+      syncExtraAudio(nextSec, playing && (nextSec < activeVideoStartVirtual || nextSec > activeVideoEndVirtual || !video.paused));
       
       currentSecRef.current = nextSec;
       setCurrentSec(nextSec);
@@ -1119,13 +1127,27 @@ export function SubtitleAlignmentEditor({
     if (videoRef.current) videoRef.current.currentTime = clipStartSec + videoTime;
     if (audioRef.current) audioRef.current.currentTime = clipStartSec + videoTime;
     if (blurVideoRef.current) blurVideoRef.current.currentTime = clipStartSec + videoTime;
-    syncExtraAudio(videoTime, false);
+    syncExtraAudio(safeV, false);
     setCurrentSec(safeV);
   }
 
   function seek(virtualSec: number) {
     releaseTypingFocus();
     const safeV = Math.min(Math.max(0, virtualSec), virtualDuration);
+    
+    const activeVideoStartVirtual = trim.trimStartSec + introDuration;
+    const activeVideoEndVirtual = activeVideoStartVirtual + (clipDurationSec - trim.trimStartSec - trim.trimEndSec);
+    const outroEndVirtual = activeVideoEndVirtual + outroDuration;
+    
+    if (
+      (introActive && safeV >= trim.trimStartSec && safeV < activeVideoStartVirtual) ||
+      (outroActive && safeV >= activeVideoEndVirtual && safeV < outroEndVirtual)
+    ) {
+      // Seek directly inside Intro/Outro blocks without double-mapping and resetting playhead
+      syncMedia(safeV);
+      return;
+    }
+    
     const physicalSec = mapVirtualToPhysical(safeV, trim);
     const adjustedPhysical = skipCut(physicalSec);
     syncMedia(mapPhysicalToVirtual(adjustedPhysical, trim));
@@ -1202,7 +1224,7 @@ export function SubtitleAlignmentEditor({
           blurVideoRef.current?.pause();
         }
       }
-      syncExtraAudio(mapVirtualToPhysical(startAt, trim), true);
+      syncExtraAudio(startAt, true);
       setPlaying(true);
     } else {
       video.pause();
@@ -1216,10 +1238,25 @@ export function SubtitleAlignmentEditor({
   function handleTimeUpdate() {
     const video = videoRef.current;
     if (!video || playing) return; // RAF tick handles it when playing
+    
+    // Check if the current virtual playhead is in Intro or Outro regions
+    const activeVideoStartVirtual = trim.trimStartSec + introDuration;
+    const activeVideoEndVirtual = activeVideoStartVirtual + (clipDurationSec - trim.trimStartSec - trim.trimEndSec);
+    const outroEndVirtual = activeVideoEndVirtual + outroDuration;
+    
+    if (
+      (introActive && currentSec >= trim.trimStartSec && currentSec < activeVideoStartVirtual) ||
+      (outroActive && currentSec >= activeVideoEndVirtual && currentSec < outroEndVirtual)
+    ) {
+      // While in Intro/Outro, don't let paused video seek events override the virtual playhead
+      return;
+    }
+    
     const local = video.currentTime - clipStartSec;
     const safe = Math.min(Math.max(0, local), clipDurationSec);
-    syncExtraAudio(safe, false);
-    setCurrentSec(mapPhysicalToVirtual(safe, trim));
+    const virtualSec = mapPhysicalToVirtual(safe, trim);
+    syncExtraAudio(virtualSec, false);
+    setCurrentSec(virtualSec);
   }
 
   /** Reset everything to the initial state as if opening the editor for the first time. */
@@ -1571,15 +1608,32 @@ export function SubtitleAlignmentEditor({
   const mainVideoOpacity = (() => {
     const introActive = intro && !intro.hidden;
     const outroActive = outro && !outro.hidden;
-    if (introActive && currentSec < trim.trimStartSec) return 0;
-    if (outroActive && currentSec > clipDurationSec - trim.trimEndSec) return 0;
-    let opacity = 1;
-    if (introActive && currentSec >= trim.trimStartSec && currentSec <= trim.trimStartSec + 2.0) {
-      opacity = (currentSec - trim.trimStartSec) / 2.0;
+    const introDuration = introActive ? (intro?.duration || 0) : 0;
+    const outroDuration = outroActive ? (outro?.duration || 0) : 0;
+
+    // During Intro, main video is fully hidden
+    if (introActive && currentSec >= trim.trimStartSec && currentSec < trim.trimStartSec + introDuration) {
+      return 0;
     }
-    const playEndTrim = clipDurationSec - trim.trimEndSec;
-    if (outroActive && currentSec >= playEndTrim - 2.0 && currentSec <= playEndTrim) {
-      opacity = Math.min(opacity, (playEndTrim - currentSec) / 2.0);
+    // During Outro, main video is fully hidden
+    const outroStart = clipDurationSec - trim.trimEndSec + introDuration;
+    if (outroActive && currentSec >= outroStart && currentSec < outroStart + outroDuration) {
+      return 0;
+    }
+    // In trimmed-out regions, video is hidden
+    if (currentSec < trim.trimStartSec || currentSec > outroStart + outroDuration) {
+      return 0;
+    }
+
+    let opacity = 1;
+    // Fade in right after Intro ends
+    const activeVideoStart = trim.trimStartSec + introDuration;
+    if (introActive && currentSec >= activeVideoStart && currentSec <= activeVideoStart + 2.0) {
+      opacity = (currentSec - activeVideoStart) / 2.0;
+    }
+    // Fade out right before Outro starts
+    if (outroActive && currentSec >= outroStart - 2.0 && currentSec <= outroStart) {
+      opacity = Math.min(opacity, (outroStart - currentSec) / 2.0);
     }
     return Math.max(0, Math.min(1, opacity));
   })();
@@ -1831,8 +1885,8 @@ export function SubtitleAlignmentEditor({
                 style={logoPlacementStyle}
               />
             )}
-             {intro?.src && !intro.hidden && currentSec >= (trim.trimStartSec - intro.duration) && currentSec <= trim.trimStartSec && (() => {
-              const elapsed = currentSec - (trim.trimStartSec - intro.duration);
+             {intro?.src && !intro.hidden && currentSec >= trim.trimStartSec && currentSec <= trim.trimStartSec + introDuration && (() => {
+              const elapsed = currentSec - trim.trimStartSec;
               const style = computeIntroOutroStyle(intro, elapsed, frameScale);
               return (
                 <img
@@ -1851,25 +1905,29 @@ export function SubtitleAlignmentEditor({
                 />
               );
             })()}
-            {outro?.src && !outro.hidden && currentSec >= (clipDurationSec - trim.trimEndSec) && currentSec <= (clipDurationSec - trim.trimEndSec + outro.duration) && (() => {
-              const elapsed = currentSec - (clipDurationSec - trim.trimEndSec);
-              const style = computeIntroOutroStyle(outro, elapsed, frameScale);
-              return (
-                <img
-                  className="alignment-outro-overlay-preview"
-                  src={outro.src}
-                  alt={outro.name || 'Outro'}
-                  style={{
-                    position: 'absolute',
-                    left: '50%',
-                    top: `${outro.y}%`,
-                    pointerEvents: 'none',
-                    height: 'auto',
-                    zIndex: 10,
-                    ...style,
-                  }}
-                />
-              );
+            {outro?.src && !outro.hidden && (() => {
+              const outroStart = clipDurationSec - trim.trimEndSec + introDuration;
+              if (currentSec >= outroStart && currentSec <= outroStart + outroDuration) {
+                const elapsed = currentSec - outroStart;
+                const style = computeIntroOutroStyle(outro, elapsed, frameScale);
+                return (
+                  <img
+                    className="alignment-outro-overlay-preview"
+                    src={outro.src}
+                    alt={outro.name || 'Outro'}
+                    style={{
+                      position: 'absolute',
+                      left: '50%',
+                      top: `${outro.y}%`,
+                      pointerEvents: 'none',
+                      height: 'auto',
+                      zIndex: 10,
+                      ...style,
+                    }}
+                  />
+                );
+              }
+              return null;
             })()}
             </div>
           </div>
