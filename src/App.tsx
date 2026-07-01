@@ -1501,9 +1501,101 @@ export default function App() {
         : session.config.translationProvider,
     };
     const transcriptionApiKey = getApiKeyForProvider(settingsRef.current, activeConfig.transcriptionProvider);
+    if (isCloudProvider(activeConfig.transcriptionProvider) && !transcriptionApiKey) {
+      alert('Please add the API key for the selected transcription provider in Settings first.');
+      return;
+    }
     const chunk = session.chunks[index];
-    setSession(prev => prev ? { ...prev, config: activeConfig } : prev);
+    setSession(prev => {
+      if (!prev) return prev;
+      const c = [...prev.chunks];
+      c[index] = { ...c[index], approved: false, status: 'pending' };
+      return { ...prev, config: activeConfig, chunks: c };
+    });
     doTranscribe(chunk.filePath, index, activeConfig, transcriptionApiKey, chunk.startSec, chunk.durationSec);
+  };
+
+  const handleRetranscribeCurrent = () => {
+    if (!session) return;
+    handleRetry(session.currentIndex);
+  };
+
+  const handleRetryTranslation = async () => {
+    if (!session) return;
+    const index = session.currentIndex;
+    const chunk = session.chunks[index];
+    if (!chunk?.original?.trim()) {
+      alert('No source transcript is available for translation.');
+      return;
+    }
+    if (!shouldTranslateChunk(session.targetLang)) {
+      alert('Choose a target language before retrying translation.');
+      return;
+    }
+
+    const activeConfig = {
+      ...session.config,
+      targetLang: session.targetLang,
+      translationProvider: settingsRef.current.translationProvider || session.config.translationProvider,
+    };
+    if (!activeConfig.translationProvider) {
+      alert('Choose a translation model or set target language to Same.');
+      return;
+    }
+    if (isCloudProvider(activeConfig.translationProvider)) {
+      const translationApiKey = getApiKeyForProvider(settingsRef.current, activeConfig.translationProvider);
+      if (!translationApiKey) {
+        alert('Please add the API key for the selected translation provider in Settings first.');
+        return;
+      }
+    }
+
+    setSession(prev => {
+      if (!prev) return prev;
+      const c = [...prev.chunks];
+      c[index] = { ...c[index], status: 'processing' };
+      return { ...prev, config: activeConfig, chunks: c };
+    });
+
+    try {
+      let translated = await translateWithProvider(chunk.original, activeConfig);
+      recordCloudUsage(activeConfig.translationProvider, {
+        inputText: stripMetadataBlock(chunk.original),
+        outputText: translated,
+      });
+      translated = normalizeRelativeTimestamps(translated, chunk.startSec, chunk.endSec);
+      if (settingsRef.current.glossary.length > 0) {
+        translated = applyGlossaryToText(translated, settingsRef.current.glossary, 'translation').text;
+      }
+      const translatedCues = parseKaraokeLines(translated, chunk.startSec, chunk.endSec)
+        .filter((line): line is KaraokeTimedLine => line.kind === 'timed')
+        .map((line) => ({ startSec: line.startSec, endSec: line.endSec, text: line.text }));
+      const translatedFormats = {
+        ...(chunk.translatedFormats ?? {}),
+        TXT: `${localizedMetadataPrefix(activeConfig, index === 0, activeConfig.targetLang)}${stripMetadataBlock(translated)}`.trim(),
+      };
+
+      setSession(prev => {
+        if (!prev) return prev;
+        const c = [...prev.chunks];
+        c[index] = {
+          ...c[index],
+          translated,
+          translatedFormats,
+          translatedCues,
+          status: 'done',
+        };
+        return { ...prev, config: activeConfig, chunks: c };
+      });
+    } catch (err: any) {
+      alert(`Translation failed: ${err?.message ?? String(err)}`);
+      setSession(prev => {
+        if (!prev) return prev;
+        const c = [...prev.chunks];
+        c[index] = { ...c[index], status: c[index].original ? 'done' : 'error' };
+        return { ...prev, chunks: c };
+      });
+    }
   };
 
   const openProject = async (
@@ -2444,6 +2536,26 @@ export default function App() {
                 </div>
 
                 <div className="review-tb-right">
+                  <button
+                    className="review-new-btn"
+                    data-tour="try-transcription-btn"
+                    onClick={handleRetranscribeCurrent}
+                    disabled={!session || chunk?.status === 'processing'}
+                    title="Re-transcribe the current segment with the selected transcription model"
+                  >
+                    <RefreshCw size={14} /> Try Transcription
+                  </button>
+                  {hasTranslation && (
+                    <button
+                      className="review-new-btn"
+                      data-tour="retry-translation-btn"
+                      onClick={handleRetryTranslation}
+                      disabled={!session || chunk?.status === 'processing' || !chunk?.original?.trim()}
+                      title="Retry translation for the current segment"
+                    >
+                      <RefreshCw size={14} /> Retry Translation
+                    </button>
+                  )}
                   <button
                     className="review-icon-btn"
                     onClick={() => {
