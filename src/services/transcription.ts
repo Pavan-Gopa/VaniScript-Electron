@@ -11,7 +11,7 @@ import {
   type TimedWord,
 } from '../lib/segment-timing';
 import { parseTaggedTranscriptionResult } from '../lib/tagged-result';
-import { AudioMetadata, LanguageResult } from '../types';
+import { AudioMetadata, LanguageResult, TranscriptCue, TranscriptWord } from '../types';
 import { translateTextWithOpenAI } from './cloud-translation';
 
 
@@ -150,7 +150,7 @@ export async function transcribeChunkOpenAI(
   config: TranscriptionConfig,
   apiKey: string,
   onProgress?: (msg: string) => void
-): Promise<{ original: string; translated: string; originalFormats: LanguageResult; translatedFormats?: LanguageResult; unrecognizedFragments: string[] }> {
+): Promise<{ original: string; translated: string; originalFormats: LanguageResult; translatedFormats?: LanguageResult; unrecognizedFragments: string[]; originalCues?: TranscriptCue[] }> {
   onProgress?.('Uploading to OpenAI Whisper...');
   const form = new FormData();
   form.append('file', audioBlob, 'chunk.wav');
@@ -198,6 +198,24 @@ export async function transcribeChunkOpenAI(
     : segmentCues.length > 0
       ? segmentCues
       : splitTextIntoReadableCues(rawText, inferredDuration || Math.max(1, rawText.length / 12));
+
+  // Structured cues for cross-platform karaoke. When OpenAI returns word-level
+  // timestamps, bin each word into the cue whose span contains its start so
+  // downstream highlighters (and the Apple Silicon edition) get sample-accurate
+  // per-word timing. Timestamps here are relative to the chunk start (0-based);
+  // the caller offsets them to absolute session time.
+  const originalCues: TranscriptCue[] = cues.map((cue) => {
+    const cueWords: TranscriptWord[] = words
+      .filter((word) => word.start + 1e-6 >= cue.startSec && word.start < cue.endSec + 1e-6)
+      .map((word) => ({ startSec: word.start, endSec: word.end, text: word.text.trim() }))
+      .filter((word) => word.text);
+    return {
+      startSec: cue.startSec,
+      endSec: cue.endSec,
+      text: cue.text,
+      words: cueWords.length > 0 ? cueWords : undefined,
+    };
+  });
   const original = words.length > 0
     ? buildTimedTextFromWords(words)
     : cues.map((cue) => `[${String(Math.floor(cue.startSec / 60)).padStart(2, '0')}:${String(Math.floor(cue.startSec % 60)).padStart(2, '0')}] ${cue.text}`).join('\n');
@@ -225,7 +243,7 @@ export async function transcribeChunkOpenAI(
     Markdown: translated,
   } : undefined;
 
-  return { original, translated, originalFormats, translatedFormats, unrecognizedFragments: [] };
+  return { original, translated, originalFormats, translatedFormats, unrecognizedFragments: [], originalCues };
 }
 
 export function fileToBase64(file: File | Blob): Promise<string> {

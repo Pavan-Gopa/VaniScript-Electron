@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BackgroundSettings, defaultBackgroundSettings, type ShortsSubtitleStyle } from '../../lib/shorts-render';
-import { Download, Pause, Play, Save, Scissors, SplitSquareHorizontal, Trash2, Link2, Unlink2, Undo2, Redo2, Languages, Repeat, RotateCcw, CheckCheck, X } from 'lucide-react';
+import { Download, Pause, Play, Save, Scissors, SplitSquareHorizontal, Trash2, Link2, Unlink2, Undo2, Redo2, Languages, Repeat, RotateCcw, CheckCheck, X, HelpCircle } from 'lucide-react';
 import { formatPlaybackClock } from '../../lib/karaoke';
 import {
   AlignedSubtitleSegment,
@@ -31,6 +31,8 @@ import { AudioTrackManager } from './AudioTrackManager';
 import { LogoManager } from './LogoManager';
 import { TextTrackManager } from './TextTrackManager';
 import { IntroOutroManager } from './IntroOutroManager';
+import { loadSettings, saveSettings } from '../../services/storage';
+import { OnboardingTour } from '../OnboardingTour';
 
 type AlignmentCue = { startSec: number; endSec: number; text: string };
 
@@ -239,6 +241,13 @@ export function SubtitleAlignmentEditor({
   onSwitchLanguage,
 }: Props) {
   const clipDurationSec = Math.max(1, clipEndSec - clipStartSec);
+  const [annotationMode, setAnnotationMode] = useState(() => {
+    try {
+      return loadSettings().annotationMode ?? true;
+    } catch {
+      return true;
+    }
+  });
   const [segments, setSegments] = useState<AlignedSubtitleSegment[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [currentSec, setCurrentSec] = useState(0);
@@ -1761,6 +1770,24 @@ export function SubtitleAlignmentEditor({
             >
               <Redo2 size={14} />
             </button>
+            <button
+              type="button"
+              className={`btn-dl btn-dl-icon ${annotationMode ? 'active' : ''}`}
+              onClick={() => {
+                const nextMode = !annotationMode;
+                setAnnotationMode(nextMode);
+                try {
+                  const s = loadSettings();
+                  s.annotationMode = nextMode;
+                  saveSettings(s);
+                } catch (e) {
+                  console.error(e);
+                }
+              }}
+              title={annotationMode ? "Disable Help Tour" : "Enable Help Tour"}
+            >
+              <HelpCircle size={14} style={{ color: annotationMode ? 'var(--accent)' : 'inherit' }} />
+            </button>
             <button type="button" className="btn-dl btn-dl-secondary" onClick={() => setInspectorOpen((open) => !open)}>
               {inspectorOpen ? 'Hide inspector' : 'Show inspector'}
             </button>
@@ -3281,6 +3308,22 @@ export function SubtitleAlignmentEditor({
             )}
           </div>
           )}
+        {annotationMode && (
+          <OnboardingTour
+            activeScreen="alignment-editor"
+            settings={{ ...loadSettings(), annotationMode }}
+            onToggleAnnotationMode={(enabled) => {
+              setAnnotationMode(enabled);
+              try {
+                const s = loadSettings();
+                s.annotationMode = enabled;
+                saveSettings(s);
+              } catch (e) {
+                console.error(e);
+              }
+            }}
+          />
+        )}
         </div>
       </div>
     </div>

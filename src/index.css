@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&family=Oswald:wght@400;500;600;700&family=Unbounded:wght@400;600;800;900&family=Montserrat:wght@500;700;900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&family=Oswald:wght@400;500;600;700&family=Unbounded:wght@400;600;800;900&family=Montserrat:wght@500;700;900&family=Caveat:wght@700&family=Kalam:wght@400;700&display=swap');
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -4905,3 +4905,326 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
 @keyframes spin { to { transform: rotate(360deg); } }
 .spin { animation: spin 1s linear infinite; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+/* ─── Interactive Onboarding Tour Styles ─── */
+.onboarding-tour-root {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10000;
+  overflow: hidden;
+}
+
+:root {
+  --onboarding-backdrop: rgba(10, 10, 18, 0.72);
+}
+:root[data-theme="light"] {
+  --onboarding-backdrop: rgba(255, 255, 255, 0.65);
+}
+
+.onboarding-spotlight {
+  position: fixed;
+  border-radius: 8px;
+  box-shadow: 0 0 0 9999px var(--onboarding-backdrop);
+  border: 2px dashed var(--accent);
+  pointer-events: none;
+  transition: all 0.35s cubic-bezier(0.25, 0.8, 0.25, 1);
+  animation: glowPulse 2.5s infinite ease-in-out;
+}
+
+.onboarding-svg-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  z-index: 10001;
+}
+
+.onboarding-arrow-path {
+  stroke-dashoffset: 0;
+  animation: drawArrow 0.8s ease-out forwards;
+}
+
+.onboarding-bubble {
+  position: fixed;
+  width: 380px;
+  min-height: 170px;
+  padding: 20px;
+  border-radius: 12px;
+  background: rgba(18, 22, 45, 0.95);
+  border: 2px solid var(--accent);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.65), inset 0 1px 0 rgba(255,255,255,0.06);
+  pointer-events: auto;
+  z-index: 10002;
+  transition: left 0.35s cubic-bezier(0.25, 0.8, 0.25, 1), top 0.35s cubic-bezier(0.25, 0.8, 0.25, 1);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  font-family: 'Kalam', cursive, sans-serif;
+  animation: bubbleSlideUp 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+  cursor: grab;
+  -webkit-app-region: no-drag;
+}
+
+.onboarding-bubble.dragging {
+  transition: none !important;
+  cursor: grabbing !important;
+}
+
+.onboarding-bubble-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  gap: 16px;
+}
+
+.onboarding-header-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.onboarding-bubble h4 {
+  font-family: 'Caveat', cursive, sans-serif;
+  font-size: 23px;
+  font-weight: 700;
+  color: var(--accent);
+  margin: 0;
+  line-height: 1.1;
+  letter-spacing: 0.4px;
+}
+
+.onboarding-step-counter {
+  font-size: 12px;
+  color: rgba(255,255,255,0.5);
+  background: rgba(255,255,255,0.08);
+  padding: 3px 8px;
+  border-radius: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.onboarding-bubble-body p {
+  font-size: 14.5px;
+  color: rgba(255,255,255,0.92);
+  margin: 0 0 16px 0;
+  line-height: 1.45;
+  font-weight: 400;
+}
+
+.onboarding-bubble-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: auto;
+}
+
+.onboarding-btn-skip {
+  background: none;
+  border: none;
+  color: rgba(255,255,255,0.45);
+  font-family: 'Kalam', cursive, sans-serif;
+  font-size: 11.5px;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 4px 0;
+  transition: color 0.15s;
+}
+
+.onboarding-btn-skip:hover {
+  color: var(--red);
+}
+
+.onboarding-btn-prev {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.15);
+  color: #fff;
+  font-family: 'Kalam', cursive, sans-serif;
+  font-size: 12px;
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.onboarding-btn-prev:hover {
+  background: rgba(255,255,255,0.12);
+  border-color: rgba(255,255,255,0.25);
+}
+
+.onboarding-btn-next {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: #0c0d1e;
+  font-family: 'Kalam', cursive, sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 6px;
+  padding: 4px 12px;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(245,166,35,0.22);
+  transition: background-color 0.15s, transform 0.1s, box-shadow 0.15s;
+}
+
+.onboarding-btn-next:hover {
+  background: var(--accent-hover);
+  box-shadow: 0 6px 16px rgba(245,166,35,0.35);
+  transform: translateY(-1px);
+}
+
+.onboarding-btn-next:active {
+  transform: translateY(0);
+}
+
+.onboarding-mini-badge {
+  position: fixed;
+  right: 80px; /* offset settings gears and other widgets */
+  top: 13px;
+  background: rgba(245, 166, 35, 0.12);
+  border: 1.5px dashed var(--accent);
+  color: var(--accent);
+  font-family: 'Kalam', cursive, sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 5px 12px;
+  border-radius: 20px;
+  pointer-events: auto;
+  cursor: pointer;
+  z-index: 9999;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: all 0.2s ease-in-out;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+  -webkit-app-region: no-drag !important;
+}
+
+.onboarding-mini-badge:hover {
+  background: rgba(245, 166, 35, 0.22);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(245,166,35,0.3);
+}
+
+/* Light Mode Overrides for Onboarding */
+:root[data-theme="light"] .onboarding-bubble {
+  background: rgba(255, 255, 255, 0.96);
+  border: 2px solid var(--accent);
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.22), inset 0 1px 0 rgba(255,255,255,0.9);
+}
+
+:root[data-theme="light"] .onboarding-bubble-body p {
+  color: #1e293b;
+}
+
+:root[data-theme="light"] .onboarding-btn-prev {
+  background: rgba(15,23,42,0.05);
+  border: 1px solid rgba(15,23,42,0.12);
+  color: #0f172a;
+}
+
+:root[data-theme="light"] .onboarding-btn-prev:hover {
+  background: rgba(15,23,42,0.08);
+}
+
+:root[data-theme="light"] .onboarding-btn-skip {
+  color: rgba(15,23,42,0.45);
+}
+
+:root[data-theme="light"] .onboarding-mini-badge {
+  background: rgba(245, 166, 35, 0.12);
+  box-shadow: 0 4px 12px rgba(15,23,42,0.1);
+}
+
+/* Onboarding Language Switcher styles */
+.onboarding-lang-switcher {
+  display: inline-flex;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.2);
+  height: 26px;
+  padding: 1px;
+}
+
+.onboarding-lang-switcher button {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.45);
+  font-family: 'Inter', sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 0 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+}
+
+.onboarding-lang-switcher button:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.onboarding-lang-switcher button.active {
+  color: #0c0d1e;
+  background: var(--accent);
+}
+
+:root[data-theme="light"] .onboarding-lang-switcher {
+  border-color: rgba(15, 23, 42, 0.15);
+  background: rgba(15, 23, 42, 0.05);
+}
+
+:root[data-theme="light"] .onboarding-lang-switcher button {
+  color: rgba(15, 23, 42, 0.55);
+}
+
+:root[data-theme="light"] .onboarding-lang-switcher button:hover {
+  color: #0f172a;
+  background: rgba(15, 23, 42, 0.06);
+}
+
+:root[data-theme="light"] .onboarding-lang-switcher button.active {
+  color: #fff;
+  background: var(--accent);
+}
+
+:root[data-theme="light"] .onboarding-step-counter {
+  color: rgba(15, 23, 42, 0.65);
+  background: rgba(15, 23, 42, 0.08);
+}
+
+/* ─── Onboarding Keyframe Animations ─── */
+@keyframes glowPulse {
+  0%, 100% {
+    box-shadow: 0 0 0 9999px var(--onboarding-backdrop), 0 0 4px var(--accent);
+  }
+  50% {
+    box-shadow: 0 0 0 9999px var(--onboarding-backdrop), 0 0 14px var(--accent);
+  }
+}
+
+@keyframes bubbleSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes drawArrow {
+  from {
+    stroke-dasharray: 0 1000;
+  }
+  to {
+    stroke-dasharray: 6 4;
+  }
+}

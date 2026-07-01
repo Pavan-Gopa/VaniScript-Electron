@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { OutputFormat } from '../types';
+import type { TranscriptCue } from '../types';
 import { Loader2, Edit3, Sparkles } from 'lucide-react';
-import { activeWordIndex as getActiveWordIndex, parseKaraokeLines } from '../lib/karaoke';
+import { activeWordIndex as getActiveWordIndex, cuesToKaraokeLines, hasInlineTimestampMarkers, parseKaraokeLines } from '../lib/karaoke';
 import { replaceSelectedText } from '../lib/text-revision';
 
 interface TextPanelProps {
@@ -19,6 +20,12 @@ interface TextPanelProps {
   karaokeTimeSec?: number;
   karaokeStartSec?: number;
   karaokeEndSec?: number;
+  // Canonical structured cues. When present and the text has no inline [mm:ss]
+  // markers (e.g. a session imported from the Apple Silicon edition), the
+  // karaoke lines and per-word highlighting are driven by these cues — with
+  // exact word timing when `words[]` is available.
+  originalCues?: TranscriptCue[];
+  translatedCues?: TranscriptCue[];
 }
 
 export function TextPanel({ 
@@ -35,6 +42,8 @@ export function TextPanel({
   karaokeTimeSec = 0,
   karaokeStartSec = 0,
   karaokeEndSec = 0,
+  originalCues,
+  translatedCues,
 }: TextPanelProps) {
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
   const [selectedText, setSelectedText] = useState<string>('');
@@ -65,10 +74,18 @@ export function TextPanel({
     };
   }, []);
 
-  const karaokeLines = useMemo(
-    () => parseKaraokeLines(content, karaokeStartSec, karaokeEndSec),
-    [content, karaokeStartSec, karaokeEndSec]
-  );
+  const karaokeLines = useMemo(() => {
+    // Prefer structured cues when the chunk text carries no inline [mm:ss]
+    // markers (e.g. sessions imported from the Swift edition, whose `original`
+    // is clean text). Cues give exact segment + word timing. When the text has
+    // its own markers (Electron-native) or no cues exist, fall back to parsing
+    // markers — preserving existing behavior and edit consistency.
+    const cues = lang === 'translated' ? translatedCues : originalCues;
+    const cueLines = cues && cues.length > 0 && !hasInlineTimestampMarkers(content)
+      ? cuesToKaraokeLines(cues)
+      : [];
+    return cueLines.length > 0 ? cueLines : parseKaraokeLines(content, karaokeStartSec, karaokeEndSec);
+  }, [content, karaokeStartSec, karaokeEndSec, lang, originalCues, translatedCues]);
 
   const activeLineIndex = useMemo(() => {
     if (!karaokeEnabled) return -1;
@@ -117,7 +134,7 @@ export function TextPanel({
             : 'active'
         : '';
       const activeWord = isActiveLine
-        ? getActiveWordIndex(line.words, line.startSec, line.endSec, karaokeTimeSec)
+        ? getActiveWordIndex(line.words, line.startSec, line.endSec, karaokeTimeSec, line.timedWords)
         : -1;
       let wordIndex = -1;
 

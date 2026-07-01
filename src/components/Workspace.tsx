@@ -487,6 +487,7 @@ export function Workspace({ onFileSelected }: WorkspaceProps) {
         {/* Upload card */}
         <div
           className={`source-card ${isDragging ? 'drag-over' : ''}`}
+          data-tour="workspace-dropzone"
           onDragOver={e => { e.preventDefault(); setIsDragging(true); }}
           onDragLeave={() => setIsDragging(false)}
           onDrop={handleDrop}
@@ -500,7 +501,7 @@ export function Workspace({ onFileSelected }: WorkspaceProps) {
         </div>
 
         {/* Record card */}
-        <div className={`source-card solid record-source-card ${isRecording ? 'recording' : ''}`} onClick={openRecordingModal}>
+        <div className={`source-card solid record-source-card ${isRecording ? 'recording' : ''}`} data-tour="workspace-record-card" onClick={openRecordingModal}>
           <div className="source-card-icon">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"/></svg>
           </div>
@@ -511,7 +512,7 @@ export function Workspace({ onFileSelected }: WorkspaceProps) {
         </div>
 
         {/* Link import card */}
-        <div className="source-card solid link-source-card" onClick={openLinkImportModal}>
+        <div className="source-card solid link-source-card" data-tour="workspace-link-card" onClick={openLinkImportModal}>
           <div className="source-card-icon">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
           </div>

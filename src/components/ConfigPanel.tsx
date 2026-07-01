@@ -189,7 +189,7 @@ export function ConfigPanel({ fileName, settings, onStart, onCancel }: ConfigPan
           Engine Configuration
         </div>
 
-        <div className="field-group">
+        <div className="field-group" data-tour="config-metadata">
           <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginBottom: 4 }}>Audio Metadata</p>
           <div className="field-row">
             <div className="field">
@@ -215,7 +215,7 @@ export function ConfigPanel({ fileName, settings, onStart, onCancel }: ConfigPan
           <div className="field-row field-row-full" style={{ marginTop: 4 }}>
             <div className="field">
               <label>Target Language</label>
-              <select value={cfg.targetLang} onChange={e => upd({ targetLang: e.target.value })}>
+              <select data-tour="target-lang-select" value={cfg.targetLang} onChange={e => upd({ targetLang: e.target.value })}>
                 {LANGS.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}
               </select>
             </div>
@@ -225,6 +225,7 @@ export function ConfigPanel({ fileName, settings, onStart, onCancel }: ConfigPan
             <div className="field">
               <label>Transcription Model</label>
               <select
+                data-tour="transcription-model-select"
                 value={cfg.transcriptionProvider}
                 onChange={e => upd({ transcriptionProvider: e.target.value })}
                 disabled={transcriptionProviders.length === 0}
@@ -235,6 +236,7 @@ export function ConfigPanel({ fileName, settings, onStart, onCancel }: ConfigPan
             <div className="field">
               <label>Translation Model</label>
               <select
+                data-tour="translation-model-select"
                 value={cfg.translationProvider}
                 onChange={e => upd({ translationProvider: e.target.value })}
                 disabled={!translationAvailability.enabled || translationAvailability.providers.length === 0}
@@ -255,6 +257,7 @@ export function ConfigPanel({ fileName, settings, onStart, onCancel }: ConfigPan
           <button className="btn-cancel" onClick={onCancel}>Cancel</button>
           <button
             className="btn-start"
+            data-tour="start-engine-btn"
             disabled={!cfg.transcriptionProvider || (translationAvailability.enabled && !cfg.translationProvider)}
             onClick={() => onStart(cfg)}
           >

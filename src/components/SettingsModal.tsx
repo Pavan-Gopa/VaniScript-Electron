@@ -6,6 +6,7 @@ import { getAvailableTranscriptionProviders, getAvailableTranslationProviders, P
 import { createGlossaryEntry } from '../lib/glossary';
 import { filterGlossaryEntries, GlossarySortMode, joinGlossaryEntries, listGlossaryCategories, sortGlossaryEntries } from '../lib/glossary-management';
 import { PROMPT_DEFINITIONS, PROMPT_SLOTS, type PromptPresetId, type PromptSlot } from '../lib/prompt-presets';
+import { reconcileLocalModelStatesWithDisk } from '../services/model-presence';
 
 const TABS = ['API Keys', 'Models', 'Appearance', 'Glossary', 'Chunking', 'Transcription', 'Prompts', 'Statistics'];
 
@@ -38,7 +39,14 @@ function ApiKey({ label, value, onChange, placeholder }: { label: string; value:
   );
 }
 
-interface Props { settings: AppSettings; usage: UsageStats; onSave: (s: AppSettings) => void; onClose: () => void; }
+interface Props {
+  settings: AppSettings;
+  usage: UsageStats;
+  onSave: (s: AppSettings) => void;
+  onClose: () => void;
+  tabIndex?: number;
+  onTabChange?: (tab: number) => void;
+}
 
 const CLOUD_API_PROVIDERS = [
   {
@@ -124,15 +132,19 @@ function renderProviderOptions(options: ProviderOption[]) {
   );
 }
 
-export function SettingsModal({ settings, usage, onSave, onClose }: Props) {
+export function SettingsModal({ settings, usage, onSave, onClose, tabIndex, onTabChange }: Props) {
   const [s, setS] = useState<AppSettings>({ ...settings });
-  const [tab, setTab] = useState(0);
+  const [localTab, setLocalTab] = useState(0);
+  const tab = tabIndex !== undefined ? tabIndex : localTab;
+  const setTab = onTabChange ?? setLocalTab;
   const [glossarySearch, setGlossarySearch] = useState('');
   const [glossaryCategory, setGlossaryCategory] = useState('all');
   const [glossarySort, setGlossarySort] = useState<GlossarySortMode>('newest');
   const [selectedGlossaryIds, setSelectedGlossaryIds] = useState<string[]>([]);
   const [selectedPromptId, setSelectedPromptId] = useState<PromptPresetId>('transcriptionSystem');
   const downloadSnapshotsRef = useRef<Record<string, { bytes: number; unchangedTicks: number }>>({});
+  const onSaveRef = useRef(onSave);
+  const settingsRef = useRef(s);
   const upd = (p: Partial<AppSettings>) => setS(prev => ({ ...prev, ...p }));
   const transcriptionProviders = getAvailableTranscriptionProviders(s);
   const translationTargetForModelSelection = s.defaultTargetLang === 'same' ? 'Russian' : s.defaultTargetLang;
@@ -146,6 +158,46 @@ export function SettingsModal({ settings, usage, onSave, onClose }: Props) {
   const selectedPrompt = PROMPT_DEFINITIONS.find((definition) => definition.id === selectedPromptId) ?? PROMPT_DEFINITIONS[0];
   const selectedPromptSettings = s.promptPresets[selectedPrompt.id];
   const activePromptSlot = selectedPromptSettings?.active ?? 'default';
+
+  useEffect(() => {
+    onSaveRef.current = onSave;
+  }, [onSave]);
+
+  useEffect(() => {
+    settingsRef.current = s;
+  }, [s]);
+
+  const reconcileLocalModelsWithDisk = useCallback(async () => {
+    if (!window.electronAPI?.localReconcileModels) return;
+
+    const current = settingsRef.current;
+    const snapshot = await window.electronAPI.localReconcileModels({
+      asrIds: Object.keys(current.localAsrModels),
+      translationIds: Object.keys(current.localTranslationModels),
+    });
+    if (!snapshot?.ok) return;
+
+    const next = reconcileLocalModelStatesWithDisk(current, {
+      asr: snapshot.asr,
+      translation: snapshot.translation,
+    });
+    const unchanged = next.transcriptionProvider === current.transcriptionProvider
+      && next.translationProvider === current.translationProvider
+      && JSON.stringify(next.localAsrModels) === JSON.stringify(current.localAsrModels)
+      && JSON.stringify(next.localTranslationModels) === JSON.stringify(current.localTranslationModels);
+    if (unchanged) return;
+
+    settingsRef.current = next;
+    setS(next);
+    onSaveRef.current(next);
+  }, []);
+
+  useEffect(() => {
+    void reconcileLocalModelsWithDisk();
+    const onFocus = () => void reconcileLocalModelsWithDisk();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [reconcileLocalModelsWithDisk]);
 
   const updatePromptPreset = useCallback((id: PromptPresetId, patch: Partial<AppSettings['promptPresets'][PromptPresetId]>) => {
     setS((prev) => ({
@@ -212,6 +264,104 @@ export function SettingsModal({ settings, usage, onSave, onClose }: Props) {
         },
       };
     });
+  }, []);
+
+  useEffect(() => {
+    if (!window.electronAPI?.localScanModels) return;
+
+    const parakeetScanIds: Record<string, string> = {
+      'istupakov_parakeet-tdt-0.6b-v2-onnx': 'parakeet-english',
+      'istupakov_parakeet-tdt-0.6b-v3-onnx': 'parakeet-multilingual',
+    };
+
+    const applyScan = (payload: any) => {
+      const entries = Array.isArray(payload?.entries) ? payload.entries : [];
+      setS((prev) => {
+        const localAsrModels = { ...prev.localAsrModels };
+        const localTranslationModels = { ...prev.localTranslationModels };
+        const seenAsr = new Set<string>();
+        const seenTranslation = new Set<string>();
+
+        for (const entry of entries) {
+          if (!entry?.name || !entry?.runtime) continue;
+
+          if (entry.runtime === 'ggml' && entry.role === 'asr' && entry.supported) {
+            const modelId = String(entry.name);
+            const existing = localAsrModels[modelId];
+            localAsrModels[modelId] = {
+              ...(existing ?? {}),
+              label: existing?.label ?? (modelId.endsWith('.bin') ? `Drop-in Whisper: ${modelId}` : modelId),
+              runtime: 'whisper',
+              custom: existing ? existing.custom : true,
+              status: 'downloaded',
+              path: entry.path ?? existing?.path ?? null,
+              error: undefined,
+              progress: 1,
+              progressLabel: undefined,
+            };
+            seenAsr.add(modelId);
+            continue;
+          }
+
+          if (entry.runtime === 'mlx' && parakeetScanIds[entry.name]) {
+            const modelId = parakeetScanIds[entry.name];
+            const existing = localAsrModels[modelId];
+            localAsrModels[modelId] = {
+              ...(existing ?? {}),
+              label: existing?.label ?? modelId,
+              runtime: 'parakeet',
+              status: 'downloaded',
+              path: entry.path ?? existing?.path ?? null,
+              error: undefined,
+              progress: 1,
+              progressLabel: undefined,
+            };
+            seenAsr.add(modelId);
+            continue;
+          }
+
+          if (entry.runtime === 'gguf' && entry.role === 'polish' && entry.supported) {
+            const modelId = String(entry.name);
+            const existing = localTranslationModels[modelId];
+            localTranslationModels[modelId] = {
+              ...(existing ?? {}),
+              label: existing?.label ?? (modelId.endsWith('.gguf') ? `Drop-in GGUF: ${modelId}` : modelId),
+              runtime: 'llamacpp',
+              custom: existing ? existing.custom : true,
+              status: 'downloaded',
+              path: entry.path ?? existing?.path ?? null,
+              error: undefined,
+              progress: 1,
+              progressLabel: undefined,
+            };
+            seenTranslation.add(modelId);
+          }
+        }
+
+        for (const [modelId, state] of Object.entries(localAsrModels)) {
+          if (state.status !== 'downloaded' || seenAsr.has(modelId)) continue;
+          localAsrModels[modelId] = { ...state, status: 'not_downloaded', path: null, progress: undefined, progressLabel: undefined };
+        }
+        for (const [modelId, state] of Object.entries(localTranslationModels)) {
+          if (state.status !== 'downloaded' || seenTranslation.has(modelId)) continue;
+          localTranslationModels[modelId] = { ...state, status: 'not_downloaded', path: null, progress: undefined, progressLabel: undefined };
+        }
+
+        if (
+          JSON.stringify(prev.localAsrModels) === JSON.stringify(localAsrModels)
+          && JSON.stringify(prev.localTranslationModels) === JSON.stringify(localTranslationModels)
+        ) {
+          return prev;
+        }
+
+        const next = { ...prev, localAsrModels, localTranslationModels };
+        onSaveRef.current(next);
+        return next;
+      });
+    };
+
+    void window.electronAPI.localScanModels().then(applyScan).catch(() => undefined);
+    return window.electronAPI.onLocalModelsUpdated?.(applyScan);
   }, []);
 
   useEffect(() => {
@@ -283,6 +433,7 @@ export function SettingsModal({ settings, usage, onSave, onClose }: Props) {
         if (snapshot.status === 'downloaded') {
           updateLocalModelState(kind, modelId, {
             status: 'downloaded',
+            path: snapshot.path ?? state.path ?? null,
             progress: 1,
             progressLabel: 'Download complete',
             error: undefined,
@@ -585,7 +736,14 @@ export function SettingsModal({ settings, usage, onSave, onClose }: Props) {
 
         <div className="modal-tabs">
           {TABS.map((t, i) => (
-            <button key={t} className={`modal-tab ${tab === i ? 'active' : ''}`} onClick={() => setTab(i)}>{t}</button>
+            <button
+              key={t}
+              className={`modal-tab ${tab === i ? 'active' : ''}`}
+              onClick={() => setTab(i)}
+              data-tour={`settings-tab-${i}`}
+            >
+              {t}
+            </button>
           ))}
         </div>
 
@@ -749,6 +907,27 @@ export function SettingsModal({ settings, usage, onSave, onClose }: Props) {
                     </div>
                     <input type="range" min={0.85} max={1.35} step={0.05} value={s.fontScale ?? 1} onChange={e => upd({ fontScale: Number(e.target.value) })} />
                     <div className="s-range-labels"><span>85%</span><span>135%</span></div>
+                  </div>
+                </div>
+              </div>
+              <div className="s-section" style={{ marginTop: 16 }}>
+                <p className="s-section-title">Help & Guides</p>
+                <div className="s-card">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ marginRight: 16 }}>
+                      <span className="s-label" style={{ fontWeight: 600, display: 'block', fontSize: 13 }}>Interactive Onboarding Tour</span>
+                      <span style={{ fontSize: 11, color: 'rgba(255, 255, 255, 0.45)', marginTop: 2, display: 'block' }}>
+                        Show hand-drawn annotations and arrows to help guide through the app workflows.
+                      </span>
+                    </div>
+                    <label className="glossary-select-row" style={{ display: 'flex', alignItems: 'center', gap: 6, margin: 0, padding: 0, border: 'none', background: 'none' }}>
+                      <input
+                        type="checkbox"
+                        checked={!!s.annotationMode}
+                        onChange={e => upd({ annotationMode: e.target.checked })}
+                      />
+                      <span style={{ fontSize: 12 }}>Enabled</span>
+                    </label>
                   </div>
                 </div>
               </div>

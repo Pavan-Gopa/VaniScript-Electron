@@ -24,17 +24,17 @@ const TRANSLATION_MODEL_CATALOG = {
     fileName: 'Qwen_Qwen3.5-4B-Q4_K_M.gguf',
     label: 'Qwen 3.5 4B Q4_K_M',
   },
-  'gemma-4-2b-it-q4_k_m': {
-    id: 'gemma-4-2b-it-q4_k_m',
-    repositoryId: 'bartowski/google_gemma-4-E2B-it-GGUF',
-    fileName: 'google_gemma-4-E2B-it-Q4_K_M.gguf',
-    label: 'Gemma 4 2B IT Q4_K_M',
+  'qwen35-9b-instruct-q4_k_m': {
+    id: 'qwen35-9b-instruct-q4_k_m',
+    repositoryId: 'bartowski/Qwen_Qwen3.5-9B-GGUF',
+    fileName: 'Qwen_Qwen3.5-9B-Q4_K_M.gguf',
+    label: 'Qwen 3.5 9B Q4_K_M',
   },
-  'gemma-4-4b-it-q4_k_m': {
-    id: 'gemma-4-4b-it-q4_k_m',
-    repositoryId: 'bartowski/google_gemma-4-E4B-it-GGUF',
-    fileName: 'google_gemma-4-E4B-it-Q4_K_M.gguf',
-    label: 'Gemma 4 4B IT Q4_K_M',
+  'nemotron3-nano-4b-q4_k_m': {
+    id: 'nemotron3-nano-4b-q4_k_m',
+    repositoryId: 'nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF',
+    fileName: 'NVIDIA-Nemotron3-Nano-4B-Q4_K_M.gguf',
+    label: 'NVIDIA Nemotron-3 Nano 4B Q4_K_M',
   },
 };
 
@@ -54,13 +54,32 @@ function getModelDirectory(baseDir, modelId) {
   return path.join(baseDir, modelId);
 }
 
+function resolveCustomInstalledModelPath(baseDir, modelId) {
+  const safeName = path.basename(String(modelId || ''));
+  if (!safeName) return null;
+
+  const directPath = path.join(baseDir, safeName);
+  if (safeName.toLowerCase().endsWith('.gguf') && fs.existsSync(directPath) && fs.statSync(directPath).size > 0) {
+    return directPath;
+  }
+
+  const modelDir = path.join(baseDir, safeName);
+  if (!fs.existsSync(modelDir) || !fs.statSync(modelDir).isDirectory()) return null;
+  const fileName = fs.readdirSync(modelDir).find((entry) => entry.toLowerCase().endsWith('.gguf'));
+  if (!fileName) return null;
+  const filePath = path.join(modelDir, fileName);
+  return fs.existsSync(filePath) && fs.statSync(filePath).size > 0 ? filePath : null;
+}
+
 function getInstalledModelPath(baseDir, modelId) {
   const descriptor = getTranslationModelDescriptor(modelId);
   return path.join(getModelDirectory(baseDir, modelId), descriptor.fileName);
 }
 
 function resolveInstalledModelPath(baseDir, modelId) {
-  const filePath = getInstalledModelPath(baseDir, modelId);
+  const descriptor = TRANSLATION_MODEL_CATALOG[modelId];
+  if (!descriptor) return resolveCustomInstalledModelPath(baseDir, modelId);
+  const filePath = path.join(getModelDirectory(baseDir, modelId), descriptor.fileName);
   return fs.existsSync(filePath) && fs.statSync(filePath).size > 0 ? filePath : null;
 }
 
@@ -186,7 +205,12 @@ async function installTranslationModel(baseDir, modelId, onProgress) {
 }
 
 function removeTranslationModel(baseDir, modelId) {
-  const modelDir = getModelDirectory(baseDir, modelId);
+  const customPath = TRANSLATION_MODEL_CATALOG[modelId] ? null : resolveCustomInstalledModelPath(baseDir, modelId);
+  if (customPath && path.dirname(customPath) === baseDir) {
+    fs.rmSync(customPath, { force: true });
+    return;
+  }
+  const modelDir = getModelDirectory(baseDir, path.basename(String(modelId || '')));
   if (fs.existsSync(modelDir)) {
     fs.rmSync(modelDir, { recursive: true, force: true });
   }

@@ -55,11 +55,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   // ─── Local ASR ────────────────────────────────────────────────────────────
-  localInstallAsrModel: (opts) => ipcRenderer.invoke('local-asr:installModel', opts),
-  localRemoveAsrModel: (opts) => ipcRenderer.invoke('local-asr:removeModel', opts),
-  localTranscribeChunk: (opts) => ipcRenderer.invoke('local-asr:transcribeChunk', opts),
+	  localInstallAsrModel: (opts) => ipcRenderer.invoke('local-asr:installModel', opts),
+		  localRemoveAsrModel: (opts) => ipcRenderer.invoke('local-asr:removeModel', opts),
+		  localTranscribeChunk: (opts) => ipcRenderer.invoke('local-asr:transcribeChunk', opts),
+	  localScanModels: () => ipcRenderer.invoke('local-models:scan'),
+	  localReconcileModels: (opts) => ipcRenderer.invoke('local-models:reconcile', opts),
+	  onLocalModelsUpdated: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('local-models:updated', handler);
+    return () => ipcRenderer.removeListener('local-models:updated', handler);
+  },
 
-  // ─── Local translation ───────────────────────────────────────────────────
+	  // ─── Local translation ───────────────────────────────────────────────────
   localInstallTranslationModel: (opts) => ipcRenderer.invoke('local-translation:installModel', opts),
   localRemoveTranslationModel: (opts) => ipcRenderer.invoke('local-translation:removeModel', opts),
   localResolveTranslationModelPath: (opts) => ipcRenderer.invoke('local-translation:resolveModelPath', opts),

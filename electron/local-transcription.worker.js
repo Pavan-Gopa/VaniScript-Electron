@@ -55,9 +55,14 @@ function normalizeResult(res, { useGpu }) {
 }
 
 function getModelPaths(modelId) {
-  const info = MODEL_CONFIGS[modelId];
+  const knownModel = MODEL_CONFIGS[modelId];
+  const info = knownModel || (/\.bin$/i.test(String(modelId || '')) ? { filename: path.basename(String(modelId)), lang: 'auto' } : null);
   if (!info) throw new Error(`Unknown local ASR model: ${modelId}`);
-  const dir = path.join(MODEL_BASE_DIR, modelId);
+  const dir = path.join(MODEL_BASE_DIR, knownModel ? modelId : path.basename(String(modelId)));
+  const directDropInPath = path.join(MODEL_BASE_DIR, path.basename(info.filename));
+  if (fs.existsSync(directDropInPath)) {
+    return { info, dir: MODEL_BASE_DIR, modelPath: directDropInPath };
+  }
   ensureDir(dir);
   const modelPath = path.join(dir, info.filename);
   return { info, dir, modelPath };

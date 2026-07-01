@@ -13,8 +13,10 @@ test('electron contract exposes local transcription and model lifecycle methods'
   assert.match(preload, /localRemoveTranslationModel/);
   assert.match(preload, /localTranslateText/);
   assert.match(preload, /localGetModelDownloadStatus/);
+  assert.match(preload, /localReconcileModels/);
   assert.match(preload, /onLocalModelDownloadProgress/);
   assert.match(preload, /getSystemMemoryInfo/);
   assert.match(main, /const os = require\('os'\)/);
   assert.match(main, /system:getMemoryInfo/);
+  assert.match(main, /local-models:reconcile/);
 });

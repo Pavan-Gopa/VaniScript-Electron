@@ -1,3 +1,5 @@
+import type { TranscriptCue, TranscriptWord } from '../types';
+
 export interface KaraokePlainLine {
   kind: 'plain';
   text: string;
@@ -10,9 +12,22 @@ export interface KaraokeTimedLine {
   endSec: number;
   text: string;
   words: string[];
+  // Exact per-word timing when this line was built from structured cues
+  // (canonical TranscriptCue.words). When present, activeWordIndex uses real
+  // word timestamps instead of the ratio-based approximation.
+  timedWords?: TranscriptWord[];
 }
 
 export type KaraokeLine = KaraokePlainLine | KaraokeTimedLine;
+
+// Matches an inline `[mm:ss]` / `[h:mm:ss]` timestamp marker (with optional
+// fractional seconds). Used to decide whether a chunk's text carries its own
+// marker timing (Electron-native) vs. clean text that must be driven by cues.
+const INLINE_TIMESTAMP_PATTERN = /\[(?:(?:\d+:)?\d{2}:\d{2}(?:[.,]\d{1,3})?)\]/;
+
+export function hasInlineTimestampMarkers(content: string): boolean {
+  return INLINE_TIMESTAMP_PATTERN.test(String(content || ''));
+}
 
 export function formatPlaybackClock(totalSeconds: number): string {
   const safeSeconds = Math.max(0, Math.floor(totalSeconds));
@@ -144,9 +159,58 @@ export function parseKaraokeLines(content: string, fallbackStartSec: number, fal
   return parsed;
 }
 
-export function activeWordIndex(words: string[], startSec: number, endSec: number, currentSec: number): number {
-  if (words.length === 0 || currentSec < startSec || currentSec >= endSec) return -1;
+export function activeWordIndex(
+  words: string[],
+  startSec: number,
+  endSec: number,
+  currentSec: number,
+  timedWords?: TranscriptWord[]
+): number {
+  if (words.length === 0 && (!timedWords || timedWords.length === 0)) return -1;
+  if (currentSec < startSec || currentSec >= endSec) return -1;
+
+  // Exact per-word timing when available (canonical cues carry TranscriptWord
+  // seconds from WhisperKit / OpenAI word timestamps).
+  if (timedWords && timedWords.length > 0) {
+    const exact = timedWords.findIndex((w) => currentSec >= w.startSec && currentSec < w.endSec);
+    if (exact >= 0) return Math.min(exact, Math.max(0, words.length - 1));
+    // In a gap between words: snap to the most recent word that has started.
+    let lastStarted = -1;
+    for (let i = 0; i < timedWords.length; i += 1) {
+      if (timedWords[i].startSec <= currentSec) lastStarted = i;
+      else break;
+    }
+    if (lastStarted >= 0) return Math.min(lastStarted, Math.max(0, words.length - 1));
+    return 0;
+  }
+
+  // Ratio-based fallback (inline marker lines / cues without word timing).
+  if (words.length === 0) return -1;
   const duration = Math.max(0.1, endSec - startSec);
   const ratio = Math.min(0.999, Math.max(0, (currentSec - startSec) / duration));
   return Math.min(words.length - 1, Math.floor(ratio * words.length));
+}
+
+// Convert canonical structured cues into karaoke lines for rendering. Mirrors
+// the per-cue timing exactly and carries word-level timestamps through to
+// `timedWords` so highlighting is sample-accurate when available.
+export function cuesToKaraokeLines(cues: TranscriptCue[] | undefined | null): KaraokeTimedLine[] {
+  if (!cues || cues.length === 0) return [];
+  const lines: KaraokeTimedLine[] = [];
+  for (const cue of cues) {
+    if (!cue || typeof cue.text !== 'string') continue;
+    const text = cue.text.trim();
+    if (!text) continue;
+    const wordStrings = text.match(/\S+/g) || [];
+    lines.push({
+      kind: 'timed',
+      timestamp: formatPlaybackClock(cue.startSec),
+      startSec: cue.startSec,
+      endSec: cue.endSec,
+      text,
+      words: wordStrings,
+      timedWords: cue.words,
+    });
+  }
+  return lines;
 }

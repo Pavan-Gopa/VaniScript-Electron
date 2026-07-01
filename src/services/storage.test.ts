@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadSettings } from './storage';
 
-test('loadSettings drops unknown persisted local model entries', () => {
+test('loadSettings drops stale unknown local models but preserves scan custom entries', () => {
   const values = new Map<string, string>();
   const localStorageMock = {
     getItem: (key: string) => values.get(key) ?? null,
@@ -17,27 +17,31 @@ test('loadSettings drops unknown persisted local model entries', () => {
   });
 
   values.set('vs_settings_v1', JSON.stringify({
-    localAsrModels: {
-      'parakeet-english': { status: 'failed', label: 'Parakeet English' },
-      'stale-parakeet-download': { status: 'failed', error: 'legacy row without label' },
-    },
-    localTranslationModels: {
-      'qwen35-2b-instruct-q4_k_m': { status: 'not_downloaded' },
-      'unknown-translation-model': { status: 'failed' },
-    },
-  }));
+	    localAsrModels: {
+	      'parakeet-english': { status: 'failed', label: 'Parakeet English' },
+	      'stale-parakeet-download': { status: 'failed', error: 'legacy row without label' },
+	      'drop-in-whisper.bin': { status: 'downloaded', label: 'Drop-in Whisper', runtime: 'whisper', custom: true },
+	    },
+	    localTranslationModels: {
+	      'qwen35-2b-instruct-q4_k_m': { status: 'not_downloaded' },
+	      'unknown-translation-model': { status: 'failed' },
+	      'custom-qwen': { status: 'downloaded', label: 'Custom Qwen', runtime: 'llamacpp', custom: true },
+	    },
+	  }));
 
   const settings = loadSettings();
 
   assert.deepEqual(Object.keys(settings.localAsrModels), [
-    'parakeet-english',
-    'whisper-medium-en',
-    'whisper-large-v3',
-  ]);
-  assert.equal(settings.localAsrModels['stale-parakeet-download'], undefined);
-  assert.equal(settings.localTranslationModels['unknown-translation-model'], undefined);
-  assert.ok(settings.glossary.some((entry) => entry.source === 'Śrīla Prabhupāda' && entry.category === 'Acharyas / Teachers'));
-});
+	    'parakeet-english',
+	    'whisper-medium-en',
+	    'whisper-large-v3',
+	    'drop-in-whisper.bin',
+	  ]);
+	  assert.equal(settings.localAsrModels['stale-parakeet-download'], undefined);
+	  assert.equal(settings.localTranslationModels['unknown-translation-model'], undefined);
+	  assert.equal(settings.localTranslationModels['custom-qwen']?.status, 'downloaded');
+	  assert.ok(settings.glossary.some((entry) => entry.source === 'Śrīla Prabhupāda' && entry.category === 'Acharyas / Teachers'));
+	});
 
 test('loadSettings merges starter glossary with existing user glossary', () => {
   const values = new Map<string, string>();

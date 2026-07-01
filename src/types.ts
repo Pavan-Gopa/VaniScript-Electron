@@ -13,10 +13,22 @@ export interface LocalModelState {
   status: 'not_downloaded' | 'downloading' | 'downloaded' | 'failed';
   progress?: number;
   progressLabel?: string;
-  label: string;
+		  label: string;
+		  path?: string | null;
+		  error?: string;
+		  runtime?: 'whisper' | 'parakeet' | 'llamacpp' | 'mlx' | 'ggml' | 'gguf';
+  custom?: boolean;
+  unsupported?: boolean;
+		}
+
+export interface LocalDiskModelStatus {
+  status: 'downloaded' | 'downloading' | 'not_found' | 'failed' | 'incomplete';
   path?: string | null;
+  bytesDownloaded?: number;
+  completedFiles?: number;
+  totalFiles?: number;
+  currentFileName?: string | null;
   error?: string;
-  runtime?: 'whisper' | 'parakeet' | 'llamacpp' | 'mlx';
 }
 
 export interface AppSettings {
@@ -31,6 +43,7 @@ export interface AppSettings {
   fontSize: FontSize;
   fontScale: number;
   fontFamily: FontFamily;
+  annotationMode?: boolean;
   // Chunking
   chunkDurationMin: number;   // 2-20
   sliceMode: SliceMode;
@@ -88,6 +101,27 @@ export interface ChunkData {
   unrecognizedFragments?: string[];
   status: 'pending' | 'processing' | 'done' | 'error';
   approved: boolean;
+  // Structured karaoke cues. Canonical source of truth for playback highlighting,
+  // shared verbatim with the Apple Silicon (Swift) edition (same JSON keys:
+  // startSec/endSec/text/words). Optional so legacy projects (inline [mm:ss]
+  // markers in `original`/`translated`) keep working via marker fallback.
+  originalCues?: TranscriptCue[];
+  translatedCues?: TranscriptCue[];
+}
+
+// Mirrors TranscriptWord/TranscriptCue in SessionModels.swift (no custom
+// CodingKeys on the Swift side), so the JSON round-trips across editions.
+export interface TranscriptWord {
+  startSec: number;
+  endSec: number;
+  text: string;
+}
+
+export interface TranscriptCue {
+  startSec: number;
+  endSec: number;
+  text: string;
+  words?: TranscriptWord[];
 }
 
 export interface SessionState {
@@ -218,14 +252,42 @@ declare global {
         stage?: string;
         message?: string;
       }) => void) => () => void;
-      localInstallAsrModel: (opts: { modelId: string }) => Promise<{ ok: boolean; id: string; path?: string | null; error?: string }>;
-      localRemoveAsrModel: (opts: { modelId: string }) => Promise<{ ok: boolean; id: string; error?: string }>;
-      localTranscribeChunk: (opts: {
+	      localInstallAsrModel: (opts: { modelId: string }) => Promise<{ ok: boolean; id: string; path?: string | null; error?: string }>;
+	      localRemoveAsrModel: (opts: { modelId: string }) => Promise<{ ok: boolean; id: string; error?: string }>;
+	      localTranscribeChunk: (opts: {
         modelId: string;
         chunkPath: string;
         options?: { language?: string; forceCpu?: boolean; threads?: number };
-      }) => Promise<{ text: string; segments?: Array<{ t0?: number; t1?: number; text?: string }>; engine?: string; durationMs?: number }>;
-      localInstallTranslationModel: (opts: { modelId: string }) => Promise<{ ok: boolean; id: string; path?: string | null; error?: string }>;
+	      }) => Promise<{ text: string; segments?: Array<{ t0?: number; t1?: number; text?: string }>; engine?: string; durationMs?: number }>;
+      localScanModels: () => Promise<{
+        ok: boolean;
+        root?: string;
+        entries?: Array<{
+          name: string;
+          runtime: 'mlx' | 'gguf' | 'ggml' | 'whisperkit';
+          role: 'asr' | 'polish' | 'unsupported';
+          supported: boolean;
+          path?: string;
+        }>;
+        error?: string;
+      }>;
+	      localReconcileModels: (opts: { asrIds: string[]; translationIds: string[] }) => Promise<{
+	        ok: boolean;
+	        asr: Record<string, LocalDiskModelStatus>;
+	        translation: Record<string, LocalDiskModelStatus>;
+	        error?: string;
+	      }>;
+      onLocalModelsUpdated: (callback: (payload: {
+        root?: string;
+        entries?: Array<{
+          name: string;
+          runtime: 'mlx' | 'gguf' | 'ggml' | 'whisperkit';
+          role: 'asr' | 'polish' | 'unsupported';
+          supported: boolean;
+          path?: string;
+        }>;
+      }) => void) => () => void;
+	      localInstallTranslationModel: (opts: { modelId: string }) => Promise<{ ok: boolean; id: string; path?: string | null; error?: string }>;
       localRemoveTranslationModel: (opts: { modelId: string }) => Promise<{ ok: boolean; id: string; error?: string }>;
       localResolveTranslationModelPath: (opts: { modelId: string }) => Promise<{ ok: boolean; id: string; path?: string | null; error?: string }>;
       localTranslateText: (opts: {
@@ -248,12 +310,13 @@ declare global {
         kind: 'asr' | 'translation';
         modelId: string;
         status?: string;
-        bytesDownloaded?: number;
-        completedFiles?: number;
-        totalFiles?: number;
-        currentFileName?: string | null;
-        error?: string;
-      }>;
+	        bytesDownloaded?: number;
+	        completedFiles?: number;
+	        totalFiles?: number;
+	        currentFileName?: string | null;
+	        path?: string | null;
+	        error?: string;
+	      }>;
       onLocalModelDownloadProgress: (
         callback: (payload: {
           kind: 'asr' | 'translation';

@@ -16,13 +16,14 @@ export const DEFAULT_SETTINGS: AppSettings = {
   fontSize: 'md',
   fontScale: 1,
   fontFamily: 'mono',
+  annotationMode: true,
   chunkDurationMin: 10,
   sliceMode: 'silence',
   silenceThreshDb: -16,
   minSilenceMs: 400,
   defaultSourceLang: 'auto',
   transcriptionProvider: 'gemini-cloud',
-  translationProvider: 'gemini-cloud',
+  translationProvider: 'qwen35-4b-instruct-q4_k_m',
   defaultTargetLang: 'Russian',
   localAsrModels: {
     'parakeet-english': { status: 'not_downloaded', label: 'Parakeet English', runtime: 'parakeet' },
@@ -39,10 +40,6 @@ const LEGACY_TRANSLATION_MODEL_IDS: Record<string, string> = {
   'qwen-3.5-4b-instruct-4bit': 'qwen35-4b-instruct-q4_k_m',
   'qwen35-2b-4bit': 'qwen35-2b-instruct-q4_k_m',
   'qwen35-4b-optiq-4bit': 'qwen35-4b-instruct-q4_k_m',
-  'gemma-4-2b-4bit': 'gemma-4-2b-it-q4_k_m',
-  'gemma-4-4b-4bit': 'gemma-4-4b-it-q4_k_m',
-  'gemma4-e2b-it-4bit': 'gemma-4-2b-it-q4_k_m',
-  'gemma4-e4b-it-4bit': 'gemma-4-4b-it-q4_k_m',
 };
 
 function normalizePersistedModelState<T extends Record<string, any>>(
@@ -51,10 +48,13 @@ function normalizePersistedModelState<T extends Record<string, any>>(
 ) {
   const normalized: Record<string, any> = {};
   for (const [id, state] of Object.entries(modelMap ?? {})) {
-    if (!Object.prototype.hasOwnProperty.call(allowedModels, id)) continue;
+    const isAllowed = Object.prototype.hasOwnProperty.call(allowedModels, id);
+    const isCustom = state?.custom === true && typeof state?.label === 'string';
+    if (!isAllowed && !isCustom) continue;
+    const baseline = isAllowed ? allowedModels[id] : {};
     normalized[id] = state?.status === 'downloading'
       ? {
-          ...allowedModels[id],
+          ...baseline,
           ...state,
           status: 'failed',
           error: state?.error || 'Previous download was interrupted. Retry the model download.',
@@ -62,7 +62,7 @@ function normalizePersistedModelState<T extends Record<string, any>>(
           progressLabel: undefined,
         }
       : {
-          ...allowedModels[id],
+          ...baseline,
           ...state,
         };
   }
@@ -73,7 +73,9 @@ function normalizeTranslationModelStateMap(rawMap: Record<string, any> | undefin
   const normalized: Record<string, any> = {};
   for (const [id, state] of Object.entries(rawMap ?? {})) {
     const normalizedId = LEGACY_TRANSLATION_MODEL_IDS[id] ?? id;
-    if (!Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS.localTranslationModels, normalizedId)) continue;
+    const isAllowed = Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS.localTranslationModels, normalizedId);
+    const isCustom = state?.custom === true && typeof state?.label === 'string';
+    if (!isAllowed && !isCustom) continue;
     const normalizedState = state?.status === 'downloading'
       ? {
           ...state,
@@ -117,6 +119,7 @@ export function loadSettings(): AppSettings {
     return {
       ...DEFAULT_SETTINGS,
       ...parsed,
+      annotationMode: parsed.annotationMode !== false,
       transcriptionProvider: normalizeCloudProviderId(parsed.transcriptionProvider, DEFAULT_SETTINGS.transcriptionProvider),
       translationProvider: normalizeTranslationProviderId(parsed.translationProvider),
       geminiBudgetUsd: Number(parsed.geminiBudgetUsd ?? 0) || 0,

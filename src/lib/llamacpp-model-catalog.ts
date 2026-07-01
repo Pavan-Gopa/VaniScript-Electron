@@ -25,8 +25,7 @@ export const LLAMACPP_TRANSLATION_MODELS: LLAMACPPTranslationModelDescriptor[] =
     repositoryId: 'bartowski/Qwen_Qwen3.5-2B-GGUF',
     fileName: 'Qwen_Qwen3.5-2B-Q4_K_M.gguf',
     downloadSize: '~1.33 GB',
-    qualityTier: 'balanced',
-    recommended: true,
+    qualityTier: 'light',
   },
   {
     id: 'qwen35-4b-instruct-q4_k_m',
@@ -34,23 +33,25 @@ export const LLAMACPP_TRANSLATION_MODELS: LLAMACPPTranslationModelDescriptor[] =
     repositoryId: 'bartowski/Qwen_Qwen3.5-4B-GGUF',
     fileName: 'Qwen_Qwen3.5-4B-Q4_K_M.gguf',
     downloadSize: '~2.87 GB',
-    qualityTier: 'quality',
-  },
-  {
-    id: 'gemma-4-2b-it-q4_k_m',
-    label: 'Gemma 4 2B IT Q4_K_M',
-    repositoryId: 'bartowski/google_gemma-4-E2B-it-GGUF',
-    fileName: 'google_gemma-4-E2B-it-Q4_K_M.gguf',
-    downloadSize: '~3.46 GB',
     qualityTier: 'balanced',
+    recommended: true,
   },
   {
-    id: 'gemma-4-4b-it-q4_k_m',
-    label: 'Gemma 4 4B IT Q4_K_M',
-    repositoryId: 'bartowski/google_gemma-4-E4B-it-GGUF',
-    fileName: 'google_gemma-4-E4B-it-Q4_K_M.gguf',
-    downloadSize: '~5.41 GB',
+    id: 'qwen35-9b-instruct-q4_k_m',
+    label: 'Qwen 3.5 9B Q4_K_M',
+    repositoryId: 'bartowski/Qwen_Qwen3.5-9B-GGUF',
+    fileName: 'Qwen_Qwen3.5-9B-Q4_K_M.gguf',
+    downloadSize: '~5.74 GB',
     qualityTier: 'quality',
+  },
+  // Optional: mamba2/hybrid requires a recent llama.cpp. The repository only ships Q4_K_M.
+  {
+    id: 'nemotron3-nano-4b-q4_k_m',
+    label: 'NVIDIA Nemotron-3 Nano 4B Q4_K_M',
+    repositoryId: 'nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF',
+    fileName: 'NVIDIA-Nemotron3-Nano-4B-Q4_K_M.gguf',
+    downloadSize: '~2.84 GB',
+    qualityTier: 'balanced',
   },
 ];
 

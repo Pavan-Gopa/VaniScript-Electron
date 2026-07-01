@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Settings, Download, RefreshCw, Play, Pause, FolderOpen, Share2, Trash2, Upload, Archive, ChevronDown, ChevronRight, ArrowLeft, Search } from 'lucide-react';
-import { AppSettings, ChunkData, GlossaryEntry, LanguageResult, ProjectSummary, UsageStats } from './types';
+import { Settings, Download, RefreshCw, Play, Pause, FolderOpen, Share2, Trash2, Upload, Archive, ChevronDown, ChevronRight, ArrowLeft, Search, HelpCircle } from 'lucide-react';
+import { AppSettings, ChunkData, GlossaryEntry, LanguageResult, ProjectSummary, TranscriptCue, UsageStats } from './types';
 import { loadSettings, saveSettings, loadUsage, applyTheme, trackUsage } from './services/storage';
 import { transcribeChunkGemini, transcribeChunkOpenAI, fileToBase64 } from './services/transcription';
 import { computeCutPoints, cutPointsToSeconds } from './services/smart-slicer';
 import { SettingsModal } from './components/SettingsModal';
 import { Workspace } from './components/Workspace';
 import { ConfigPanel, SessionConfig } from './components/ConfigPanel';
+import { OnboardingTour } from './components/OnboardingTour';
 import { Logo } from './components/Logo';
 import { buildChunkPreview, buildTranscriptExport } from './lib/review-format';
 import { audioMimeTypeForPath, createObjectAudioUrl } from './lib/audio-source';
@@ -14,7 +15,7 @@ import { TextPanel } from './components/TextPanel';
 import { shouldTranslateChunk, translateTextLocally } from './services/local-translation';
 import { getApiKeyForProvider, isCloudProvider, isLocalAsrProvider, isLocalTranslationProvider } from './lib/provider-runtime';
 import { translateTextWithClaude, translateTextWithGemini, translateTextWithOpenAI } from './services/cloud-translation';
-import { formatPlaybackClock, normalizeRelativeTimestamps, parseKaraokeLines } from './lib/karaoke';
+import { formatPlaybackClock, KaraokeTimedLine, normalizeRelativeTimestamps, parseKaraokeLines } from './lib/karaoke';
 import { addVariantsToGlossaryEntry, applyGlossaryToText, buildGlossaryPromptBlock, createGlossaryEntry } from './lib/glossary';
 import { acceleratedSeekStep, bestTimedNavigationContent, nextTimedLineStart, shouldIgnoreReviewHotkeyTarget } from './lib/review-hotkeys';
 import { reviewFragmentWithGeminiAudio } from './services/audio-review';
@@ -29,6 +30,7 @@ import {
   projectChunkNumbers,
 } from './lib/project-navigation';
 import { formatDocumentExportLocally, formatDocumentExportWithGemini, formatDocumentExportWithOpenAI } from './services/document-export';
+import { reconcileLocalModelStatesWithDisk } from './services/model-presence';
 import { ShortsReelsPanel, ShortsSettings } from './components/ShortsReelsPanel';
 import { SourceMediaKind, sourceMediaKind } from './lib/media-source';
 import { buildShortsPrompt, parseShortsPlanResponse, parseTimestampToSeconds, secondsToShortsTimestamp, ShortsClipPlan, ShortsPlanLanguageMode } from './lib/shorts-reels';
@@ -206,7 +208,7 @@ function formatLocalTranscriptWithTimestamps(
   segments: LocalAsrSegment[] | undefined,
   chunkStartSec: number,
   chunkDurationSec: number
-): string {
+): { text: string; cues: TranscriptCue[] } {
   const usableSegments = (segments || [])
     .map((segment) => {
       const start = Array.isArray(segment) ? segment[0] : segment.t0;
@@ -220,12 +222,22 @@ function formatLocalTranscriptWithTimestamps(
 
   if (usableSegments.length === 0) {
     const trimmed = text.trim();
-    return trimmed ? `[${formatTimestamp(chunkStartSec)}] ${trimmed}` : '';
+    return { text: trimmed ? `[${formatTimestamp(chunkStartSec)}] ${trimmed}` : '', cues: [] };
   }
 
-  return usableSegments
-    .map((segment) => `[${formatTimestamp(segment.startSec)}] ${segment.text}`)
-    .join('\n\n');
+  const chunkEndSec = chunkStartSec + chunkDurationSec;
+  const cues: TranscriptCue[] = usableSegments.map((segment, i) => ({
+    startSec: segment.startSec,
+    endSec: i + 1 < usableSegments.length ? usableSegments[i + 1].startSec : chunkEndSec,
+    text: segment.text,
+  }));
+
+  return {
+    text: usableSegments
+      .map((segment) => `[${formatTimestamp(segment.startSec)}] ${segment.text}`)
+      .join('\n\n'),
+    cues,
+  };
 }
 
 function stripMetadataBlock(text: string): string {
@@ -350,6 +362,7 @@ export default function App() {
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [usage, setUsage] = useState<UsageStats>(() => loadUsage());
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsTab, setSettingsTab] = useState(0);
   const [screen, setScreen] = useState<Screen>('upload');
   const [sourceFile, setSourceFile] = useState('');
   const [sourceFileName, setSourceFileName] = useState('');
@@ -494,48 +507,51 @@ export default function App() {
     if (projectSidebarCloseTimerRef.current) window.clearTimeout(projectSidebarCloseTimerRef.current);
   }, []);
 
+  const reconcileLocalModelsWithDisk = useCallback(async () => {
+    if (!window.electronAPI?.localReconcileModels) return;
+
+    const current = settingsRef.current;
+    const snapshot = await window.electronAPI.localReconcileModels({
+      asrIds: Object.keys(current.localAsrModels),
+      translationIds: Object.keys(current.localTranslationModels),
+    });
+    if (!snapshot?.ok) return;
+
+    const nextSettings = reconcileLocalModelStatesWithDisk(current, {
+      asr: snapshot.asr,
+      translation: snapshot.translation,
+    });
+
+    const unchanged = nextSettings.transcriptionProvider === current.transcriptionProvider
+      && nextSettings.translationProvider === current.translationProvider
+      && JSON.stringify(nextSettings.localAsrModels) === JSON.stringify(current.localAsrModels)
+      && JSON.stringify(nextSettings.localTranslationModels) === JSON.stringify(current.localTranslationModels);
+    if (unchanged) return;
+
+    settingsRef.current = nextSettings;
+    saveSettings(nextSettings);
+    setSettings(nextSettings);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
-
-    const reconcileLocalTranslationModels = async () => {
-      if (!window.electronAPI) return;
-
-      const entries = await Promise.all(
-        Object.keys(settingsRef.current.localTranslationModels).map(async (modelId) => ({
-          modelId,
-          result: await window.electronAPI!.localResolveTranslationModelPath({ modelId }),
-        }))
-      );
-
+    const run = async () => {
+      await reconcileLocalModelsWithDisk();
       if (cancelled) return;
-
-      let changed = false;
-      const nextTranslationModels = { ...settingsRef.current.localTranslationModels };
-      for (const { modelId, result } of entries) {
-        if (result.ok && result.path && nextTranslationModels[modelId]?.status !== 'downloaded') {
-          nextTranslationModels[modelId] = {
-            ...nextTranslationModels[modelId],
-            status: 'downloaded',
-            path: result.path,
-            error: undefined,
-          };
-          changed = true;
-        }
-      }
-
-      if (!changed) return;
-
-      const nextSettings = {
-        ...settingsRef.current,
-        localTranslationModels: nextTranslationModels,
-      };
-      saveSettings(nextSettings);
-      setSettings(nextSettings);
     };
+    void run();
+    const onFocus = () => void reconcileLocalModelsWithDisk();
+    window.addEventListener('focus', onFocus);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [reconcileLocalModelsWithDisk]);
 
-    reconcileLocalTranslationModels();
-    return () => { cancelled = true; };
-  }, []);
+  useEffect(() => {
+    if (!showSettings) return;
+    void reconcileLocalModelsWithDisk();
+  }, [showSettings, reconcileLocalModelsWithDisk]);
 
   const refreshProjects = useCallback(async () => {
     if (!window.electronAPI?.projectList) return;
@@ -1063,6 +1079,10 @@ export default function App() {
     };
 
     if (isLocalTranslationProvider(settingsRef.current, providerId)) {
+      await reconcileLocalModelsWithDisk();
+      if (!isLocalTranslationProvider(settingsRef.current, providerId)) {
+        throw new Error(`Local translation model ${providerId} is not installed. Download it in Settings.`);
+      }
       return polishTranslationLocally({ ...base, modelId: providerId });
     }
 
@@ -1089,7 +1109,7 @@ export default function App() {
 
     recordCloudUsage(providerId, { inputText: selectedText, outputText: polished });
     return polished;
-  }, [editingProvider, recordCloudUsage, session]);
+  }, [editingProvider, reconcileLocalModelsWithDisk, recordCloudUsage, session]);
 
   const translateWithProvider = useCallback(async (
     originalText: string,
@@ -1105,6 +1125,10 @@ export default function App() {
     }
 
     if (isLocalTranslationProvider(settingsRef.current, providerId)) {
+      await reconcileLocalModelsWithDisk();
+      if (!isLocalTranslationProvider(settingsRef.current, providerId)) {
+        throw new Error(`Local translation model ${providerId} is not installed. Download it in Settings.`);
+      }
       return translateTextLocally({
         modelId: providerId,
         text: stripMetadataBlock(originalText),
@@ -1130,7 +1154,7 @@ export default function App() {
       default:
         throw new Error(`Unsupported translation provider: ${providerId}`);
     }
-  }, []);
+  }, [reconcileLocalModelsWithDisk]);
 
   // ─── Transcribe one chunk ─────────────────────────────────────────────────
   const doTranscribe = useCallback(async (
@@ -1168,6 +1192,8 @@ export default function App() {
       };
 
       let original = '', translated = '';
+      let originalCues: TranscriptCue[] | undefined;
+      let translatedCues: TranscriptCue[] | undefined;
       let originalFormats = undefined;
       let translatedFormats = undefined;
       let unrecognizedFragments: string[] = [];
@@ -1202,7 +1228,23 @@ export default function App() {
         } else {
           throw new Error('File reading requires Electron');
         }
-        ({ original, originalFormats, unrecognizedFragments } = await transcribeChunkOpenAI(blob, transcConfig, transcriptionApiKey));
+        const openaiResult = await transcribeChunkOpenAI(blob, transcConfig, transcriptionApiKey);
+        original = openaiResult.original;
+        originalFormats = openaiResult.originalFormats;
+        unrecognizedFragments = openaiResult.unrecognizedFragments;
+        // OpenAI word/cue timestamps are relative to the chunk start (0-based);
+        // offset them to absolute session time so they match the markers after
+        // normalizeRelativeTimestamps and align with the Swift edition's cues.
+        originalCues = openaiResult.originalCues?.map((cue) => ({
+          startSec: cue.startSec + chunkStartSec,
+          endSec: (cue.endSec ?? cue.startSec) + chunkStartSec,
+          text: cue.text,
+          words: cue.words?.map((word) => ({
+            startSec: word.startSec + chunkStartSec,
+            endSec: word.endSec + chunkStartSec,
+            text: word.text,
+          })),
+        }));
         recordCloudUsage(cfg.transcriptionProvider, {
           inputTokens: Math.ceil((chunkDurationSec / 60) * 1000),
           outputText: original,
@@ -1214,6 +1256,10 @@ export default function App() {
         if (!window.electronAPI) {
           throw new Error('Local transcription requires the Electron runtime.');
         }
+        await reconcileLocalModelsWithDisk();
+        if (!isLocalAsrProvider(settingsRef.current, cfg.transcriptionProvider)) {
+          throw new Error(`Local ASR model ${cfg.transcriptionProvider} is not installed. Download it in Settings.`);
+        }
         const local = await window.electronAPI.localTranscribeChunk({
           modelId: cfg.transcriptionProvider,
           chunkPath: chunkFilePath,
@@ -1221,7 +1267,9 @@ export default function App() {
             language: settingsRef.current.defaultSourceLang === 'auto' ? undefined : settingsRef.current.defaultSourceLang,
           },
         });
-        original = formatLocalTranscriptWithTimestamps(local.text?.trim() ?? '', local.segments, chunkStartSec, chunkDurationSec);
+        const localResult = formatLocalTranscriptWithTimestamps(local.text?.trim() ?? '', local.segments, chunkStartSec, chunkDurationSec);
+        original = localResult.text;
+        originalCues = localResult.cues;
         originalFormats = {
           TXT: `${buildMetadataPrefix(cfg, chunkIndex === 0)}${original}`.trim(),
         };
@@ -1261,6 +1309,11 @@ export default function App() {
         translatedFormats = {
           TXT: `${localizedMetadataPrefix(cfg, chunkIndex === 0, cfg.targetLang)}${stripMetadataBlock(translated)}`.trim(),
         };
+        // Build structured cues from the translated text's markers so the
+        // Apple Silicon edition gets segment timing for the translation.
+        translatedCues = parseKaraokeLines(translated, chunkStartSec, chunkStartSec + chunkDurationSec)
+          .filter((line): line is KaraokeTimedLine => line.kind === 'timed')
+          .map((line) => ({ startSec: line.startSec, endSec: line.endSec, text: line.text }));
       }
 
       setSession(prev => {
@@ -1273,6 +1326,8 @@ export default function App() {
           originalFormats,
           translatedFormats,
           unrecognizedFragments,
+          originalCues,
+          translatedCues,
           status: 'done',
         };
         return { ...prev, chunks: c };
@@ -1288,7 +1343,7 @@ export default function App() {
     } finally {
       isTranscribing.current = false;
     }
-  }, [buildMetadataPrefix, recordCloudUsage, translateWithProvider]);
+  }, [buildMetadataPrefix, reconcileLocalModelsWithDisk, recordCloudUsage, translateWithProvider]);
 
   // ─── Start engine ─────────────────────────────────────────────────────────
   const handleStartEngine = async (cfg: SessionConfig) => {
@@ -1613,6 +1668,10 @@ export default function App() {
 
     try {
       if (isLocalTranslationProvider(settingsRef.current, providerId)) {
+        await reconcileLocalModelsWithDisk();
+        if (!isLocalTranslationProvider(settingsRef.current, providerId)) {
+          throw new Error(`Local translation model ${providerId} is not installed. Download it in Settings.`);
+        }
         const result = await formatDocumentExportLocally({ ...base, modelId: providerId });
         return result.trim() || baseText;
       }
@@ -1697,6 +1756,10 @@ export default function App() {
 
     if (isLocalTranslationProvider(settingsRef.current, providerId)) {
       if (!window.electronAPI?.localTranslateText) throw new Error('Local AI requires the Electron runtime.');
+      await reconcileLocalModelsWithDisk();
+      if (!isLocalTranslationProvider(settingsRef.current, providerId)) {
+        throw new Error(`Local translation model ${providerId} is not installed. Download it in Settings.`);
+      }
       const estimatedPromptTokens = estimateTokens(prompt);
       if (isShortsPromptTooLargeForLocalAi(prompt)) {
         throw new Error(
@@ -1762,7 +1825,7 @@ export default function App() {
     }
 
     throw new Error(`Unsupported Shorts/Reels model: ${providerId}`);
-  }, [editingProvider, recordCloudUsage, session]);
+  }, [editingProvider, reconcileLocalModelsWithDisk, recordCloudUsage, session]);
 
   const handleGenerateShortsPlan = useCallback(async (mode: ShortsPlanLanguageMode = 'target') => {
     if (!session) return;
@@ -2275,10 +2338,21 @@ export default function App() {
         {/* Settings button */}
         {screen !== 'review' && (
           <div className="corner-actions">
+            <button
+              className={`settings-btn inline ${settings.annotationMode ? 'active' : ''}`}
+              onClick={() => {
+                const nextSettings = { ...settings, annotationMode: !settings.annotationMode };
+                saveSettings(nextSettings);
+                setSettings(nextSettings);
+              }}
+              title={settings.annotationMode ? "Disable Help Tour" : "Enable Help Tour"}
+            >
+              <HelpCircle size={15} style={{ color: settings.annotationMode ? 'var(--accent)' : 'inherit' }} />
+            </button>
             <button className="settings-btn inline" onClick={openProjectSidebar} title="Projects">
               <FolderOpen size={15} />
             </button>
-            <button className="settings-btn inline" onClick={() => setShowSettings(true)} title="Settings">
+            <button className="settings-btn inline" data-tour="settings-btn" onClick={() => { setShowSettings(true); setSettingsTab(0); }} title="Settings">
               <Settings size={15} />
             </button>
           </div>
@@ -2354,7 +2428,7 @@ export default function App() {
 
                 <div className="review-tb-center">
                   {hasTranslation && editingProviders.length > 0 && (
-                    <div className="review-editing-model">
+                    <div className="review-editing-model" data-tour="review-editing-model">
                       <span>Editing Model</span>
                       <select value={editingProvider} onChange={(event) => setEditingProvider(event.target.value)}>
                         {renderProviderOptions(editingProviders)}
@@ -2362,7 +2436,7 @@ export default function App() {
                     </div>
                   )}
                   {/* View mode */}
-                  <div className="review-view-group">
+                  <div className="review-view-group" data-tour="review-view-group">
                     <button className={`review-view-btn ${viewMode === 'source' ? 'active' : ''}`} onClick={() => setViewMode('source')}>Source</button>
                     <button className={`review-view-btn ${viewMode === 'translated' ? 'active' : ''}`} onClick={() => setViewMode('translated')}>Translated</button>
                     <button className={`review-view-btn ${viewMode === 'dual' ? 'active-accent' : ''}`} onClick={() => setViewMode('dual')}>Dual View</button>
@@ -2370,10 +2444,21 @@ export default function App() {
                 </div>
 
                 <div className="review-tb-right">
+                  <button
+                    className="review-icon-btn"
+                    onClick={() => {
+                      const nextSettings = { ...settings, annotationMode: !settings.annotationMode };
+                      saveSettings(nextSettings);
+                      setSettings(nextSettings);
+                    }}
+                    title={settings.annotationMode ? "Disable Help Tour" : "Enable Help Tour"}
+                  >
+                    <HelpCircle size={14} style={{ color: settings.annotationMode ? 'var(--accent)' : 'inherit' }} />
+                  </button>
                   <button className="review-icon-btn" onClick={openProjectSidebar} title="Projects">
                     <FolderOpen size={14} />
                   </button>
-                  <button className="review-icon-btn" onClick={() => setShowSettings(true)} title="Settings">
+                  <button className="review-icon-btn" data-tour="settings-btn" onClick={() => { setShowSettings(true); setSettingsTab(0); }} title="Settings">
                     <Settings size={14} />
                   </button>
                   <button className="review-new-btn" onClick={() => { setSession(null); setSourceFile(''); setSourceFileName(''); setScreen('upload'); }}>
@@ -2383,7 +2468,7 @@ export default function App() {
               </div>
 
               {/* ── Audio bar ── */}
-              <div className="review-audio-bar">
+              <div className="review-audio-bar" data-tour="review-audio-bar">
                 <span className="review-audio-label">CURRENT SEGMENT AUDIO</span>
                 <div className={`review-audio-control ${audioStatus !== 'ready' ? 'disabled' : ''}`}>
                   <button
@@ -2483,7 +2568,7 @@ export default function App() {
                 <div className="review-panes" style={{ gridTemplateColumns: viewMode === 'dual' ? '1fr 1fr' : '1fr' }}>
                   {/* Original pane */}
                   {(viewMode === 'source' || viewMode === 'dual') && (
-                    <div className="review-pane">
+                    <div className="review-pane" data-tour="review-pane-original">
                       <div className="review-pane-header">
                         <span className="review-pane-label">ORIGINAL TRANSCRIPTION</span>
                         <button
@@ -2523,13 +2608,14 @@ export default function App() {
                         karaokeTimeSec={globalAudioTimeSec}
                         karaokeStartSec={chunk?.startSec ?? 0}
                         karaokeEndSec={chunk?.endSec ?? 0}
+                        originalCues={chunk?.originalCues}
                       />
                     </div>
                   )}
 
                   {/* Translation pane */}
                   {hasTranslation && (viewMode === 'translated' || viewMode === 'dual') && (
-                    <div className="review-pane">
+                    <div className="review-pane" data-tour="review-pane-translation">
                       <div className="review-pane-header">
                         <span className="review-pane-label" style={{ color: 'var(--accent)' }}>TRANSLATED: {session.targetLang.toUpperCase()}</span>
                         <button
@@ -2571,6 +2657,7 @@ export default function App() {
                         karaokeTimeSec={globalAudioTimeSec}
                         karaokeStartSec={chunk?.startSec ?? 0}
                         karaokeEndSec={chunk?.endSec ?? 0}
+                        translatedCues={chunk?.translatedCues}
                       />
                     </div>
                   )}
@@ -2602,10 +2689,11 @@ export default function App() {
                 <div style={{ display: 'flex', gap: 8 }}>
                   <button
                     className="btn-nav"
+                    data-tour="previous-segment-btn"
                     disabled={session.currentIndex === 0}
                     onClick={() => setSession(p => p ? { ...p, currentIndex: p.currentIndex - 1 } : p)}
                   >‹ Previous</button>
-                  <button className="btn-approve" onClick={handleApproveAndNext}>
+                  <button className="btn-approve" data-tour="approve-next-btn" onClick={handleApproveAndNext}>
                     {session.currentIndex < total - 1 ? '✓ Approve & Next ›' : '✓ Complete & Export'}
                   </button>
                 </div>
@@ -2625,7 +2713,7 @@ export default function App() {
                   </span>
                 </div>
                 <div className="export-scroll-flow">
-                  <div className="export-tab-panel">
+                  <div className="export-tab-panel" data-tour="export-documents">
                     <div className="export-section-heading">
                       <div>
                         <h3>Document export</h3>
@@ -2656,7 +2744,7 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="export-tab-panel">
+                  <div className="export-tab-panel" data-tour="shorts-panel">
                     <ShortsReelsPanel
                       hasVideo={Boolean(session.originalVideoPath)}
                       hasTranslation={shouldTranslateChunk(session.targetLang)}
@@ -2838,7 +2926,14 @@ export default function App() {
         ))()}
 
         {showSettings && (
-          <SettingsModal settings={settings} usage={usage} onSave={handleSaveSettings} onClose={() => setShowSettings(false)} />
+          <SettingsModal
+            settings={settings}
+            usage={usage}
+            onSave={handleSaveSettings}
+            onClose={() => setShowSettings(false)}
+            tabIndex={settingsTab}
+            onTabChange={setSettingsTab}
+          />
         )}
 
         {shortsExportProgress && (
@@ -3118,6 +3213,20 @@ export default function App() {
             </div>
           );
         })()}
+
+        {settings.annotationMode && (
+          <OnboardingTour
+            activeScreen={showSettings ? 'settings' : screen}
+            settings={settings}
+            onToggleAnnotationMode={(enabled) => {
+              const nextSettings = { ...settings, annotationMode: enabled };
+              saveSettings(nextSettings);
+              setSettings(nextSettings);
+            }}
+            settingsTab={settingsTab}
+            onSettingsTabChange={setSettingsTab}
+          />
+        )}
       </div>
     </>
   );

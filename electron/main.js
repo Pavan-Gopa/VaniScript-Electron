@@ -15,6 +15,8 @@ const {
 const {
   renderShortClipWithHyperFrames,
 } = require('./hyperframes-renderer');
+const { modelsDir, resolveModelsRoot } = require('../shared/localModelsRoot');
+const { scanLocalModels } = require('../shared/scanLocalModels');
 
 for (const stream of [process.stdout, process.stderr]) {
   stream?.on?.('error', (error) => {
@@ -185,12 +187,39 @@ function isParakeetModel(modelId) {
   return Object.prototype.hasOwnProperty.call(PARAKEET_MODEL_MAP, modelId);
 }
 
+function legacyVaniScriptModelsRoot() {
+  return path.join(app.getPath('userData'), 'Models');
+}
+
+function localModelsOptions() {
+  return { legacyRoot: legacyVaniScriptModelsRoot() };
+}
+
 function resolveLocalAsrStorageDir(kind) {
-  return path.join(app.getPath('userData'), 'Models', kind);
+  return modelsDir(kind === 'parakeet' ? 'mlx' : 'ggml', localModelsOptions());
 }
 
 function resolveLocalTranslationStorageDir() {
-  return path.join(app.getPath('userData'), 'Models', 'translation');
+  return modelsDir('gguf', localModelsOptions());
+}
+
+function scanSharedLocalModels() {
+  const root = resolveModelsRoot(localModelsOptions());
+  const entries = scanLocalModels({ ...localModelsOptions(), root });
+  return { root, entries };
+}
+
+function broadcastSharedLocalModels() {
+  try {
+    const payload = scanSharedLocalModels();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('local-models:updated', payload);
+    }
+    return { ok: true, ...payload };
+  } catch (error) {
+    log.warn('Failed to scan shared local models:', error.message || String(error));
+    return { ok: false, error: error.message || String(error), entries: [] };
+  }
 }
 
 function emitLocalModelDownloadProgress(payload) {
@@ -324,6 +353,23 @@ function saveProjectRecord(input) {
   return project;
 }
 
+// Two project assets frequently duplicate bytes already bundled elsewhere:
+// for a video import, `originalVideoPath` is the source video (the same file as
+// `sourceFile`), and `wavPath` is an extracted uncompressed intermediate whose
+// audio is already fully covered by the per-chunk WAVs. Including both inflates
+// exported bundles ~3-4x. We drop `wavPath` entirely and skip `originalVideoPath`
+// when it is a byte-duplicate of `sourceFile`.
+function isDuplicateMedia(candidatePath, referencePath) {
+  if (!candidatePath || !referencePath) return false;
+  try {
+    const candidate = fs.statSync(candidatePath);
+    const reference = fs.statSync(referencePath);
+    return candidate.size > 0 && candidate.size === reference.size;
+  } catch {
+    return false;
+  }
+}
+
 function collectProjectAssets(project) {
   const seen = new Set();
   const assets = [];
@@ -344,49 +390,429 @@ function collectProjectAssets(project) {
 }
 
 function writeProjectBundle(project, filePath) {
-  const bundle = {
-    format: 'vaniscript-project-v1',
+  const assets = [];
+  const add = (key, fp) => {
+    if (!fp || !fs.existsSync(fp)) return;
+    assets.push({ key, name: path.basename(fp), filePath: fp, size: fs.statSync(fp).size });
+  };
+  const sourceFilePath = project.session?.sourceFile;
+  add('sourceFile', sourceFilePath);
+  // Skip originalVideoPath when it byte-duplicates sourceFile (typical video import).
+  if (!isDuplicateMedia(project.session?.originalVideoPath, sourceFilePath)) {
+    add('originalVideoPath', project.session?.originalVideoPath);
+  }
+  // wavPath intentionally excluded: it is a derived intermediate whose audio is
+  // already fully contained in the chunk WAVs, and import never re-transcribes.
+  (project.session?.chunks || []).forEach((chunk, index) => add(`chunk:${index}`, chunk.filePath));
+
+  const fd = fs.openSync(filePath, 'w');
+
+  // 1. Write magic header
+  fs.writeSync(fd, 'VANISCRIPT_BUNDLE_V2\n');
+
+  // 2. Write metadata JSON
+  const metadata = {
+    format: 'vaniscript-project-v2',
+    schemaVersion: 3,
     exportedAt: new Date().toISOString(),
     project,
-    assets: collectProjectAssets(project),
+    assetMeta: assets.map(a => ({ key: a.key, name: a.name, size: a.size }))
   };
-  fs.writeFileSync(filePath, JSON.stringify(bundle), 'utf8');
+  const jsonStr = JSON.stringify(metadata, null, 2);
+  const jsonBuffer = Buffer.from(jsonStr, 'utf8');
+
+  // Write JSON length padded to 12 chars
+  const lenStr = String(jsonBuffer.length).padStart(12, '0') + '\n';
+  fs.writeSync(fd, lenStr);
+  fs.writeSync(fd, jsonBuffer);
+
+  // 3. Write each asset
+  const buffer = Buffer.alloc(1024 * 1024); // 1 MB copy buffer
+  for (const asset of assets) {
+    fs.writeSync(fd, 'START_ASSET\n');
+    fs.writeSync(fd, `${asset.key}\n`);
+    fs.writeSync(fd, `${asset.name}\n`);
+    fs.writeSync(fd, `${asset.size}\n`);
+
+    const inFd = fs.openSync(asset.filePath, 'r');
+    let remaining = asset.size;
+    let inOffset = 0;
+    while (remaining > 0) {
+      const toRead = Math.min(remaining, buffer.length);
+      const bytesRead = fs.readSync(inFd, buffer, 0, toRead, inOffset);
+      if (bytesRead === 0) break;
+      fs.writeSync(fd, buffer, 0, bytesRead);
+      inOffset += bytesRead;
+      remaining -= bytesRead;
+    }
+    fs.closeSync(inFd);
+
+    fs.writeSync(fd, 'END_ASSET\n');
+  }
+
+  fs.closeSync(fd);
+}
+
+// Sessions created in the Apple Silicon (Swift) edition keep their translations
+// in a per-language `translationsByLanguage` map and may leave the flat
+// `translated` field empty. Electron is single-language, so on import we fold
+// the active language's text + cues into `translated`/`translatedCues`. Structured
+// `originalCues` ride through untouched (they live on the chunk already).
+function pickActiveTranslationVariant(chunk, activeLang) {
+  const archive = chunk?.translationsByLanguage;
+  if (!archive || typeof archive !== 'object') return null;
+  const variants = Object.keys(archive).map((key) => archive[key]).filter(Boolean);
+  if (variants.length === 0) return null;
+  const norm = (value) => String(value || '').trim().toLowerCase();
+  const target = norm(activeLang);
+  if (target) {
+    const match = variants.find((variant) => norm(variant.language) === target);
+    if (match) return match;
+  }
+  return variants[0];
+}
+
+function restoreImportedChunk(chunk, filePath, activeLang) {
+  const variant = pickActiveTranslationVariant(chunk, activeLang);
+  const legacyTranslated = String(chunk?.translated || '').trim();
+  const translated = legacyTranslated ? chunk.translated : (variant?.text ?? chunk.translated);
+  const translatedCues = variant?.cues?.length ? variant.cues : chunk?.translatedCues;
+  return { ...chunk, filePath, translated, translatedCues };
 }
 
 function importProjectBundle(filePath) {
-  const bundle = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  if (bundle.format !== 'vaniscript-project-v1' || !bundle.project) {
-    throw new Error('This is not a VaniScript project bundle.');
+  const fd = fs.openSync(filePath, 'r');
+
+  // Read first 21 bytes to check format
+  const magicBuf = Buffer.alloc(21);
+  const bytesRead = fs.readSync(fd, magicBuf, 0, 21, 0);
+  const headerStr = magicBuf.toString('utf8');
+
+  if (headerStr === 'VANISCRIPT_BUNDLE_V2\n') {
+    // ─── Format V2 (Chunk-by-chunk stream copy) ───
+    let offset = 21;
+    const readLine = () => {
+      let line = '';
+      const buf = Buffer.alloc(1);
+      while (true) {
+        const bytes = fs.readSync(fd, buf, 0, 1, offset);
+        if (bytes === 0) break;
+        offset += 1;
+        const char = buf.toString('utf8');
+        if (char === '\n') break;
+        line += char;
+      }
+      return line.trim();
+    };
+
+    // Read JSON length
+    const jsonLenStr = readLine();
+    const jsonLen = parseInt(jsonLenStr, 10);
+
+    // Read JSON metadata
+    const jsonBuf = Buffer.alloc(jsonLen);
+    fs.readSync(fd, jsonBuf, 0, jsonLen, offset);
+    offset += jsonLen;
+    const metadata = JSON.parse(jsonBuf.toString('utf8'));
+
+    const id = newProjectId();
+    const dir = projectDir(id);
+    const project = {
+      ...metadata.project,
+      id,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const assetMap = new Map();
+    const buffer = Buffer.alloc(1024 * 1024); // 1 MB copy buffer
+
+    while (true) {
+      const marker = readLine();
+      if (!marker || marker !== 'START_ASSET') {
+        break;
+      }
+
+      const key = readLine();
+      const name = readLine();
+      const sizeStr = readLine();
+      const size = parseInt(sizeStr, 10);
+
+      const targetDir = key.startsWith('chunk:') ? path.join(dir, 'chunks') : path.join(dir, 'audio');
+      fs.mkdirSync(targetDir, { recursive: true });
+      const dest = path.join(targetDir, safeName(name || key, 'asset'));
+
+      const outFd = fs.openSync(dest, 'w');
+      let remaining = size;
+      while (remaining > 0) {
+        const toRead = Math.min(remaining, buffer.length);
+        const read = fs.readSync(fd, buffer, 0, toRead, offset);
+        if (read === 0) {
+          fs.closeSync(outFd);
+          fs.closeSync(fd);
+          throw new Error('Unexpected EOF while reading asset data');
+        }
+        fs.writeSync(outFd, buffer, 0, read);
+        offset += read;
+        remaining -= read;
+      }
+      fs.closeSync(outFd);
+      assetMap.set(key, dest);
+
+      readLine(); // Consume END_ASSET line
+    }
+
+    fs.closeSync(fd);
+
+    // Reconstruct session
+    const activeTranslationLanguage = project.session?.activeTranslationLanguage || project.session?.targetLang;
+    project.session = {
+      ...(project.session || {}),
+      projectId: id,
+      sourceFile: assetMap.get('sourceFile') || project.session?.sourceFile || '',
+      originalVideoPath: assetMap.get('originalVideoPath') || project.session?.originalVideoPath || '',
+      wavPath: assetMap.get('wavPath') || project.session?.wavPath || '',
+      chunks: (project.session?.chunks || []).map((chunk, index) =>
+        restoreImportedChunk(chunk, assetMap.get(`chunk:${index}`) || chunk.filePath, activeTranslationLanguage)
+      ),
+    };
+    fs.writeFileSync(projectJsonPath(id), JSON.stringify(project, null, 2), 'utf8');
+    return project;
+  } else {
+    // ─── Format V1 (Legacy Base64 JSON) ───
+    fs.closeSync(fd);
+    const bundle = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    if (bundle.format !== 'vaniscript-project-v1' || !bundle.project) {
+      throw new Error('This is not a VaniScript project bundle.');
+    }
+    const id = newProjectId();
+    const dir = projectDir(id);
+    const project = {
+      ...bundle.project,
+      id,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const assetMap = new Map();
+    for (const asset of bundle.assets || []) {
+      const targetDir = asset.key?.startsWith('chunk:') ? path.join(dir, 'chunks') : path.join(dir, 'audio');
+      fs.mkdirSync(targetDir, { recursive: true });
+      const dest = path.join(targetDir, safeName(asset.name || asset.key, 'asset'));
+      fs.writeFileSync(dest, Buffer.from(asset.dataBase64 || '', 'base64'));
+      assetMap.set(asset.key, dest);
+    }
+    const activeTranslationLanguageV1 = project.session?.activeTranslationLanguage || project.session?.targetLang;
+    project.session = {
+      ...(project.session || {}),
+      projectId: id,
+      sourceFile: assetMap.get('sourceFile') || project.session?.sourceFile || '',
+      originalVideoPath: assetMap.get('originalVideoPath') || project.session?.originalVideoPath || '',
+      wavPath: assetMap.get('wavPath') || project.session?.wavPath || '',
+      chunks: (project.session?.chunks || []).map((chunk, index) =>
+        restoreImportedChunk(chunk, assetMap.get(`chunk:${index}`) || chunk.filePath, activeTranslationLanguageV1)
+      ),
+    };
+    fs.writeFileSync(projectJsonPath(id), JSON.stringify(project, null, 2), 'utf8');
+    return project;
   }
-  const id = newProjectId();
-  const dir = projectDir(id);
-  const project = {
-    ...bundle.project,
-    id,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+}
+
+function writeLibraryBundle(projects, filePath) {
+  const bundles = [];
+  for (const project of projects) {
+    const assets = [];
+    const add = (key, fp) => {
+      if (!fp || !fs.existsSync(fp)) return;
+      assets.push({ key, name: path.basename(fp), filePath: fp, size: fs.statSync(fp).size });
+    };
+    const sourceFilePath = project.session?.sourceFile;
+    add('sourceFile', sourceFilePath);
+    if (!isDuplicateMedia(project.session?.originalVideoPath, sourceFilePath)) {
+      add('originalVideoPath', project.session?.originalVideoPath);
+    }
+    // wavPath intentionally excluded (see writeProjectBundle).
+    (project.session?.chunks || []).forEach((chunk, index) => add(`chunk:${index}`, chunk.filePath));
+
+    bundles.push({
+      project,
+      assets
+    });
+  }
+
+  const fd = fs.openSync(filePath, 'w');
+
+  // 1. Write magic header
+  fs.writeSync(fd, 'VANISCRIPT_LIBRARY_V2\n');
+
+  // 2. Write metadata JSON
+  const metadata = {
+    format: 'vaniscript-library-v2',
+    schemaVersion: 3,
+    exportedAt: new Date().toISOString(),
+    bundles: bundles.map((b, pIdx) => ({
+      project: b.project,
+      assetMeta: b.assets.map(a => ({ key: a.key, name: a.name, size: a.size }))
+    }))
   };
-  const assetMap = new Map();
-  for (const asset of bundle.assets || []) {
-    const targetDir = asset.key?.startsWith('chunk:') ? path.join(dir, 'chunks') : path.join(dir, 'audio');
+  const jsonStr = JSON.stringify(metadata, null, 2);
+  const jsonBuffer = Buffer.from(jsonStr, 'utf8');
+
+  // Write JSON length padded to 12 chars
+  const lenStr = String(jsonBuffer.length).padStart(12, '0') + '\n';
+  fs.writeSync(fd, lenStr);
+  fs.writeSync(fd, jsonBuffer);
+
+  // 3. Write each asset for each project
+  const buffer = Buffer.alloc(1024 * 1024); // 1 MB copy buffer
+  for (let pIdx = 0; pIdx < bundles.length; pIdx++) {
+    const b = bundles[pIdx];
+    for (const asset of b.assets) {
+      fs.writeSync(fd, 'START_ASSET\n');
+      fs.writeSync(fd, `${pIdx}\n`);
+      fs.writeSync(fd, `${asset.key}\n`);
+      fs.writeSync(fd, `${asset.name}\n`);
+      fs.writeSync(fd, `${asset.size}\n`);
+
+      const inFd = fs.openSync(asset.filePath, 'r');
+      let remaining = asset.size;
+      let inOffset = 0;
+      while (remaining > 0) {
+        const toRead = Math.min(remaining, buffer.length);
+        const bytesRead = fs.readSync(inFd, buffer, 0, toRead, inOffset);
+        if (bytesRead === 0) break;
+        fs.writeSync(fd, buffer, 0, bytesRead);
+        inOffset += bytesRead;
+        remaining -= bytesRead;
+      }
+      fs.closeSync(inFd);
+
+      fs.writeSync(fd, 'END_ASSET\n');
+    }
+  }
+
+  fs.closeSync(fd);
+}
+
+function importLibraryBundle(filePath) {
+  const fd = fs.openSync(filePath, 'r');
+
+  // Read first 21 bytes to check format
+  const magicBuf = Buffer.alloc(21);
+  const bytesRead = fs.readSync(fd, magicBuf, 0, 21, 0);
+  const headerStr = magicBuf.toString('utf8');
+  if (headerStr !== 'VANISCRIPT_LIBRARY_V2\n') {
+    fs.closeSync(fd);
+    throw new Error('Not a valid VaniScript library bundle V2');
+  }
+
+  let offset = 21;
+  const readLine = () => {
+    let line = '';
+    const buf = Buffer.alloc(1);
+    while (true) {
+      const bytes = fs.readSync(fd, buf, 0, 1, offset);
+      if (bytes === 0) break;
+      offset += 1;
+      const char = buf.toString('utf8');
+      if (char === '\n') break;
+      line += char;
+    }
+    return line.trim();
+  };
+
+  // Read JSON length
+  const jsonLenStr = readLine();
+  const jsonLen = parseInt(jsonLenStr, 10);
+
+  // Read JSON metadata
+  const jsonBuf = Buffer.alloc(jsonLen);
+  fs.readSync(fd, jsonBuf, 0, jsonLen, offset);
+  offset += jsonLen;
+  const metadata = JSON.parse(jsonBuf.toString('utf8'));
+
+  const importedProjects = [];
+  const projectDirs = [];
+  const projectAssetMaps = [];
+
+  for (let i = 0; i < metadata.bundles.length; i++) {
+    const id = newProjectId();
+    const dir = projectDir(id);
+    const projMeta = metadata.bundles[i].project;
+    const project = {
+      ...projMeta,
+      id,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    importedProjects.push(project);
+    projectDirs.push(dir);
+    projectAssetMaps.push(new Map());
+  }
+
+  const buffer = Buffer.alloc(1024 * 1024);
+
+  while (true) {
+    const marker = readLine();
+    if (!marker || marker !== 'START_ASSET') {
+      break;
+    }
+
+    const pIdxStr = readLine();
+    const pIdx = parseInt(pIdxStr, 10);
+    const key = readLine();
+    const name = readLine();
+    const sizeStr = readLine();
+    const size = parseInt(sizeStr, 10);
+
+    const dir = projectDirs[pIdx];
+    const assetMap = projectAssetMaps[pIdx];
+
+    const targetDir = key.startsWith('chunk:') ? path.join(dir, 'chunks') : path.join(dir, 'audio');
     fs.mkdirSync(targetDir, { recursive: true });
-    const dest = path.join(targetDir, safeName(asset.name || asset.key, 'asset'));
-    fs.writeFileSync(dest, Buffer.from(asset.dataBase64 || '', 'base64'));
-    assetMap.set(asset.key, dest);
+    const dest = path.join(targetDir, safeName(name || key, 'asset'));
+
+    const outFd = fs.openSync(dest, 'w');
+    let remaining = size;
+    while (remaining > 0) {
+      const toRead = Math.min(remaining, buffer.length);
+      const read = fs.readSync(fd, buffer, 0, toRead, offset);
+      if (read === 0) {
+        fs.closeSync(outFd);
+        fs.closeSync(fd);
+        throw new Error('Unexpected EOF while reading library asset data');
+      }
+      fs.writeSync(outFd, buffer, 0, read);
+      offset += read;
+      remaining -= read;
+    }
+    fs.closeSync(outFd);
+    assetMap.set(key, dest);
+
+    readLine(); // Consume END_ASSET line
   }
-  project.session = {
-    ...(project.session || {}),
-    projectId: id,
-    sourceFile: assetMap.get('sourceFile') || project.session?.sourceFile || '',
-    originalVideoPath: assetMap.get('originalVideoPath') || project.session?.originalVideoPath || '',
-    wavPath: assetMap.get('wavPath') || project.session?.wavPath || '',
-    chunks: (project.session?.chunks || []).map((chunk, index) => ({
-      ...chunk,
-      filePath: assetMap.get(`chunk:${index}`) || chunk.filePath,
-    })),
-  };
-  fs.writeFileSync(projectJsonPath(id), JSON.stringify(project, null, 2), 'utf8');
-  return project;
+
+  fs.closeSync(fd);
+
+  for (let i = 0; i < importedProjects.length; i++) {
+    const project = importedProjects[i];
+    const id = project.id;
+    const assetMap = projectAssetMaps[i];
+
+    const activeTranslationLanguageLib = project.session?.activeTranslationLanguage || project.session?.targetLang;
+    project.session = {
+      ...(project.session || {}),
+      projectId: id,
+      sourceFile: assetMap.get('sourceFile') || project.session?.sourceFile || '',
+      originalVideoPath: assetMap.get('originalVideoPath') || project.session?.originalVideoPath || '',
+      wavPath: assetMap.get('wavPath') || project.session?.wavPath || '',
+      chunks: (project.session?.chunks || []).map((chunk, index) =>
+        restoreImportedChunk(chunk, assetMap.get(`chunk:${index}`) || chunk.filePath, activeTranslationLanguageLib)
+      ),
+    };
+    fs.writeFileSync(projectJsonPath(id), JSON.stringify(project, null, 2), 'utf8');
+  }
+
+  return importedProjects;
 }
 
 function summarizeParakeetModel(modelId) {
@@ -421,8 +847,17 @@ function summarizeParakeetModel(modelId) {
     }
   }
 
+  const status = completedFiles === PARAKEET_MODEL_FILES.length
+    ? 'downloaded'
+    : currentFileName
+      ? 'downloading'
+      : bytesDownloaded > 0
+        ? 'incomplete'
+        : 'not_found';
+
   return {
-    status: completedFiles === PARAKEET_MODEL_FILES.length ? 'downloaded' : 'downloading',
+    status,
+    path: status === 'downloaded' ? modelDir : null,
     bytesDownloaded,
     completedFiles,
     totalFiles: PARAKEET_MODEL_FILES.length,
@@ -432,7 +867,18 @@ function summarizeParakeetModel(modelId) {
 
 function summarizeWhisperModel(modelId) {
   const fileName = WHISPER_MODEL_FILES[modelId];
-  if (!fileName) return { status: 'not_found', bytesDownloaded: 0 };
+  if (!fileName) {
+    const customPath = resolveCustomWhisperModelPath(modelId);
+    if (customPath) {
+      return {
+        status: 'downloaded',
+        path: customPath,
+        bytesDownloaded: statSize(customPath),
+        currentFileName: path.basename(customPath),
+      };
+    }
+    return { status: 'not_found', path: null, bytesDownloaded: 0 };
+  }
 
   const modelDir = path.join(resolveLocalAsrStorageDir('whisper'), modelId);
   const finalPath = path.join(modelDir, fileName);
@@ -442,9 +888,32 @@ function summarizeWhisperModel(modelId) {
 
   return {
     status: finalSize > 0 ? 'downloaded' : partSize > 0 ? 'downloading' : 'not_found',
+    path: finalSize > 0 ? finalPath : null,
     bytesDownloaded: finalSize + partSize,
     currentFileName: partSize > 0 ? `${fileName}.part` : fileName,
   };
+}
+
+function resolveCustomWhisperModelPath(modelId) {
+  const safeName = path.basename(String(modelId || ''));
+  if (!safeName) return null;
+
+  const baseDir = resolveLocalAsrStorageDir('whisper');
+  const directPath = path.join(baseDir, safeName);
+  if (isCompleteGGMLFile(directPath)) return directPath;
+
+  const modelDir = path.join(baseDir, safeName);
+  if (!fs.existsSync(modelDir) || !fs.statSync(modelDir).isDirectory()) return null;
+  const fileName = fs.readdirSync(modelDir).find((entry) => isCompleteGGMLFile(path.join(modelDir, entry)));
+  return fileName ? path.join(modelDir, fileName) : null;
+}
+
+function isCompleteGGMLFile(filePath) {
+  const name = path.basename(filePath).toLowerCase();
+  return name.startsWith('ggml-')
+    && name.endsWith('.bin')
+    && fs.existsSync(filePath)
+    && fs.statSync(filePath).size > 0;
 }
 
 function summarizeTranslationModel(modelId) {
@@ -452,6 +921,7 @@ function summarizeTranslationModel(modelId) {
   if (installedPath) {
     return {
       status: 'downloaded',
+      path: installedPath,
       bytesDownloaded: statSize(installedPath),
       currentFileName: path.basename(installedPath),
     };
@@ -921,8 +1391,11 @@ function installTray() {
 }
 
 function removeLocalModelFiles(kind, modelId) {
-  const modelDir = path.join(resolveLocalAsrStorageDir(kind), modelId);
-  if (fs.existsSync(modelDir)) fs.rmSync(modelDir, { recursive: true, force: true });
+  const baseDir = resolveLocalAsrStorageDir(kind);
+  const modelPath = kind === 'whisper' && /\.bin$/i.test(String(modelId || ''))
+    ? path.join(baseDir, path.basename(String(modelId)))
+    : path.join(baseDir, modelId);
+  if (fs.existsSync(modelPath)) fs.rmSync(modelPath, { recursive: true, force: true });
   return { ok: true, id: modelId };
 }
 
@@ -965,6 +1438,7 @@ function createWindow() {
   mainWindow.webContents.on('did-finish-load', () => {
     log.info('Renderer finished loading');
     revealMainWindow('renderer-finished-load');
+    broadcastSharedLocalModels();
   });
 
   mainWindow.webContents.on('dom-ready', () => {
@@ -2260,14 +2734,7 @@ ipcMain.handle('project:exportAll', async () => {
       filters: [{ name: 'VaniScript Library', extensions: ['vaniscript-library'] }],
     });
     if (result.canceled || !result.filePath) return { ok: false, error: 'Export cancelled' };
-    fs.writeFileSync(result.filePath, JSON.stringify({
-      format: 'vaniscript-library-v1',
-      exportedAt: new Date().toISOString(),
-      bundles: projects.map((project) => ({
-        project,
-        assets: collectProjectAssets(project),
-      })),
-    }), 'utf8');
+    writeLibraryBundle(projects, result.filePath);
     return { ok: true, filePath: result.filePath };
   } catch (error) {
     return { ok: false, error: error.message || String(error) };
@@ -2285,32 +2752,86 @@ ipcMain.handle('project:import', async () => {
     });
     if (result.canceled || !result.filePaths[0]) return { ok: false, error: 'Import cancelled' };
     const filePath = result.filePaths[0];
-    const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    if (raw.format === 'vaniscript-library-v1') {
-      const imported = [];
-      for (const item of raw.bundles || []) {
-        const tmp = path.join(app.getPath('temp'), `${newProjectId()}.vaniscript`);
-        fs.writeFileSync(tmp, JSON.stringify({ format: 'vaniscript-project-v1', project: item.project, assets: item.assets }), 'utf8');
-        imported.push(importProjectBundle(tmp));
-        try { fs.unlinkSync(tmp); } catch {}
-      }
-      return { ok: true, project: imported[0] || null };
+
+    // Read the first 21 bytes to check format
+    const fd = fs.openSync(filePath, 'r');
+    const magicBuf = Buffer.alloc(21);
+    let bytesRead = 0;
+    try {
+      bytesRead = fs.readSync(fd, magicBuf, 0, 21, 0);
+    } finally {
+      fs.closeSync(fd);
     }
-    const project = importProjectBundle(filePath);
-    return { ok: true, project };
+    const headerStr = magicBuf.toString('utf8');
+
+    if (headerStr === 'VANISCRIPT_BUNDLE_V2\n') {
+      const project = importProjectBundle(filePath);
+      return { ok: true, project };
+    } else if (headerStr === 'VANISCRIPT_LIBRARY_V2\n') {
+      const imported = await importLibraryBundle(filePath);
+      return { ok: true, project: imported[0] || null };
+    } else {
+      // Check file size before reading the whole file to prevent crashes
+      const size = fs.statSync(filePath).size;
+      if (size > 50 * 1024 * 1024) {
+        throw new Error(`File is too large (${(size / (1024 * 1024)).toFixed(1)} MB) and does not have a valid streaming header.`);
+      }
+
+      const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      if (raw.format === 'vaniscript-library-v1') {
+        const imported = [];
+        for (const item of raw.bundles || []) {
+          const tmp = path.join(app.getPath('temp'), `${newProjectId()}.vaniscript`);
+          fs.writeFileSync(tmp, JSON.stringify({ format: 'vaniscript-project-v1', project: item.project, assets: item.assets }), 'utf8');
+          imported.push(importProjectBundle(tmp));
+          try { fs.unlinkSync(tmp); } catch {}
+        }
+        return { ok: true, project: imported[0] || null };
+      } else if (raw.format === 'vaniscript-project-v1') {
+        const project = importProjectBundle(filePath);
+        return { ok: true, project };
+      } else {
+        throw new Error('Unsupported or corrupted VaniScript file format.');
+      }
+    }
   } catch (error) {
     return { ok: false, error: error.message || String(error) };
   }
 });
 
 // ─── IPC: Local ASR ──────────────────────────────────────────────────────────
+ipcMain.handle('local-models:scan', async () => broadcastSharedLocalModels());
+
+ipcMain.handle('local-models:reconcile', async (_event, { asrIds = [], translationIds = [] } = {}) => {
+  try {
+    const asr = {};
+    const translation = {};
+
+    for (const modelId of asrIds) {
+      asr[modelId] = isParakeetModel(modelId)
+        ? summarizeParakeetModel(modelId)
+        : summarizeWhisperModel(modelId);
+    }
+
+    for (const modelId of translationIds) {
+      translation[modelId] = summarizeTranslationModel(modelId);
+    }
+
+    return { ok: true, asr, translation };
+  } catch (error) {
+    return { ok: false, asr: {}, translation: {}, error: error.message || String(error) };
+  }
+});
+
 ipcMain.handle('local-asr:installModel', async (_event, { modelId }) => {
   try {
     if (isParakeetModel(modelId)) {
       await callLocalParakeetWorker({ type: 'install_model', modelId: PARAKEET_MODEL_MAP[modelId] });
+      broadcastSharedLocalModels();
       return { ok: true, id: modelId };
     }
     const result = await callLocalWhisperWorker({ type: 'install_model', modelId });
+    broadcastSharedLocalModels();
     return { ok: true, id: modelId, path: result?.path ?? null };
   } catch (e) {
     return { ok: false, id: modelId, error: e?.message ?? String(e) };
@@ -2320,9 +2841,13 @@ ipcMain.handle('local-asr:installModel', async (_event, { modelId }) => {
 ipcMain.handle('local-asr:removeModel', async (_event, { modelId }) => {
   try {
     if (isParakeetModel(modelId)) {
-      return removeLocalModelFiles('parakeet', PARAKEET_MODEL_MAP[modelId].replace('/', '_'));
+      const result = removeLocalModelFiles('parakeet', PARAKEET_MODEL_MAP[modelId].replace('/', '_'));
+      broadcastSharedLocalModels();
+      return result;
     }
-    return removeLocalModelFiles('whisper', modelId);
+    const result = removeLocalModelFiles('whisper', modelId);
+    broadcastSharedLocalModels();
+    return result;
   } catch (e) {
     return { ok: false, id: modelId, error: e?.message ?? String(e) };
   }
@@ -2331,6 +2856,7 @@ ipcMain.handle('local-asr:removeModel', async (_event, { modelId }) => {
 ipcMain.handle('local-translation:installModel', async (_event, { modelId }) => {
   try {
     const result = await callLocalTranslationWorker({ type: 'install_model', modelId });
+    broadcastSharedLocalModels();
     return { ok: true, id: modelId, path: result.path ?? null };
   } catch (error) {
     return { ok: false, id: modelId, error: error.message || String(error) };
@@ -2340,6 +2866,7 @@ ipcMain.handle('local-translation:installModel', async (_event, { modelId }) => 
 ipcMain.handle('local-translation:removeModel', async (_event, { modelId }) => {
   try {
     removeTranslationModel(resolveLocalTranslationStorageDir(), modelId);
+    broadcastSharedLocalModels();
     return { ok: true, id: modelId };
   } catch (error) {
     return { ok: false, id: modelId, error: error.message || String(error) };
@@ -2372,12 +2899,20 @@ ipcMain.handle('local-model:getDownloadStatus', async (_event, { kind, modelId }
 });
 
 ipcMain.handle('local-translation:translateText', async (_event, payload) => {
+  const modelPath = resolveInstalledModelPath(resolveLocalTranslationStorageDir(), payload?.modelId);
+  if (!modelPath) {
+    throw new Error(`Local translation model ${payload?.modelId || ''} is not installed. Download it in Settings.`);
+  }
   return callLocalTranslationWorker({ type: 'translate_text', ...payload });
 });
 
 ipcMain.handle('local-asr:transcribeChunk', async (_event, { modelId, chunkPath, options = {} }) => {
   if (!chunkPath || !fs.existsSync(chunkPath)) throw new Error(`Chunk file not found: ${chunkPath}`);
   if (isParakeetModel(modelId)) {
+    const parakeetStatus = summarizeParakeetModel(modelId);
+    if (parakeetStatus.status !== 'downloaded') {
+      throw new Error(`Local ASR model ${modelId} is not installed. Download it in Settings.`);
+    }
     const wavBuffer = fs.readFileSync(chunkPath);
     const pcm = decodeWavToFloat32(wavBuffer);
     return callLocalParakeetWorker({
@@ -2385,6 +2920,10 @@ ipcMain.handle('local-asr:transcribeChunk', async (_event, { modelId, chunkPath,
       modelId: PARAKEET_MODEL_MAP[modelId],
       audioData: Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength),
     });
+  }
+  const whisperStatus = summarizeWhisperModel(modelId);
+  if (whisperStatus.status !== 'downloaded') {
+    throw new Error(`Local ASR model ${modelId} is not installed. Download it in Settings.`);
   }
   return callLocalWhisperWorker({ type: 'transcribe_chunk', modelId, chunkPath, options });
 });
