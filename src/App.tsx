@@ -3188,7 +3188,7 @@ export default function App() {
                           {project.currentIndex + 1}/{Math.max(1, project.totalChunks)} chunks · {project.approvedChunks} approved · {project.targetLang || 'Same'}
                         </span>
                         {project.sourceMediaInfo && (
-                          <span className="project-media-meta" style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '4px', fontSize: '11px', fontWeight: 600, color: '#ff9f0a' }}>
+                          <span className="project-media-meta">
                             {project.sourceMediaInfo.kind === 'video' ? <Film size={12} /> : <FileAudio size={12} />}
                             {getMediaSummary(project.sourceMediaInfo)}
                           </span>
@@ -3200,55 +3200,36 @@ export default function App() {
                         <button title="Delete project" onClick={() => deleteProject(project.id)}><Trash2 size={13} /></button>
                       </div>
                       {isExpanded && (
-                        <div className="project-chunk-list">
+                        <div className="project-expanded-body">
                           {project.sourceMediaInfo && (
-                            <div className="project-media-card" style={{
-                              display: 'flex',
-                              flexDirection: 'column',
-                              gap: '8px',
-                              padding: '10px',
-                              marginBottom: '10px',
-                              backgroundColor: 'rgba(255, 255, 255, 0.035)',
-                              border: '1px solid rgba(255, 255, 255, 0.08)',
-                              borderRadius: '10px',
-                              textAlign: 'left',
-                            }}>
-                              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                                <div style={{ color: '#ff9f0a', flexShrink: 0 }}>
+                            <div className="project-media-card">
+                              <div className="project-media-main">
+                                <div className="project-media-icon" aria-hidden="true">
                                   {project.sourceMediaInfo.kind === 'video' ? <Film size={16} /> : <FileAudio size={16} />}
                                 </div>
-                                <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                                  <span style={{ fontSize: '11px', fontWeight: 'bold', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-color-0, #ffffff)' }}>
+                                <div className="project-media-copy">
+                                  <span className="project-media-name" title={project.sourceMediaInfo.fileName}>
                                     {project.sourceMediaInfo.fileName}
                                   </span>
-                                  <span style={{ fontSize: '10px', color: 'var(--text-color-2, #8e8e93)' }}>
+                                  <span className="project-media-summary">
                                     {getMediaSummary(project.sourceMediaInfo)}
                                   </span>
                                 </div>
                               </div>
-                              <div style={{
-                                fontSize: '9px',
-                                fontFamily: 'var(--font-mono, monospace)',
-                                color: 'var(--text-color-2, #8e8e93)',
-                                wordBreak: 'break-all',
-                                userSelect: 'all',
-                                padding: '4px 6px',
-                                backgroundColor: 'rgba(0,0,0,0.15)',
-                                borderRadius: '4px',
-                              }}>
+                              <div className="project-media-path" title={project.sourceMediaInfo.filePath}>
                                 {project.sourceMediaInfo.filePath}
                               </div>
-                              <div style={{ display: 'flex', gap: '6px' }}>
-                                <button type="button" className="btn-cancel" style={{ padding: '4px 8px', height: '24px', fontSize: '10px', display: 'flex', alignItems: 'center', gap: '4px' }} onClick={(e) => { e.stopPropagation(); setActiveMediaInfo(project.sourceMediaInfo!); }}>
+                              <div className="project-media-actions">
+                                <button type="button" className="project-media-action" onClick={(e) => { e.stopPropagation(); setActiveMediaInfo(project.sourceMediaInfo!); }}>
                                   <Info size={11} /> Info
                                 </button>
-                                <button type="button" className="btn-cancel" style={{ padding: '4px 8px', height: '24px', fontSize: '10px', display: 'flex', alignItems: 'center', gap: '4px' }} onClick={(e) => {
+                                <button type="button" className="project-media-action" onClick={(e) => {
                                   e.stopPropagation();
                                   if (project.sourceMediaInfo?.filePath) window.electronAPI?.openPath?.(project.sourceMediaInfo.filePath);
                                 }}>
                                   <Play size={11} /> Open
                                 </button>
-                                <button type="button" className="btn-cancel" style={{ padding: '4px 8px', height: '24px', fontSize: '10px', display: 'flex', alignItems: 'center', gap: '4px' }} onClick={(e) => {
+                                <button type="button" className="project-media-action" onClick={(e) => {
                                   e.stopPropagation();
                                   if (project.sourceMediaInfo?.filePath) window.electronAPI?.showItemInFolder?.(project.sourceMediaInfo.filePath);
                                 }}>
@@ -3257,32 +3238,34 @@ export default function App() {
                               </div>
                             </div>
                           )}
-                          {projectChunkNumbers(project.totalChunks).map((chunkNumber) => {
-                            const chunkIndex = chunkNumber - 1;
-                            const isCurrentChunk = isActiveProject && session?.currentIndex === chunkIndex;
-                            const canOpenChunk = canOpenSidebarChunk(chunkIndex, project.currentIndex, project.totalChunks);
-                            return (
+                          <div className="project-chunk-grid">
+                            {projectChunkNumbers(project.totalChunks).map((chunkNumber) => {
+                              const chunkIndex = chunkNumber - 1;
+                              const isCurrentChunk = isActiveProject && session?.currentIndex === chunkIndex;
+                              const canOpenChunk = canOpenSidebarChunk(chunkIndex, project.currentIndex, project.totalChunks);
+                              return (
+                                <button
+                                  key={chunkNumber}
+                                  className={`project-chunk-btn ${isCurrentChunk ? 'active' : ''} ${canOpenChunk ? '' : 'locked'}`}
+                                  disabled={!canOpenChunk}
+                                  onClick={() => openProjectChunk(project, chunkIndex)}
+                                >
+                                  <span>Chunk {chunkNumber}</span>
+                                  {chunkIndex === project.currentIndex && <span className="project-chunk-pill">last</span>}
+                                </button>
+                              );
+                            })}
+                            {exportReady && (
                               <button
-                                key={chunkNumber}
-                                className={`project-chunk-btn ${isCurrentChunk ? 'active' : ''} ${canOpenChunk ? '' : 'locked'}`}
-                                disabled={!canOpenChunk}
-                                onClick={() => openProjectChunk(project, chunkIndex)}
+                                type="button"
+                                className="project-export-btn"
+                                onClick={() => openProjectExport(project)}
                               >
-                                <span>Chunk {chunkNumber}</span>
-                                {chunkIndex === project.currentIndex && <span className="project-chunk-pill">last</span>}
+                                <Download size={13} />
+                                Export
                               </button>
-                            );
-                          })}
-                          {exportReady && (
-                            <button
-                              type="button"
-                              className="project-export-btn"
-                              onClick={() => openProjectExport(project)}
-                            >
-                              <Download size={13} />
-                              Export
-                            </button>
-                          )}
+                            )}
+                          </div>
                         </div>
                       )}
                     </div>
