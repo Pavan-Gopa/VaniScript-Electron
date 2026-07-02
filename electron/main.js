@@ -307,6 +307,7 @@ function projectSummary(project) {
     totalChunks: chunks.length,
     approvedChunks: chunks.filter((chunk) => chunk.approved).length,
     targetLang: session.targetLang || '',
+    sourceMediaInfo: session.sourceMediaInfo || project.sourceMediaInfo || null,
   };
 }
 
@@ -2628,6 +2629,99 @@ ipcMain.handle('hyperframes:cancelExport', async (_, { jobId }) => {
   return { success: true };
 });
 
+async function getSourceMediaInfoHelper(inputPath, originalURL, title, durationSec) {
+  if (!inputPath || !fs.existsSync(inputPath)) {
+    return null;
+  }
+  try {
+    const stats = fs.statSync(inputPath);
+    const fileSizeBytes = stats.size;
+    const fileName = path.basename(inputPath);
+    const container = path.extname(inputPath).replace('.', '').toLowerCase();
+    
+    // Probe with FFmpeg to get metadata
+    const stderr = await new Promise((resolve) => {
+      const ffmpegPath = getFfmpegPath();
+      let collected = '';
+      let proc;
+      try {
+        proc = spawn(ffmpegPath, ['-hide_banner', '-i', inputPath], { stdio: ['ignore', 'ignore', 'pipe'] });
+      } catch (e) {
+        return resolve('');
+      }
+      proc.stderr.on('data', d => { collected += d.toString(); });
+      proc.on('close', () => resolve(collected));
+      proc.on('error', () => resolve(collected));
+    });
+
+    const isVideo = /Stream #.*Video:/i.test(stderr);
+    const kind = isVideo ? 'video' : 'audio';
+
+    const videoMatch = stderr.match(/Video:\s.*?,\s*(\d{2,5})x(\d{2,5})[\s,\[]/);
+    const durationMatch = stderr.match(/Duration:\s*(\d+):(\d+):(\d+\.?\d*)/);
+    const fpsMatch = stderr.match(/,\s*([0-9]+(?:\.[0-9]+)?)\s*fps[, ]/);
+    
+    let videoCodec = null;
+    const videoStreamMatch = stderr.match(/Stream #.*Video:\s*([a-zA-Z0-9_-]+)/);
+    if (videoStreamMatch) {
+      videoCodec = videoStreamMatch[1];
+    }
+
+    let audioCodec = null;
+    const audioStreamMatch = stderr.match(/Stream #.*Audio:\s*([a-zA-Z0-9_-]+)/);
+    if (audioStreamMatch) {
+      audioCodec = audioStreamMatch[1];
+    }
+
+    let audioSampleRateHz = null;
+    const sampleRateMatch = stderr.match(/,\s*(\d+)\s*Hz/);
+    if (sampleRateMatch) {
+      audioSampleRateHz = Number(sampleRateMatch[1]);
+    }
+
+    let audioChannelCount = null;
+    if (/mono/i.test(stderr)) {
+      audioChannelCount = 1;
+    } else if (/stereo/i.test(stderr)) {
+      audioChannelCount = 2;
+    } else {
+      const channelsMatch = stderr.match(/,\s*(\d+)\s*channels/i);
+      if (channelsMatch) {
+        audioChannelCount = Number(channelsMatch[1]);
+      }
+    }
+
+    const resolvedDuration = durationMatch
+      ? (parseInt(durationMatch[1], 10) * 3600) + (parseInt(durationMatch[2], 10) * 60) + parseFloat(durationMatch[3])
+      : (durationSec || 0);
+
+    const width = videoMatch ? Number(videoMatch[1]) : null;
+    const height = videoMatch ? Number(videoMatch[2]) : null;
+    const fps = fpsMatch ? Number(fpsMatch[1]) : null;
+
+    return {
+      originalURL: originalURL || null,
+      filePath: inputPath,
+      fileName,
+      title: title || null,
+      kind,
+      durationSec: resolvedDuration,
+      fileSizeBytes,
+      width,
+      height,
+      frameRate: fps,
+      videoCodec,
+      audioCodec,
+      container,
+      overallBitrateBps: resolvedDuration > 0 ? (fileSizeBytes * 8) / resolvedDuration : null,
+      importedAt: new Date().toISOString()
+    };
+  } catch (err) {
+    log.error('getSourceMediaInfoHelper failed:', err);
+    return null;
+  }
+}
+
 // ─── IPC: Read file as buffer (for Whisper) ───────────────────────────────────
 ipcMain.handle('fs:readFileBuffer', async (_, { filePath }) => {
   try {
@@ -2653,6 +2747,15 @@ ipcMain.handle('fs:pathToFileUrl', async (_, { filePath }) => {
 // ─── IPC: Shell open ──────────────────────────────────────────────────────────
 ipcMain.handle('shell:openExternal', async (_, url) => {
   await shell.openExternal(url);
+});
+ipcMain.handle('shell:openPath', async (_, filePath) => {
+  return await shell.openPath(filePath);
+});
+ipcMain.handle('shell:showItemInFolder', async (_, filePath) => {
+  shell.showItemInFolder(filePath);
+});
+ipcMain.handle('ffmpeg:getSourceMediaInfo', async (_, { inputPath, originalURL, title, durationSec }) => {
+  return await getSourceMediaInfoHelper(inputPath, originalURL, title, durationSec);
 });
 
 // ─── IPC: App info ────────────────────────────────────────────────────────────
@@ -2686,7 +2789,27 @@ ipcMain.handle('project:save', async (_event, project) => {
 
 ipcMain.handle('project:load', async (_event, { id }) => {
   try {
-    return { ok: true, project: readProject(id) };
+    const project = readProject(id);
+    if (project && project.session && !project.session.sourceMediaInfo) {
+      const mediaPath = project.session.originalVideoPath || project.session.sourceFile;
+      if (mediaPath && fs.existsSync(mediaPath)) {
+        try {
+          const info = await getSourceMediaInfoHelper(
+            mediaPath,
+            project.session.originalVideoPath ? undefined : project.session.sourceFile,
+            project.name || project.session.sourceFileName,
+            project.session.chunks?.reduce((acc, c) => acc + (c.duration || 0), 0)
+          );
+          if (info) {
+            project.session.sourceMediaInfo = info;
+            saveProjectRecord(project);
+          }
+        } catch (err) {
+          log.warn('Failed to retrospectively probe media:', err);
+        }
+      }
+    }
+    return { ok: true, project };
   } catch (error) {
     return { ok: false, error: error.message || String(error) };
   }

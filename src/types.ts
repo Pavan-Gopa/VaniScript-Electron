@@ -160,6 +160,7 @@ export interface ProjectSummary {
   totalChunks: number;
   approvedChunks: number;
   targetLang: string;
+  sourceMediaInfo?: SourceMediaInfo;
 }
 
 // Window extension for Electron API
@@ -344,7 +345,34 @@ declare global {
       getUserDataPath: () => Promise<string>;
       getSystemMemoryInfo: () => Promise<{ totalBytes: number; freeBytes: number; platform: string; arch: string }>;
       onOpenSettings: (callback: () => void) => () => void;
+      openPath: (path: string) => Promise<string>;
+      showItemInFolder: (path: string) => Promise<void>;
+      ffmpegGetSourceMediaInfo: (opts: { inputPath: string; originalURL?: string; title?: string; durationSec?: number }) => Promise<SourceMediaInfo | null>;
       openExternal: (url: string) => Promise<void>;
     };
   }
 }
+
+export interface SourceMediaInfo {
+  originalURL?: string;
+  filePath: string;
+  fileName: string;
+  title?: string;
+  kind: 'audio' | 'video';
+  durationSec?: number;
+  fileSizeBytes?: number;
+  width?: number;
+  height?: number;
+  frameRate?: number;
+  videoCodec?: string;
+  audioCodec?: string;
+  container?: string;
+  writingApplication?: string;
+  overallBitrateBps?: number;
+  videoBitrateBps?: number;
+  audioBitrateBps?: number;
+  audioSampleRateHz?: number;
+  audioChannelCount?: number;
+  importedAt?: string;
+}
+

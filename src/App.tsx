@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Settings, Download, RefreshCw, Play, Pause, FolderOpen, Share2, Trash2, Upload, Archive, ChevronDown, ChevronRight, ArrowLeft, Search, HelpCircle } from 'lucide-react';
-import { AppSettings, ChunkData, GlossaryEntry, LanguageResult, ProjectSummary, TranscriptCue, UsageStats } from './types';
+import { Settings, Download, RefreshCw, Play, Pause, FolderOpen, Share2, Trash2, Upload, Archive, ChevronDown, ChevronRight, ArrowLeft, Search, HelpCircle, Film, FileAudio, Info } from 'lucide-react';
+import { AppSettings, ChunkData, GlossaryEntry, LanguageResult, ProjectSummary, SourceMediaInfo, TranscriptCue, UsageStats } from './types';
 import { loadSettings, saveSettings, loadUsage, applyTheme, trackUsage } from './services/storage';
 import { transcribeChunkGemini, transcribeChunkOpenAI, fileToBase64 } from './services/transcription';
 import { computeCutPoints, cutPointsToSeconds } from './services/smart-slicer';
@@ -70,6 +70,7 @@ interface Session {
   targetLang: string;
   shortsPlans?: ShortsClipPlan[];
   selectedShortsPlanIndexes?: number[];
+  sourceMediaInfo?: SourceMediaInfo;
 }
 
 type LocalAsrSegment = { t0?: number; t1?: number; text?: string } | [number, number, string];
@@ -358,6 +359,45 @@ function localExportRecommendedMemoryBytes(modelId: string, format: OutputFormat
   return (16 + markdownExtra) * 1024 ** 3;
 }
 
+function getQualityLabel(mediaInfo: SourceMediaInfo): string {
+  if (mediaInfo.kind === 'audio') return 'Audio';
+  const { width, height } = mediaInfo;
+  if (!width || !height) return 'Media';
+  const shortEdge = Math.min(width, height);
+  const longEdge = Math.max(width, height);
+  if (shortEdge >= 2160 || longEdge >= 3840) return '4K';
+  if (shortEdge >= 1440 || longEdge >= 2560) return '2K';
+  if (shortEdge >= 1080 || longEdge >= 1920) return 'Full HD';
+  if (shortEdge >= 720 || longEdge >= 1280) return 'HD';
+  return `${width}x${height}`;
+}
+
+function formatFileSize(bytes?: number): string {
+  if (bytes === undefined || bytes === null) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+}
+
+function getMediaSummary(mediaInfo: SourceMediaInfo): string {
+  const parts: string[] = [getQualityLabel(mediaInfo)];
+  if (mediaInfo.width && mediaInfo.height) {
+    parts.push(`${mediaInfo.width}x${mediaInfo.height}`);
+  }
+  if (mediaInfo.frameRate) {
+    parts.push(`${Math.round(mediaInfo.frameRate)} fps`);
+  }
+  if (mediaInfo.container) {
+    parts.push(mediaInfo.container.toUpperCase());
+  }
+  if (mediaInfo.fileSizeBytes) {
+    parts.push(formatFileSize(mediaInfo.fileSizeBytes));
+  }
+  return parts.join(' · ');
+}
+
 export default function App() {
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [usage, setUsage] = useState<UsageStats>(() => loadUsage());
@@ -400,6 +440,7 @@ export default function App() {
   const [projectSidebarClosing, setProjectSidebarClosing] = useState(false);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [expandedProjectId, setExpandedProjectId] = useState<string | null>(null);
+  const [activeMediaInfo, setActiveMediaInfo] = useState<SourceMediaInfo | null>(null);
   const isTranscribing = useRef(false);
   const autosaveTimerRef = useRef<number | null>(null);
   const autosaveSnapshotRef = useRef('');
@@ -1440,12 +1481,26 @@ export default function App() {
         original: '', translated: '', status: 'pending' as const, approved: false,
       }));
 
+      setProcMsg('Reading source media details…');
+      let sourceMediaInfo: SourceMediaInfo | undefined;
+      if (window.electronAPI?.ffmpegGetSourceMediaInfo) {
+        try {
+          const info = await window.electronAPI.ffmpegGetSourceMediaInfo({
+            inputPath: sourceFile,
+            durationSec: durationSec
+          });
+          if (info) sourceMediaInfo = info;
+        } catch (e) {
+          console.warn('Could not read source media info:', e);
+        }
+      }
+
       setProcMsg('Uploading audio and initializing AI…');
       setProcProgress(90);
 
       const newSession: Session = {
         sourceFile, sourceFileName, sourceMediaKind: mediaKind, originalVideoPath, wavPath, config: cfg, chunks,
-        currentIndex: 0, targetLang: cfg.targetLang,
+        currentIndex: 0, targetLang: cfg.targetLang, sourceMediaInfo,
       };
 
       setSession(newSession);
@@ -1620,7 +1675,18 @@ export default function App() {
   };
 
   const toggleProjectExpanded = (projectId: string) => {
-    setExpandedProjectId((current) => current === projectId ? null : projectId);
+    setExpandedProjectId((current) => {
+      const next = current === projectId ? null : projectId;
+      if (next) {
+        const proj = projects.find(p => p.id === projectId);
+        if (proj && !proj.sourceMediaInfo) {
+          window.electronAPI?.projectLoad?.({ id: projectId }).then(() => {
+            void refreshProjects();
+          });
+        }
+      }
+      return next;
+    });
   };
 
   const openCurrentSessionChunk = (chunkIndex: number) => {
@@ -3121,6 +3187,12 @@ export default function App() {
                         <span className="project-meta">
                           {project.currentIndex + 1}/{Math.max(1, project.totalChunks)} chunks · {project.approvedChunks} approved · {project.targetLang || 'Same'}
                         </span>
+                        {project.sourceMediaInfo && (
+                          <span className="project-media-meta" style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '4px', fontSize: '11px', fontWeight: 600, color: '#ff9f0a' }}>
+                            {project.sourceMediaInfo.kind === 'video' ? <Film size={12} /> : <FileAudio size={12} />}
+                            {getMediaSummary(project.sourceMediaInfo)}
+                          </span>
+                        )}
                         <span className="project-date">{new Date(project.updatedAt).toLocaleString()}</span>
                       </button>
                       <div className="project-item-actions">
@@ -3129,6 +3201,62 @@ export default function App() {
                       </div>
                       {isExpanded && (
                         <div className="project-chunk-list">
+                          {project.sourceMediaInfo && (
+                            <div className="project-media-card" style={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '8px',
+                              padding: '10px',
+                              marginBottom: '10px',
+                              backgroundColor: 'rgba(255, 255, 255, 0.035)',
+                              border: '1px solid rgba(255, 255, 255, 0.08)',
+                              borderRadius: '10px',
+                              textAlign: 'left',
+                            }}>
+                              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                <div style={{ color: '#ff9f0a', flexShrink: 0 }}>
+                                  {project.sourceMediaInfo.kind === 'video' ? <Film size={16} /> : <FileAudio size={16} />}
+                                </div>
+                                <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                                  <span style={{ fontSize: '11px', fontWeight: 'bold', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-color-0, #ffffff)' }}>
+                                    {project.sourceMediaInfo.fileName}
+                                  </span>
+                                  <span style={{ fontSize: '10px', color: 'var(--text-color-2, #8e8e93)' }}>
+                                    {getMediaSummary(project.sourceMediaInfo)}
+                                  </span>
+                                </div>
+                              </div>
+                              <div style={{
+                                fontSize: '9px',
+                                fontFamily: 'var(--font-mono, monospace)',
+                                color: 'var(--text-color-2, #8e8e93)',
+                                wordBreak: 'break-all',
+                                userSelect: 'all',
+                                padding: '4px 6px',
+                                backgroundColor: 'rgba(0,0,0,0.15)',
+                                borderRadius: '4px',
+                              }}>
+                                {project.sourceMediaInfo.filePath}
+                              </div>
+                              <div style={{ display: 'flex', gap: '6px' }}>
+                                <button type="button" className="btn-cancel" style={{ padding: '4px 8px', height: '24px', fontSize: '10px', display: 'flex', alignItems: 'center', gap: '4px' }} onClick={(e) => { e.stopPropagation(); setActiveMediaInfo(project.sourceMediaInfo!); }}>
+                                  <Info size={11} /> Info
+                                </button>
+                                <button type="button" className="btn-cancel" style={{ padding: '4px 8px', height: '24px', fontSize: '10px', display: 'flex', alignItems: 'center', gap: '4px' }} onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (project.sourceMediaInfo?.filePath) window.electronAPI?.openPath?.(project.sourceMediaInfo.filePath);
+                                }}>
+                                  <Play size={11} /> Open
+                                </button>
+                                <button type="button" className="btn-cancel" style={{ padding: '4px 8px', height: '24px', fontSize: '10px', display: 'flex', alignItems: 'center', gap: '4px' }} onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (project.sourceMediaInfo?.filePath) window.electronAPI?.showItemInFolder?.(project.sourceMediaInfo.filePath);
+                                }}>
+                                  <FolderOpen size={11} /> Reveal
+                                </button>
+                              </div>
+                            </div>
+                          )}
                           {projectChunkNumbers(project.totalChunks).map((chunkNumber) => {
                             const chunkIndex = chunkNumber - 1;
                             const isCurrentChunk = isActiveProject && session?.currentIndex === chunkIndex;
@@ -3325,6 +3453,85 @@ export default function App() {
             </div>
           );
         })()}
+
+        {activeMediaInfo && (
+          <div className="shorts-export-modal-backdrop" onClick={() => setActiveMediaInfo(null)}>
+            <div className="shorts-export-modal" style={{ maxWidth: '460px', textAlign: 'left' }} onClick={(e) => e.stopPropagation()}>
+              <h3>Source Media Details</h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '350px', overflowY: 'auto', paddingRight: '4px', fontSize: '12px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '4px' }}>
+                  <span style={{ color: 'var(--text-color-2, #8e8e93)' }}>File Name</span>
+                  <span style={{ fontWeight: 'bold', color: 'var(--text-color-0, #ffffff)', maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{activeMediaInfo.fileName}</span>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '4px', gap: '2px' }}>
+                  <span style={{ color: 'var(--text-color-2, #8e8e93)' }}>Location</span>
+                  <span style={{ wordBreak: 'break-all', color: 'var(--text-color-0, #ffffff)', fontFamily: 'var(--font-mono, monospace)', fontSize: '10px', backgroundColor: 'rgba(0,0,0,0.2)', padding: '4px 6px', borderRadius: '4px' }}>{activeMediaInfo.filePath}</span>
+                </div>
+                {activeMediaInfo.originalURL && (
+                  <div style={{ display: 'flex', flexDirection: 'column', borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '4px', gap: '2px' }}>
+                    <span style={{ color: 'var(--text-color-2, #8e8e93)' }}>Source URL</span>
+                    <span style={{ wordBreak: 'break-all', color: 'var(--text-color-0, #ffffff)', fontSize: '10px' }}>{activeMediaInfo.originalURL}</span>
+                  </div>
+                )}
+                <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '4px' }}>
+                  <span style={{ color: 'var(--text-color-2, #8e8e93)' }}>Format</span>
+                  <span style={{ color: 'var(--text-color-0, #ffffff)' }}>{activeMediaInfo.container?.toUpperCase()} ({activeMediaInfo.kind})</span>
+                </div>
+                {activeMediaInfo.durationSec !== undefined && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '4px' }}>
+                    <span style={{ color: 'var(--text-color-2, #8e8e93)' }}>Duration</span>
+                    <span style={{ color: 'var(--text-color-0, #ffffff)' }}>{Math.floor(activeMediaInfo.durationSec / 60)}m {Math.round(activeMediaInfo.durationSec % 60)}s</span>
+                  </div>
+                )}
+                {activeMediaInfo.fileSizeBytes !== undefined && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '4px' }}>
+                    <span style={{ color: 'var(--text-color-2, #8e8e93)' }}>File Size</span>
+                    <span style={{ color: 'var(--text-color-0, #ffffff)' }}>{formatFileSize(activeMediaInfo.fileSizeBytes)}</span>
+                  </div>
+                )}
+                {activeMediaInfo.kind === 'video' && activeMediaInfo.width && activeMediaInfo.height && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '4px' }}>
+                    <span style={{ color: 'var(--text-color-2, #8e8e93)' }}>Resolution</span>
+                    <span style={{ color: 'var(--text-color-0, #ffffff)' }}>{activeMediaInfo.width}x{activeMediaInfo.height} ({getQualityLabel(activeMediaInfo)})</span>
+                  </div>
+                )}
+                {activeMediaInfo.frameRate !== undefined && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '4px' }}>
+                    <span style={{ color: 'var(--text-color-2, #8e8e93)' }}>Frame Rate</span>
+                    <span style={{ color: 'var(--text-color-0, #ffffff)' }}>{activeMediaInfo.frameRate} fps</span>
+                  </div>
+                )}
+                {activeMediaInfo.videoCodec && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '4px' }}>
+                    <span style={{ color: 'var(--text-color-2, #8e8e93)' }}>Video Codec</span>
+                    <span style={{ color: 'var(--text-color-0, #ffffff)' }}>{activeMediaInfo.videoCodec}</span>
+                  </div>
+                )}
+                {activeMediaInfo.audioCodec && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '4px' }}>
+                    <span style={{ color: 'var(--text-color-2, #8e8e93)' }}>Audio Codec</span>
+                    <span style={{ color: 'var(--text-color-0, #ffffff)' }}>{activeMediaInfo.audioCodec}</span>
+                  </div>
+                )}
+                {activeMediaInfo.importedAt && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '4px' }}>
+                    <span style={{ color: 'var(--text-color-2, #8e8e93)' }}>Imported At</span>
+                    <span style={{ color: 'var(--text-color-0, #ffffff)' }}>{new Date(activeMediaInfo.importedAt).toLocaleString()}</span>
+                  </div>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: '8px', marginTop: '16px' }}>
+                <button className="btn-cancel" style={{ flex: 1 }} onClick={() => setActiveMediaInfo(null)}>Close</button>
+                <button className="btn-save" style={{ flex: 1 }} onClick={() => {
+                  if (activeMediaInfo.filePath) window.electronAPI?.openPath?.(activeMediaInfo.filePath);
+                }}>Open</button>
+                <button className="btn-save" style={{ flex: 1 }} onClick={() => {
+                  if (activeMediaInfo.filePath) window.electronAPI?.showItemInFolder?.(activeMediaInfo.filePath);
+                }}>Reveal</button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {settings.annotationMode && (
           <OnboardingTour

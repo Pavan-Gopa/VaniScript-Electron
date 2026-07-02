@@ -99,8 +99,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('app:open-settings', handler);
   },
 
-  // ─── Shell ────────────────────────────────────────────────────────────────
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
+  openPath: (path) => ipcRenderer.invoke('shell:openPath', path),
+  showItemInFolder: (path) => ipcRenderer.invoke('shell:showItemInFolder', path),
+  ffmpegGetSourceMediaInfo: (opts) => ipcRenderer.invoke('ffmpeg:getSourceMediaInfo', opts),
 
   // ─── Environment detection ────────────────────────────────────────────────
   isElectron: true,
