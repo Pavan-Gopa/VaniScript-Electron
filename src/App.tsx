@@ -33,6 +33,7 @@ import { formatDocumentExportLocally, formatDocumentExportWithGemini, formatDocu
 import { reconcileLocalModelStatesWithDisk } from './services/model-presence';
 import { ShortsReelsPanel, ShortsSettings } from './components/ShortsReelsPanel';
 import { SourceMediaKind, sourceMediaKind } from './lib/media-source';
+import { resolveShortsAudioPath } from './lib/shorts-media-source';
 import { buildShortsPrompt, parseShortsPlanResponse, parseTimestampToSeconds, secondsToShortsTimestamp, ShortsClipPlan, ShortsPlanLanguageMode } from './lib/shorts-reels';
 import { renderPrompt } from './lib/prompt-presets';
 import { toggleSync, copyMotionFrom, findLinkedPartnerIndex, resolveClipLanguageRole, buildSyncPatch } from './lib/ClipSyncManager';
@@ -457,6 +458,10 @@ export default function App() {
     () => session?.chunks[session.currentIndex]?.filePath || session?.wavPath || session?.sourceFile || '',
     [session?.chunks, session?.currentIndex, session?.wavPath, session?.sourceFile]
   );
+  const shortsAudioPath = useMemo(
+    () => resolveShortsAudioPath(session),
+    [session?.wavPath, session?.originalVideoPath, session?.sourceFile]
+  );
   const exportOptions = useMemo(() => ({
     targetLang: session?.targetLang,
     metadataSourceChunks: session?.chunks,
@@ -700,7 +705,7 @@ export default function App() {
   useEffect(() => {
     let revokedUrl = '';
     let cancelled = false;
-    const fullAudioPath = session?.wavPath || '';
+    const fullAudioPath = shortsAudioPath;
 
     const loadShortsAudio = async () => {
       if (!fullAudioPath) {
@@ -754,7 +759,7 @@ export default function App() {
       cancelled = true;
       if (revokedUrl) URL.revokeObjectURL(revokedUrl);
     };
-  }, [session?.wavPath]);
+  }, [shortsAudioPath]);
 
   useEffect(() => {
     let revokedUrl = '';
@@ -2937,7 +2942,7 @@ export default function App() {
                       planningProvider={editingProvider}
                       onPlanningProviderChange={setEditingProvider}
                       previewAudioSrc={shortsAudioSrc}
-                      previewAudioPath={session.wavPath}
+                      previewAudioPath={shortsAudioPath}
                       previewAudioStatus={shortsAudioStatus}
                       previewAudioError={shortsAudioError}
                       previewVideoSrc={shortsVideoSrc}
