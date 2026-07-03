@@ -46,6 +46,23 @@ function resolveSessionCurrentIndex(session, totalChunks = session?.chunks?.leng
   return clampSessionIndex(firstFiniteNumber(session?.currentIndex, session?.currentChunkIndex), totalChunks);
 }
 
+function contiguousApprovedCount(chunks) {
+  let count = 0;
+  for (const chunk of chunks) {
+    if (!chunk?.approved) break;
+    count += 1;
+  }
+  return count;
+}
+
+function resolveSessionReviewProgressIndex(session, totalChunks = session?.chunks?.length ?? 0) {
+  const total = Math.max(0, Math.floor(Number(totalChunks) || 0));
+  if (total === 0) return 0;
+  const chunks = Array.isArray(session?.chunks) ? session.chunks.slice(0, total) : [];
+  const nextAfterApproved = Math.min(total - 1, contiguousApprovedCount(chunks));
+  return Math.max(resolveSessionCurrentIndex(session, total), nextAfterApproved);
+}
+
 function normalizeOutputFormats(outputFormats, configFormats) {
   const formats = Array.isArray(outputFormats) && outputFormats.length > 0
     ? outputFormats
@@ -157,5 +174,6 @@ function normalizeImportedProjectSession(session, options = {}) {
 module.exports = {
   normalizeImportedProjectSession,
   resolveSessionCurrentIndex,
+  resolveSessionReviewProgressIndex,
   restoreImportedChunk,
 };

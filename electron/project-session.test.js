@@ -1,7 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { normalizeImportedProjectSession } = require('./project-session');
+const {
+  normalizeImportedProjectSession,
+  resolveSessionReviewProgressIndex,
+} = require('./project-session');
 
 test('normalizes Apple Silicon project sessions for Electron review UI', () => {
   const assetMap = new Map([
@@ -85,4 +88,22 @@ test('normalizes Apple Silicon project sessions for Electron review UI', () => {
   assert.equal(session.chunks[0].filePath, '/tmp/imported/chunks/chunk_0000.wav');
   assert.equal(session.chunks[0].translated, 'Russian text');
   assert.deepEqual(session.chunks[0].translatedCues, [{ startSec: 0, endSec: 2, text: 'Russian text' }]);
+});
+
+test('keeps every approved chunk reachable when user opens an earlier chunk', () => {
+  const chunks = Array.from({ length: 7 }, (_, index) => ({
+    index,
+    approved: true,
+  }));
+
+  assert.equal(resolveSessionReviewProgressIndex({ currentIndex: 3, chunks }, chunks.length), 6);
+});
+
+test('keeps the next unapproved chunk reachable after reviewing approved chunks', () => {
+  const chunks = Array.from({ length: 7 }, (_, index) => ({
+    index,
+    approved: index < 5,
+  }));
+
+  assert.equal(resolveSessionReviewProgressIndex({ currentIndex: 1, chunks }, chunks.length), 5);
 });

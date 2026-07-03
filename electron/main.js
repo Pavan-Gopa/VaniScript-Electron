@@ -20,6 +20,7 @@ const { scanLocalModels } = require('../shared/scanLocalModels');
 const {
   normalizeImportedProjectSession,
   resolveSessionCurrentIndex,
+  resolveSessionReviewProgressIndex,
 } = require('./project-session');
 
 for (const stream of [process.stdout, process.stderr]) {
@@ -307,7 +308,7 @@ function projectSummary(project) {
     sourceFileName: session.sourceFileName || '',
     updatedAt: project.updatedAt || project.createdAt || '',
     createdAt: project.createdAt || project.updatedAt || '',
-    currentIndex: resolveSessionCurrentIndex(session, chunks.length),
+    currentIndex: resolveSessionReviewProgressIndex(session, chunks.length),
     totalChunks: chunks.length,
     approvedChunks: chunks.filter((chunk) => chunk.approved).length,
     targetLang: session.targetLang || '',
