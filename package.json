@@ -2,6 +2,7 @@
   "name": "vaniscript",
   "version": "1.0.0",
   "description": "Gaudiya Vaishnava Lecture Transcription & Translation Engine",
+  "author": "Stichting Kadamba Foundation",
   "private": true,
   "main": "electron/main.js",
   "type": "commonjs",
@@ -11,7 +12,7 @@
     "compile": "tsc --noEmit",
     "electron": "npm run vite-build && npm run prepare-dev-branding && node_modules/electron/dist/Electron.app/Contents/MacOS/Electron .",
     "start": "npm run electron",
-    "build": "npm run vite-build && electron-builder --mac",
+    "build": "npm run vite-build && electron-builder --mac && node scripts/sign-mac-dmg.mjs",
     "build:win": "npm run vite-build && electron-builder --win",
     "build:linux": "npm run vite-build && electron-builder --linux",
     "pack": "npm run vite-build && electron-builder --dir",
@@ -21,7 +22,7 @@
   },
   "build": {
     "appId": "com.gaudiya.vaniscript",
-  "productName": "VaniScript",
+    "productName": "VaniScript",
     "directories": {
       "output": "release"
     },
@@ -44,7 +45,10 @@
     "mac": {
       "category": "public.app-category.utilities",
       "icon": "assets/icon.icns",
-      "hardenedRuntime": false,
+      "identity": "Stichting Kadamba Foundation (438UQRF7JV)",
+      "hardenedRuntime": true,
+      "entitlements": "scripts/entitlements.mac.plist",
+      "entitlementsInherit": "scripts/entitlements.mac.plist",
       "gatekeeperAssess": false
     },
     "win": {
