@@ -137,10 +137,33 @@ export type ShortsPlanOptions = {
   outputLanguage: string;
   speakerName?: string;
   mode?: ShortsPlanLanguageMode;
+  existingClips?: Pick<ShortsClipPlan, 'start' | 'end' | 'title'>[];
   promptPresets?: PromptSettingsMap;
 };
 
+export type AppendShortsPlansResult = {
+  plans: ShortsClipPlan[];
+  addedIndexes: number[];
+  skippedOverlapping: ShortsClipPlan[];
+};
+
+function existingRangesInstruction(existingClips: Pick<ShortsClipPlan, 'start' | 'end' | 'title'>[] = []): string {
+  const ranges = existingClips
+    .filter((clip) => clip.start && clip.end)
+    .map((clip, index) => {
+      const title = clip.title?.trim() ? ` - ${clip.title.trim()}` : '';
+      return `${index + 1}. ${clip.start} -> ${clip.end}${title}`;
+    });
+  if (ranges.length === 0) return '';
+  return [
+    'Already selected ranges:',
+    ...ranges,
+    'Do not choose moments that overlap any already selected range. Find different, non-overlapping moments outside these ranges.',
+  ].join('\n');
+}
+
 export function buildShortsPrompt(opts: ShortsPlanOptions): string {
+  const existingRanges = existingRangesInstruction(opts.existingClips);
   const modeInstruction = opts.mode === 'source'
     ? 'Analyze the source-language transcript and write title, summary, hook, category, and captionText in the source language.'
     : opts.mode === 'bilingual'
@@ -152,15 +175,19 @@ export function buildShortsPrompt(opts: ShortsPlanOptions): string {
   const speakerMetadataLine = opts.speakerName?.trim()
     ? `Speaker metadata: ${opts.speakerName.trim()}. When describing who is speaking, use this name or a respectful shortened form such as Maharaj or Swami. Do not write generic phrases like "the speaker", "the speaker shares", "спикер", or "говорящий" when this metadata is available.`
     : 'Speaker metadata is unknown. If you refer to the person speaking, use a generic phrase such as "the speaker".';
-  return renderPrompt(opts.promptPresets, 'shortsPlanner', {
+  const basePrompt = renderPrompt(opts.promptPresets, 'shortsPlanner', {
     speakerMetadataLine,
     count: opts.count,
     minDurationSec: opts.minDurationSec,
     maxDurationSec: opts.maxDurationSec,
     modeInstruction,
     captionSchema,
+    existingRangesBlock: existingRanges,
     transcript: opts.transcript,
   });
+  return existingRanges && !basePrompt.includes(existingRanges)
+    ? [basePrompt, existingRanges].filter(Boolean).join('\n\n')
+    : basePrompt;
 }
 
 export function parseShortsPlanResponse(text: string): ShortsClipPlan[] {
@@ -221,4 +248,40 @@ export function validateShortClip(
   if (durationSec < minDurationSec) return { ok: false, durationSec, reason: 'Clip is shorter than minimum duration.' };
   if (durationSec > maxDurationSec) return { ok: false, durationSec, reason: 'Clip is longer than maximum duration.' };
   return { ok: true, durationSec };
+}
+
+function clipRange(plan: Pick<ShortsClipPlan, 'start' | 'end'>): { startSec: number; endSec: number } {
+  const startSec = parseTimestampToSeconds(plan.start);
+  const endSec = parseTimestampToSeconds(plan.end);
+  return { startSec: Math.min(startSec, endSec), endSec: Math.max(startSec, endSec) };
+}
+
+function overlapSeconds(
+  a: { startSec: number; endSec: number },
+  b: { startSec: number; endSec: number }
+): number {
+  return Math.max(0, Math.min(a.endSec, b.endSec) - Math.max(a.startSec, b.startSec));
+}
+
+export function appendNonOverlappingShortsPlans(
+  existingPlans: ShortsClipPlan[],
+  incomingPlans: ShortsClipPlan[],
+  minOverlapSec = 1
+): AppendShortsPlansResult {
+  const plans = [...existingPlans];
+  const addedIndexes: number[] = [];
+  const skippedOverlapping: ShortsClipPlan[] = [];
+
+  for (const incoming of incomingPlans) {
+    const incomingRange = clipRange(incoming);
+    const overlaps = plans.some((plan) => overlapSeconds(incomingRange, clipRange(plan)) > minOverlapSec);
+    if (overlaps) {
+      skippedOverlapping.push(incoming);
+      continue;
+    }
+    addedIndexes.push(plans.length);
+    plans.push(incoming);
+  }
+
+  return { plans, addedIndexes, skippedOverlapping };
 }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildShortsPrompt, parseShortsPlanResponse, parseTimestampToSeconds, validateShortClip } from './shorts-reels';
+import { appendNonOverlappingShortsPlans, buildShortsPrompt, parseShortsPlanResponse, parseTimestampToSeconds, validateShortClip } from './shorts-reels';
 
 test('buildShortsPrompt includes duration, count, language, and Vaishnava criteria', () => {
   const prompt = buildShortsPrompt({
@@ -43,6 +43,60 @@ test('bilingual Shorts prompt requests aligned source and target caption scripts
   assert.match(prompt, /sourceCaptionText/);
   assert.match(prompt, /targetCaptionText/);
   assert.match(prompt, /same timestamp markers/);
+});
+
+test('buildShortsPrompt asks the planner to avoid existing clip ranges', () => {
+  const prompt = buildShortsPrompt({
+    transcript: '[05:23] Existing moment.\n\n[07:00] New moment.',
+    count: 2,
+    minDurationSec: 30,
+    maxDurationSec: 90,
+    outputLanguage: 'Russian',
+    mode: 'bilingual',
+    existingClips: [
+      { start: '05:23', end: '06:49', title: 'Economy of giving' },
+    ],
+  });
+
+  assert.match(prompt, /Already selected ranges/i);
+  assert.match(prompt, /05:23 -> 06:49/);
+  assert.match(prompt, /Do not choose moments that overlap/i);
+});
+
+test('appendNonOverlappingShortsPlans preserves existing edited clips and appends new ranges', () => {
+  const existing = [{
+    start: '05:23',
+    end: '06:49',
+    title: 'Keep this edited clip',
+    summary: 'Already edited.',
+    hook: 'Keep it.',
+    sourceAlignment: [{ id: 'sub-1', start: 0, end: 3, text: 'Edited captions', words: [] }],
+  }];
+  const incoming = [
+    { start: '05:30', end: '06:30', title: 'Duplicate range', summary: '', hook: '' },
+    { start: '07:00', end: '08:00', title: 'Fresh range', summary: '', hook: '' },
+  ];
+
+  const result = appendNonOverlappingShortsPlans(existing, incoming);
+
+  assert.equal(result.plans.length, 2);
+  assert.strictEqual(result.plans[0], existing[0]);
+  assert.equal(result.plans[1].title, 'Fresh range');
+  assert.deepEqual(result.addedIndexes, [1]);
+  assert.equal(result.skippedOverlapping.length, 1);
+  assert.equal(result.skippedOverlapping[0].title, 'Duplicate range');
+});
+
+test('appendNonOverlappingShortsPlans filters overlapping incoming candidates against newly added clips', () => {
+  const result = appendNonOverlappingShortsPlans([], [
+    { start: '01:00', end: '02:00', title: 'First', summary: '', hook: '' },
+    { start: '01:30', end: '02:20', title: 'Overlaps first', summary: '', hook: '' },
+    { start: '02:02', end: '02:45', title: 'Adjacent fresh range', summary: '', hook: '' },
+  ]);
+
+  assert.deepEqual(result.plans.map((plan) => plan.title), ['First', 'Adjacent fresh range']);
+  assert.deepEqual(result.addedIndexes, [0, 1]);
+  assert.deepEqual(result.skippedOverlapping.map((plan) => plan.title), ['Overlaps first']);
 });
 
 test('parseTimestampToSeconds handles mm:ss and hh:mm:ss', () => {

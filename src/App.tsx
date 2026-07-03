@@ -35,7 +35,7 @@ import { ShortsReelsPanel, ShortsSettings } from './components/ShortsReelsPanel'
 import { SourceMediaKind, sourceMediaKind } from './lib/media-source';
 import { resolveShortsAudioPath } from './lib/shorts-media-source';
 import { buildShortsCuesForClip, buildShortsTranscriptText } from './lib/shorts-transcript';
-import { buildShortsPrompt, parseShortsPlanResponse, parseTimestampToSeconds, secondsToShortsTimestamp, ShortsClipPlan, ShortsPlanLanguageMode } from './lib/shorts-reels';
+import { appendNonOverlappingShortsPlans, buildShortsPrompt, parseShortsPlanResponse, parseTimestampToSeconds, secondsToShortsTimestamp, ShortsClipPlan, ShortsPlanLanguageMode } from './lib/shorts-reels';
 import { renderPrompt } from './lib/prompt-presets';
 import { toggleSync, copyMotionFrom, findLinkedPartnerIndex, resolveClipLanguageRole, buildSyncPatch } from './lib/ClipSyncManager';
 import {
@@ -1995,14 +1995,23 @@ export default function App() {
         outputLanguage: safeMode === 'source' || session.targetLang === 'same' ? 'English' : session.targetLang,
         speakerName,
         mode: safeMode,
+        existingClips: shortsPlans,
         promptPresets: settingsRef.current.promptPresets,
       });
       const response = await runShortsPrompt(prompt);
-      const plans = parseShortsPlanResponse(response)
+      const incomingPlans = parseShortsPlanResponse(response)
         .map((plan) => personalizeShortsPlanSpeaker({ ...plan, languageMode: safeMode }, speakerNames.source, speakerNames.target));
-      setShortsPlans(plans);
-      setSelectedShortsPlanIndex(plans.length > 0 ? 0 : null);
-      setSelectedShortsPlanIndexes(plans.map((_, index) => index));
+      const merged = appendNonOverlappingShortsPlans(shortsPlans, incomingPlans);
+      if (merged.addedIndexes.length === 0 && incomingPlans.length > 0) {
+        alert('Shorts/Reels planning returned only clips that overlap existing clips. Existing clips were preserved; try running again or delete a clip manually if you want to replace that range.');
+        return;
+      }
+      setShortsPlans(merged.plans);
+      setSelectedShortsPlanIndex(merged.addedIndexes[0] ?? (selectedShortsPlanIndex ?? (merged.plans.length > 0 ? 0 : null)));
+      setSelectedShortsPlanIndexes(Array.from(new Set([
+        ...selectedShortsPlanIndexes.filter((index) => index >= 0 && index < shortsPlans.length),
+        ...merged.addedIndexes,
+      ])));
     } catch (error) {
       console.error('Shorts/Reels planning failed.', error);
       alert(`Shorts/Reels planning failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -2010,7 +2019,7 @@ export default function App() {
       setShortsBusy(false);
       setShortsBusyLabel('');
     }
-  }, [buildShortsTranscript, getShortsSpeakerNames, runShortsPrompt, session, shortsSettings.count, shortsSettings.maxDurationSec, shortsSettings.minDurationSec]);
+  }, [buildShortsTranscript, getShortsSpeakerNames, runShortsPrompt, selectedShortsPlanIndex, selectedShortsPlanIndexes, session, shortsPlans, shortsSettings.count, shortsSettings.maxDurationSec, shortsSettings.minDurationSec]);
 
   // ── Replace Clip: update timestamps and clear stale alignments ─────────
   const handleReplacePlan = useCallback((index: number, startTimestamp: string, endTimestamp: string) => {

@@ -179,6 +179,7 @@ For bilingual output, sourceCaptionText and targetCaptionText must use the same 
 Example captionText format: "[04:56] The spiritual city is\\n[04:59] the spiritual character of His residence\\n[05:03] In building the city of Mayapur"
 Use short category tags such as story, philosophy, quote, teaching, humor, or history.
 Do not invent timestamps. Use only timestamps from the transcript.
+{{existingRangesBlock}}
 
 Transcript:
 {{transcript}}`;
@@ -323,7 +324,7 @@ export const PROMPT_DEFINITIONS: PromptDefinition[] = [
     label: 'Shorts/Reels · User',
     stage: 'Shorts & Reels',
     description: 'Prompt that finds interesting short-form clips and captions.',
-    variables: ['speakerMetadataLine', 'count', 'minDurationSec', 'maxDurationSec', 'modeInstruction', 'captionSchema', 'transcript'],
+    variables: ['speakerMetadataLine', 'count', 'minDurationSec', 'maxDurationSec', 'modeInstruction', 'captionSchema', 'existingRangesBlock', 'transcript'],
     defaultText: SHORTS_PLANNER,
   },
   {
