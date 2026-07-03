@@ -34,6 +34,7 @@ import { reconcileLocalModelStatesWithDisk } from './services/model-presence';
 import { ShortsReelsPanel, ShortsSettings } from './components/ShortsReelsPanel';
 import { SourceMediaKind, sourceMediaKind } from './lib/media-source';
 import { resolveShortsAudioPath } from './lib/shorts-media-source';
+import { buildShortsCuesForClip, buildShortsTranscriptText } from './lib/shorts-transcript';
 import { buildShortsPrompt, parseShortsPlanResponse, parseTimestampToSeconds, secondsToShortsTimestamp, ShortsClipPlan, ShortsPlanLanguageMode } from './lib/shorts-reels';
 import { renderPrompt } from './lib/prompt-presets';
 import { toggleSync, copyMotionFrom, findLinkedPartnerIndex, resolveClipLanguageRole, buildSyncPatch } from './lib/ClipSyncManager';
@@ -1876,30 +1877,9 @@ export default function App() {
   const buildShortsTranscript = useCallback((mode: ShortsPlanLanguageMode = 'target') => {
     if (!session) return '';
     const chunks = session.chunks.filter((chunk) => chunk.status === 'done');
-    const original = buildTranscriptExport('original', 'TXT', chunks, exportOptions);
-    const translated = shouldTranslateChunk(session.targetLang)
-      ? buildTranscriptExport('translated', 'TXT', chunks, exportOptions)
-      : '';
-
-    if (mode === 'source' || !translated.trim()) return original;
-    if (mode === 'target') return translated;
-
-    const endSec = session.chunks.at(-1)?.endSec || 0;
-    const sourceLines = parseKaraokeLines(original, 0, endSec).filter((line) => line.kind === 'timed');
-    const targetLines = parseKaraokeLines(translated, 0, endSec).filter((line) => line.kind === 'timed');
-    return sourceLines.map((sourceLine) => {
-      const targetLine = targetLines.reduce<typeof targetLines[number] | null>((best, candidate) => {
-        const bestDistance = best ? Math.abs(best.startSec - sourceLine.startSec) : Number.POSITIVE_INFINITY;
-        const distance = Math.abs(candidate.startSec - sourceLine.startSec);
-        return distance < bestDistance ? candidate : best;
-      }, null);
-      return [
-        `[${formatPlaybackClock(sourceLine.startSec)}]`,
-        `Source: ${sourceLine.text}`,
-        targetLine ? `Target: ${targetLine.text}` : '',
-      ].filter(Boolean).join('\n');
-    }).join('\n\n');
-  }, [exportOptions, session]);
+    if (mode === 'source' || !shouldTranslateChunk(session.targetLang)) return buildShortsTranscriptText(chunks, 'source');
+    return buildShortsTranscriptText(chunks, mode);
+  }, [session]);
 
   const getShortsSpeakerNames = useCallback(() => {
     if (!session) return { source: '', target: '' };
@@ -2149,16 +2129,7 @@ export default function App() {
       }].flatMap(splitShortsCue);
     }
     const mode = languageOverride || (plan.languageMode === 'source' ? 'source' : 'target');
-    const content = buildShortsTranscript(mode);
-    const lines = parseKaraokeLines(content, 0, session.chunks.at(-1)?.endSec || clipEndSec)
-      .filter((line) => line.kind === 'timed')
-      .filter((line) => line.endSec > clipStartSec && line.startSec < clipEndSec)
-      .map((line) => ({
-        startSec: Math.max(0, line.startSec - clipStartSec),
-        endSec: Math.max(0.5, Math.min(clipEndSec, line.endSec) - clipStartSec),
-        text: line.text,
-      }))
-      .filter((cue) => cue.text.trim());
+    const lines = buildShortsCuesForClip(session.chunks, mode, clipStartSec, clipEndSec);
 
     if (lines.length > 0) return lines.flatMap(splitShortsCue);
     return [{
@@ -2166,23 +2137,20 @@ export default function App() {
       endSec: Math.max(1, clipEndSec - clipStartSec),
       text: plan.hook || plan.title,
     }].flatMap(splitShortsCue);
-  }, [buildShortsTranscript, session, splitShortsCue]);
+  }, [session, splitShortsCue]);
 
   const buildShortsDetailText = useCallback((plan: ShortsClipPlan) => {
     if (!session) return { source: '', target: '' };
     const clipStartSec = parseTimestampToSeconds(plan.start);
     const clipEndSec = parseTimestampToSeconds(plan.end);
-    const sessionEndSec = session.chunks.at(-1)?.endSec || clipEndSec;
-    const collect = (mode: ShortsPlanLanguageMode) => parseKaraokeLines(buildShortsTranscript(mode), 0, sessionEndSec)
-      .filter((line) => line.kind === 'timed')
-      .filter((line) => line.endSec > clipStartSec && line.startSec < clipEndSec)
-      .map((line) => `[${formatPlaybackClock(line.startSec)}] ${line.text}`)
+    const collect = (mode: 'source' | 'target') => buildShortsCuesForClip(session.chunks, mode, clipStartSec, clipEndSec)
+      .map((cue) => `[${formatPlaybackClock(clipStartSec + cue.startSec)}] ${cue.text}`)
       .join('\n\n');
     return {
       source: collect('source'),
       target: shouldTranslateChunk(session.targetLang) ? collect('target') : '',
     };
-  }, [buildShortsTranscript, session]);
+  }, [session]);
 
   const writeShortsAssFile = useCallback(async (plan: ShortsClipPlan, outputSize: { width: number; height: number }, language: 'source' | 'target') => {
     if (!window.electronAPI?.writeTempTextFile) throw new Error('Could not write subtitle file in this runtime.');
