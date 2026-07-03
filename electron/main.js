@@ -17,6 +17,10 @@ const {
 } = require('./hyperframes-renderer');
 const { modelsDir, resolveModelsRoot } = require('../shared/localModelsRoot');
 const { scanLocalModels } = require('../shared/scanLocalModels');
+const {
+  normalizeImportedProjectSession,
+  resolveSessionCurrentIndex,
+} = require('./project-session');
 
 for (const stream of [process.stdout, process.stderr]) {
   stream?.on?.('error', (error) => {
@@ -303,7 +307,7 @@ function projectSummary(project) {
     sourceFileName: session.sourceFileName || '',
     updatedAt: project.updatedAt || project.createdAt || '',
     createdAt: project.createdAt || project.updatedAt || '',
-    currentIndex: session.currentIndex || 0,
+    currentIndex: resolveSessionCurrentIndex(session, chunks.length),
     totalChunks: chunks.length,
     approvedChunks: chunks.filter((chunk) => chunk.approved).length,
     targetLang: session.targetLang || '',
@@ -454,33 +458,6 @@ function writeProjectBundle(project, filePath) {
   fs.closeSync(fd);
 }
 
-// Sessions created in the Apple Silicon (Swift) edition keep their translations
-// in a per-language `translationsByLanguage` map and may leave the flat
-// `translated` field empty. Electron is single-language, so on import we fold
-// the active language's text + cues into `translated`/`translatedCues`. Structured
-// `originalCues` ride through untouched (they live on the chunk already).
-function pickActiveTranslationVariant(chunk, activeLang) {
-  const archive = chunk?.translationsByLanguage;
-  if (!archive || typeof archive !== 'object') return null;
-  const variants = Object.keys(archive).map((key) => archive[key]).filter(Boolean);
-  if (variants.length === 0) return null;
-  const norm = (value) => String(value || '').trim().toLowerCase();
-  const target = norm(activeLang);
-  if (target) {
-    const match = variants.find((variant) => norm(variant.language) === target);
-    if (match) return match;
-  }
-  return variants[0];
-}
-
-function restoreImportedChunk(chunk, filePath, activeLang) {
-  const variant = pickActiveTranslationVariant(chunk, activeLang);
-  const legacyTranslated = String(chunk?.translated || '').trim();
-  const translated = legacyTranslated ? chunk.translated : (variant?.text ?? chunk.translated);
-  const translatedCues = variant?.cues?.length ? variant.cues : chunk?.translatedCues;
-  return { ...chunk, filePath, translated, translatedCues };
-}
-
 function importProjectBundle(filePath) {
   const fd = fs.openSync(filePath, 'r');
 
@@ -565,18 +542,7 @@ function importProjectBundle(filePath) {
 
     fs.closeSync(fd);
 
-    // Reconstruct session
-    const activeTranslationLanguage = project.session?.activeTranslationLanguage || project.session?.targetLang;
-    project.session = {
-      ...(project.session || {}),
-      projectId: id,
-      sourceFile: assetMap.get('sourceFile') || project.session?.sourceFile || '',
-      originalVideoPath: assetMap.get('originalVideoPath') || project.session?.originalVideoPath || '',
-      wavPath: assetMap.get('wavPath') || project.session?.wavPath || '',
-      chunks: (project.session?.chunks || []).map((chunk, index) =>
-        restoreImportedChunk(chunk, assetMap.get(`chunk:${index}`) || chunk.filePath, activeTranslationLanguage)
-      ),
-    };
+    project.session = normalizeImportedProjectSession(project.session, { projectId: id, assetMap });
     fs.writeFileSync(projectJsonPath(id), JSON.stringify(project, null, 2), 'utf8');
     return project;
   } else {
@@ -602,17 +568,7 @@ function importProjectBundle(filePath) {
       fs.writeFileSync(dest, Buffer.from(asset.dataBase64 || '', 'base64'));
       assetMap.set(asset.key, dest);
     }
-    const activeTranslationLanguageV1 = project.session?.activeTranslationLanguage || project.session?.targetLang;
-    project.session = {
-      ...(project.session || {}),
-      projectId: id,
-      sourceFile: assetMap.get('sourceFile') || project.session?.sourceFile || '',
-      originalVideoPath: assetMap.get('originalVideoPath') || project.session?.originalVideoPath || '',
-      wavPath: assetMap.get('wavPath') || project.session?.wavPath || '',
-      chunks: (project.session?.chunks || []).map((chunk, index) =>
-        restoreImportedChunk(chunk, assetMap.get(`chunk:${index}`) || chunk.filePath, activeTranslationLanguageV1)
-      ),
-    };
+    project.session = normalizeImportedProjectSession(project.session, { projectId: id, assetMap });
     fs.writeFileSync(projectJsonPath(id), JSON.stringify(project, null, 2), 'utf8');
     return project;
   }
@@ -799,17 +755,7 @@ function importLibraryBundle(filePath) {
     const id = project.id;
     const assetMap = projectAssetMaps[i];
 
-    const activeTranslationLanguageLib = project.session?.activeTranslationLanguage || project.session?.targetLang;
-    project.session = {
-      ...(project.session || {}),
-      projectId: id,
-      sourceFile: assetMap.get('sourceFile') || project.session?.sourceFile || '',
-      originalVideoPath: assetMap.get('originalVideoPath') || project.session?.originalVideoPath || '',
-      wavPath: assetMap.get('wavPath') || project.session?.wavPath || '',
-      chunks: (project.session?.chunks || []).map((chunk, index) =>
-        restoreImportedChunk(chunk, assetMap.get(`chunk:${index}`) || chunk.filePath, activeTranslationLanguageLib)
-      ),
-    };
+    project.session = normalizeImportedProjectSession(project.session, { projectId: id, assetMap });
     fs.writeFileSync(projectJsonPath(id), JSON.stringify(project, null, 2), 'utf8');
   }
 
@@ -2790,6 +2736,9 @@ ipcMain.handle('project:save', async (_event, project) => {
 ipcMain.handle('project:load', async (_event, { id }) => {
   try {
     const project = readProject(id);
+    if (project && project.session) {
+      project.session = normalizeImportedProjectSession(project.session, { projectId: project.id });
+    }
     if (project && project.session && !project.session.sourceMediaInfo) {
       const mediaPath = project.session.originalVideoPath || project.session.sourceFile;
       if (mediaPath && fs.existsSync(mediaPath)) {

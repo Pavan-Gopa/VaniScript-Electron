@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
 
-const appSource = () => fs.readFileSync('/Users/pavan/Documents/smartscribe/VaniScript/src/App.tsx', 'utf8');
-const cssSource = () => fs.readFileSync('/Users/pavan/Documents/smartscribe/VaniScript/src/index.css', 'utf8');
+const projectPath = (...parts: string[]) => path.join(process.cwd(), ...parts);
+const appSource = () => fs.readFileSync(projectPath('src', 'App.tsx'), 'utf8');
+const cssSource = () => fs.readFileSync(projectPath('src', 'index.css'), 'utf8');
 
 function cssRule(selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

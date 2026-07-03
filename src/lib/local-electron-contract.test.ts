@@ -1,10 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
+
+const projectPath = (...parts: string[]) => path.join(process.cwd(), ...parts);
 
 test('electron contract exposes local transcription and model lifecycle methods', () => {
-  const preload = fs.readFileSync('/Users/pavan/Documents/smartscribe/VaniScript/electron/preload.js', 'utf8');
-  const main = fs.readFileSync('/Users/pavan/Documents/smartscribe/VaniScript/electron/main.js', 'utf8');
+  const preload = fs.readFileSync(projectPath('electron', 'preload.js'), 'utf8');
+  const main = fs.readFileSync(projectPath('electron', 'main.js'), 'utf8');
   assert.match(preload, /localInstallAsrModel/);
   assert.match(preload, /localRemoveAsrModel/);
   assert.match(preload, /localTranscribeChunk/);

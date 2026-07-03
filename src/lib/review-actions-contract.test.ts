@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
 
-const appSource = () => fs.readFileSync('/Users/pavan/Documents/smartscribe/VaniScript/src/App.tsx', 'utf8');
+const appSource = () => fs.readFileSync(path.join(process.cwd(), 'src', 'App.tsx'), 'utf8');
 
 test('review toolbar exposes try transcription for the current chunk', () => {
   const source = appSource();
