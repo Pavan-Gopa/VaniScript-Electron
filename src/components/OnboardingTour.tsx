@@ -231,24 +231,89 @@ const STEPS_BY_SCREEN: Record<string, TourStep[]> = {
       bubblePlacement: 'bottom',
       en: {
         title: 'Step 1: Document Exports',
-        description: 'Export your transcripts! Download reviewed documents in TXT, SRT, VTT, or beautifully formatted Markdown files.',
+        description: 'Export the reviewed transcript and captions after all chunks are approved. Use TXT, SRT, VTT, or Markdown when you need text delivery instead of video clips.',
       },
       ru: {
         title: 'Шаг 1: Экспорт Документов',
-        description: 'Скачайте готовый проверенный текст и субтитры в форматах TXT, SRT, VTT или в виде красиво сверстанного Markdown-файла.',
+        description: 'Экспортируйте проверенную транскрибацию и субтитры после approval всех чанков. TXT, SRT, VTT и Markdown подходят для текстовой выдачи без видеоклипов.',
       },
     },
     {
-      targetSelector: '[data-tour="shorts-panel"]',
-      arrowCurveOffset: { dx: -60, dy: 40 },
-      bubblePlacement: 'left',
+      targetSelector: '[data-tour="shorts-find-moments"]',
+      arrowCurveOffset: { dx: 40, dy: -40 },
+      bubblePlacement: 'bottom',
       en: {
-        title: 'Step 2: Vertical Shorts Creator',
-        description: 'Create viral video clips! Clip highlight moments, customize 9:16 layout, add animated subtitles, and export instantly via HyperFrames!',
+        title: 'Step 2: Find Shorts/Reels Moments',
+        description: 'Choose how many clips you want, set minimum and maximum length, then ask Gemini or your selected planning model to search Source, Source + Target, or Target text for fresh moments.',
       },
       ru: {
-        title: 'Шаг 2: Клипы для Shorts & Reels',
-        description: 'Вырежьте яркие цитаты в видеоклипы 9:16 со стильными караоке-субтитрами. Отрендерите их в 1 клик с помощью HyperFrames!',
+        title: 'Шаг 2: Поиск моментов для Shorts/Reels',
+        description: 'Выберите количество клипов, минимальную и максимальную длину, затем отправьте Gemini или выбранной модели Source, Source + Target или Target-текст для поиска новых удачных фрагментов.',
+      },
+    },
+    {
+      targetSelector: '[data-tour="shorts-choose-clips"]',
+      arrowCurveOffset: { dx: -50, dy: 30 },
+      bubblePlacement: 'left',
+      en: {
+        title: 'Step 3: Choose Clips',
+        description: 'Review generated clip cards, compare Source and Target wording, open Details, Replace weak timing, delete misses, and keep only clips you want to export.',
+      },
+      ru: {
+        title: 'Шаг 3: Выбор клипов',
+        description: 'Проверьте карточки клипов, сравните Source и Target, откройте Details, замените слабые тайминги, удалите лишнее и оставьте только нужные ролики.',
+      },
+    },
+    {
+      targetSelector: '[data-tour="shorts-edit-clip"]',
+      arrowCurveOffset: { dx: -30, dy: 40 },
+      bubblePlacement: 'left',
+      en: {
+        title: 'Step 4: Visual Editor',
+        description: 'Use Edit Clip to open the Visual Editor. There you can sync playback, adjust subtitle blocks, crop and animate the frame, tune captions, and save edits back to the clip card.',
+      },
+      ru: {
+        title: 'Шаг 4: Визуальный редактор',
+        description: 'Нажмите Edit Clip, чтобы открыть визуальный редактор. Там можно синхронизировать воспроизведение, править блоки субтитров, кадрирование, анимацию, стиль титров и сохранить изменения в карточку.',
+      },
+    },
+    {
+      targetSelector: '[data-tour="shorts-export-settings"]',
+      arrowCurveOffset: { dx: 40, dy: -30 },
+      bubblePlacement: 'top',
+      en: {
+        title: 'Step 5: Export Settings',
+        description: 'Pick format, resolution, and frame rate before rendering. Source-based keeps the source video properties when that is the cleanest choice.',
+      },
+      ru: {
+        title: 'Шаг 5: Настройки экспорта',
+        description: 'Перед рендером выберите формат, разрешение и частоту кадров. Source-based сохраняет параметры исходного видео, когда это самый аккуратный вариант.',
+      },
+    },
+    {
+      targetSelector: '[data-tour="shorts-export-actions"]',
+      arrowCurveOffset: { dx: -40, dy: 30 },
+      bubblePlacement: 'top',
+      en: {
+        title: 'Step 6: Export Ideas or Videos',
+        description: 'Export ideas JSON/TXT for planning notes, or render selected videos with HyperFrames. Clip metadata and captions stay editable later.',
+      },
+      ru: {
+        title: 'Шаг 6: Экспорт идей или видео',
+        description: 'Экспортируйте идеи в JSON/TXT для заметок или рендерите выбранные видео через HyperFrames. Метаданные клипов и субтитры останутся редактируемыми.',
+      },
+    },
+    {
+      targetSelector: '[data-tour="export-footer-actions"]',
+      arrowCurveOffset: { dx: 0, dy: -40 },
+      bubblePlacement: 'top',
+      en: {
+        title: 'Step 7: Continue Working',
+        description: 'Use Back to Chunks to return to reviewed chunks, Sessions to open/import projects, or New Session to start another video without hunting through menus.',
+      },
+      ru: {
+        title: 'Шаг 7: Продолжение работы',
+        description: 'Back to Chunks возвращает к проверенным чанкам, Sessions открывает проекты и импорт, а New Session запускает новое видео без поиска нужной команды в меню.',
       },
     },
   ],

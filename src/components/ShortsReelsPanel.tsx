@@ -284,7 +284,7 @@ export function ShortsReelsPanel({
       </div>
 
       <div className="shorts-flow">
-        <div className="shorts-card-section">
+        <div className="shorts-card-section" data-tour="shorts-find-moments">
           <div className="shorts-step-head"><span>1</span><strong>Find short moments</strong></div>
           <div className="shorts-finder-grid">
             <label>
@@ -316,7 +316,7 @@ export function ShortsReelsPanel({
           </div>
         </div>
 
-        <div className="shorts-card-section">
+        <div className="shorts-card-section" data-tour="shorts-choose-clips">
           <div className="shorts-step-head shorts-step-head-split">
             <div><span>2</span><strong>Choose clips</strong></div>
             {canSwitchLanguage && (
@@ -352,6 +352,7 @@ export function ShortsReelsPanel({
                     <button
                       type="button"
                       className="shorts-edit-clip-button"
+                      data-tour="shorts-edit-clip"
                       onClick={() => {
                         if (!checked) onTogglePlan(index);
                         onFocusPlan(index);
@@ -370,7 +371,7 @@ export function ShortsReelsPanel({
 
         <div className="shorts-card-section">
           <div className="shorts-step-head"><span>3</span><strong>Export</strong></div>
-          <div className="shorts-export-row">
+          <div className="shorts-export-row" data-tour="shorts-export-settings">
             <label>
               Format
               <select value={settings.videoFormat} onChange={(event) => patch({ videoFormat: event.currentTarget.value as ShortsVideoFormat })}>
@@ -400,7 +401,7 @@ export function ShortsReelsPanel({
             </label>
           </div>
           {!hasVideo && <p className="shorts-hint">Video export requires a video source. You can still export clip ideas.</p>}
-          <div className="shorts-export-actions">
+          <div className="shorts-export-actions" data-tour="shorts-export-actions">
             <button type="button" className="btn-dl btn-dl-secondary" onClick={onExportIdeas} disabled={plans.length === 0 || isBusy}>Export ideas JSON/TXT</button>
             <button type="button" className="btn-dl btn-dl-primary" onClick={onExportSelected} disabled={!hasVideo || selectedCount === 0 || isBusy}>
               {isBusy ? (busyLabel || 'Exporting...') : `Export selected videos (${selectedExportCount})`}

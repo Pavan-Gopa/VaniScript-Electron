@@ -3078,7 +3078,7 @@ export default function App() {
                     />
                   </div>
                 </div>
-                <div className="export-actions">
+                <div className="export-actions" data-tour="export-footer-actions">
                   <button className="btn-cancel" onClick={() => setScreen('review')}>
                     <ArrowLeft size={14} /> Back to Chunks
                   </button>
