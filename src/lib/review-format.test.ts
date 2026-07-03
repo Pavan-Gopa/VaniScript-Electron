@@ -124,6 +124,35 @@ test('buildTranscriptExport creates clean TXT and Markdown documents from timed 
   assert.doesNotMatch(markdown, /\[\d{2}:\d{2}/);
 });
 
+test('buildTranscriptExport uses structured cues from imported Swift sessions', () => {
+  const cueChunks = [{
+    ...chunks[0],
+    original: 'Clean source text without inline timestamp markers.',
+    translated: 'Чистый перевод без встроенных таймкодов.',
+    originalCues: [
+      { startSec: 2, endSec: 5, text: 'Clean source text' },
+      { startSec: 5, endSec: 8, text: 'without inline timestamp markers.' },
+    ],
+    translatedCues: [
+      { startSec: 2, endSec: 5, text: 'Чистый перевод' },
+      { startSec: 5, endSec: 8, text: 'без встроенных таймкодов.' },
+    ],
+  }];
+
+  assert.match(
+    buildTranscriptExport('original', 'TXT', cueChunks),
+    /\[00:00:02\] Clean source text without inline timestamp markers\./
+  );
+  assert.match(
+    buildTranscriptExport('translated', 'TXT', cueChunks, { targetLang: 'Russian' }),
+    /\[00:00:02\] Чистый перевод без встроенных таймкодов\./
+  );
+  assert.match(
+    buildTranscriptExport('translated', 'SRT', cueChunks, { targetLang: 'Russian' }),
+    /1\n00:00:02,000 --> 00:00:05,000\nЧистый перевод/
+  );
+});
+
 test('buildTranscriptExport localizes translated metadata using source metadata fallback', () => {
   const sourceChunks = [{
     ...chunks[0],

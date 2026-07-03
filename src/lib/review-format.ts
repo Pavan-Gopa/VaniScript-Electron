@@ -1,5 +1,5 @@
 import { ChunkData, LanguageResult, OutputFormat } from '../types';
-import { KaraokeTimedLine, parseKaraokeLines } from './karaoke';
+import { KaraokeTimedLine, cuesToKaraokeLines, hasInlineTimestampMarkers, parseKaraokeLines } from './karaoke';
 
 type ReviewTextKind = 'original' | 'translated';
 
@@ -126,6 +126,11 @@ function collectExportMetadata(chunks: ChunkData[], which: ReviewTextKind, optio
 
 function timedLinesForChunk(chunk: ChunkData, which: ReviewTextKind): KaraokeTimedLine[] {
   const { body } = extractMetadata(getExportSourceText(chunk, which));
+  const cues = which === 'original' ? chunk.originalCues : chunk.translatedCues;
+  if (!hasInlineTimestampMarkers(body) && cues?.length) {
+    return cuesToKaraokeLines(cues)
+      .filter((line) => stripInlineTimestamps(line.text).length > 0);
+  }
   return parseKaraokeLines(body, chunk.startSec, chunk.endSec)
     .filter((line): line is KaraokeTimedLine => line.kind === 'timed' && stripInlineTimestamps(line.text).length > 0);
 }
