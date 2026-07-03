@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { appendNonOverlappingShortsPlans, buildShortsPrompt, parseShortsPlanResponse, parseTimestampToSeconds, validateShortClip } from './shorts-reels';
+import { appendNonOverlappingShortsPlans, buildShortsPrompt, parseShortsPlanResponse, parseTimestampToSeconds, replaceShortsPlanRange, validateShortClip } from './shorts-reels';
 
 test('buildShortsPrompt includes duration, count, language, and Vaishnava criteria', () => {
   const prompt = buildShortsPrompt({
@@ -97,6 +97,37 @@ test('appendNonOverlappingShortsPlans filters overlapping incoming candidates ag
   assert.deepEqual(result.plans.map((plan) => plan.title), ['First', 'Adjacent fresh range']);
   assert.deepEqual(result.addedIndexes, [0, 1]);
   assert.deepEqual(result.skippedOverlapping.map((plan) => plan.title), ['Overlaps first']);
+});
+
+test('replaceShortsPlanRange clears stale generated captions so subtitles rebuild from transcript cues', () => {
+  const replaced = replaceShortsPlanRange({
+    start: '00:48',
+    end: '01:48',
+    title: 'Generated clip',
+    summary: 'Good moment.',
+    hook: 'Strong hook.',
+    captionText: '[00:48] Old target caption',
+    sourceCaptionText: '[00:48] Old source caption',
+    targetCaptionText: '[00:48] Old target caption',
+    sourceAlignment: [{ id: 'source-sub', start: 0, end: 2, text: 'Old source', words: [] }],
+    targetAlignment: [{ id: 'target-sub', start: 0, end: 2, text: 'Old target', words: [] }],
+    sourceFrameKeyframes: [{ id: 'kf', time: 0, x: 50, y: 50, zoom: 1 }],
+    timelineCuts: [{ startSec: 5, endSec: 8 }],
+    timelineTrim: { trimStartSec: 2, trimEndSec: 1 },
+    syncEnabled: true,
+  }, '00:30', '01:48');
+
+  assert.equal(replaced.start, '00:30');
+  assert.equal(replaced.end, '01:48');
+  assert.equal(replaced.captionText, undefined);
+  assert.equal(replaced.sourceCaptionText, undefined);
+  assert.equal(replaced.targetCaptionText, undefined);
+  assert.equal(replaced.sourceAlignment, undefined);
+  assert.equal(replaced.targetAlignment, undefined);
+  assert.deepEqual(replaced.timelineCuts, []);
+  assert.deepEqual(replaced.timelineTrim, { trimStartSec: 0, trimEndSec: 0 });
+  assert.deepEqual(replaced.sourceFrameKeyframes, [{ id: 'kf', time: 0, x: 50, y: 50, zoom: 1 }]);
+  assert.equal(replaced.syncEnabled, true);
 });
 
 test('parseTimestampToSeconds handles mm:ss and hh:mm:ss', () => {

@@ -35,7 +35,7 @@ import { ShortsReelsPanel, ShortsSettings } from './components/ShortsReelsPanel'
 import { SourceMediaKind, sourceMediaKind } from './lib/media-source';
 import { resolveShortsAudioPath } from './lib/shorts-media-source';
 import { buildShortsCuesForClip, buildShortsTranscriptText } from './lib/shorts-transcript';
-import { appendNonOverlappingShortsPlans, buildShortsPrompt, parseShortsPlanResponse, parseTimestampToSeconds, secondsToShortsTimestamp, ShortsClipPlan, ShortsPlanLanguageMode } from './lib/shorts-reels';
+import { appendNonOverlappingShortsPlans, buildShortsPrompt, parseShortsPlanResponse, parseTimestampToSeconds, replaceShortsPlanRange, secondsToShortsTimestamp, ShortsClipPlan, ShortsPlanLanguageMode } from './lib/shorts-reels';
 import { renderPrompt } from './lib/prompt-presets';
 import { toggleSync, copyMotionFrom, findLinkedPartnerIndex, resolveClipLanguageRole, buildSyncPatch } from './lib/ClipSyncManager';
 import {
@@ -2025,17 +2025,7 @@ export default function App() {
   const handleReplacePlan = useCallback((index: number, startTimestamp: string, endTimestamp: string) => {
     setShortsPlans((prev) => prev.map((plan, i) => {
       if (i !== index) return plan;
-      return {
-        ...plan,
-        start: startTimestamp,
-        end: endTimestamp,
-        // Clear stale subtitle alignments — they'll be regenerated
-        sourceAlignment: undefined,
-        targetAlignment: undefined,
-        // Preserve frame keyframes & sync settings
-        timelineCuts: [],
-        timelineTrim: { trimStartSec: 0, trimEndSec: 0 },
-      };
+      return replaceShortsPlanRange(plan, startTimestamp, endTimestamp);
     }));
   }, []);
 

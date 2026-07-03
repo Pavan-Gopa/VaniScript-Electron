@@ -285,3 +285,22 @@ export function appendNonOverlappingShortsPlans(
 
   return { plans, addedIndexes, skippedOverlapping };
 }
+
+export function replaceShortsPlanRange(
+  plan: ShortsClipPlan,
+  startTimestamp: string,
+  endTimestamp: string
+): ShortsClipPlan {
+  return {
+    ...plan,
+    start: startTimestamp,
+    end: endTimestamp,
+    captionText: undefined,
+    sourceCaptionText: undefined,
+    targetCaptionText: undefined,
+    sourceAlignment: undefined,
+    targetAlignment: undefined,
+    timelineCuts: [],
+    timelineTrim: { trimStartSec: 0, trimEndSec: 0 },
+  };
+}
