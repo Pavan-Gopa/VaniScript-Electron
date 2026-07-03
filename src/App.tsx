@@ -48,6 +48,8 @@ import {
 } from './lib/shorts-render';
 import { buildShortsRenderProject } from './render-engine/RenderPipeline';
 import { alignedSegmentsToCues, AlignedSubtitleSegment } from './lib/subtitle-alignment';
+import { currentBuildId } from './lib/build-info';
+import { markOnboardingCompletedForBuild, shouldShowOnboardingForBuild } from './lib/onboarding';
 
 type Screen = 'upload' | 'config' | 'processing' | 'review' | 'export';
 type ViewMode = 'source' | 'translated' | 'dual';
@@ -402,6 +404,7 @@ function getMediaSummary(mediaInfo: SourceMediaInfo): string {
 
 export default function App() {
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
+  const onboardingBuildId = useMemo(() => currentBuildId(), []);
   const [usage, setUsage] = useState<UsageStats>(() => loadUsage());
   const [showSettings, setShowSettings] = useState(false);
   const [settingsTab, setSettingsTab] = useState(0);
@@ -479,6 +482,25 @@ export default function App() {
     () => verticalResolutionForPreset(shortsSettings.resolutionPreset, shortsVideoSourceInfo ?? { width: 1920, height: 1080 }),
     [shortsSettings.resolutionPreset, shortsVideoSourceInfo]
   );
+
+  useEffect(() => {
+    if (!shouldShowOnboardingForBuild(settingsRef.current, onboardingBuildId)) return;
+    const nextSettings = { ...settingsRef.current, annotationMode: true };
+    settingsRef.current = nextSettings;
+    saveSettings(nextSettings);
+    setSettings(nextSettings);
+  }, [onboardingBuildId]);
+
+  const setOnboardingVisible = useCallback((enabled: boolean) => {
+    setSettings((prev) => {
+      const nextSettings = enabled
+        ? { ...prev, annotationMode: true }
+        : markOnboardingCompletedForBuild(prev, onboardingBuildId);
+      settingsRef.current = nextSettings;
+      saveSettings(nextSettings);
+      return nextSettings;
+    });
+  }, [onboardingBuildId]);
 
   useEffect(() => {
     setShortsPlans(session?.shortsPlans ?? []);
@@ -2471,9 +2493,7 @@ export default function App() {
             <button
               className={`settings-btn inline ${settings.annotationMode ? 'active' : ''}`}
               onClick={() => {
-                const nextSettings = { ...settings, annotationMode: !settings.annotationMode };
-                saveSettings(nextSettings);
-                setSettings(nextSettings);
+                setOnboardingVisible(!settings.annotationMode);
               }}
               title={settings.annotationMode ? "Disable Help Tour" : "Enable Help Tour"}
             >
@@ -2597,9 +2617,7 @@ export default function App() {
                   <button
                     className="review-icon-btn"
                     onClick={() => {
-                      const nextSettings = { ...settings, annotationMode: !settings.annotationMode };
-                      saveSettings(nextSettings);
-                      setSettings(nextSettings);
+                      setOnboardingVisible(!settings.annotationMode);
                     }}
                     title={settings.annotationMode ? "Disable Help Tour" : "Enable Help Tour"}
                   >
@@ -3493,9 +3511,7 @@ export default function App() {
             activeScreen={showSettings ? 'settings' : screen}
             settings={settings}
             onToggleAnnotationMode={(enabled) => {
-              const nextSettings = { ...settings, annotationMode: enabled };
-              saveSettings(nextSettings);
-              setSettings(nextSettings);
+              setOnboardingVisible(enabled);
             }}
             settingsTab={settingsTab}
             onSettingsTabChange={setSettingsTab}

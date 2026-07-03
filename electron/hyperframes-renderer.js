@@ -985,22 +985,13 @@ function buildCompositionHtml(project, relativeVideoPath, relativeBlurVideoPath 
         layer.style.fontWeight = style.bold ? '850' : '600';
         layer.style.letterSpacing = ((style.letterSpacing || 0) * scale) + 'px';
         layer.style.lineHeight = String(style.lineSpacing || 1);
-        // Combine Outline & Drop Shadow as multiple text-shadow entries to fix internal overlaps
         const shadows = [];
-        if (textStroke > 0) {
-          const steps = 16;
-          for (let i = 0; i < steps; i++) {
-            const angle = (i * 2 * Math.PI) / steps;
-            const x = (textStroke * Math.cos(angle)).toFixed(2);
-            const y = (textStroke * Math.sin(angle)).toFixed(2);
-            shadows.push(x + 'px ' + y + 'px 0px ' + textStrokeColor);
-          }
-        }
         if (dist > 0 || shadowBlur > 0) {
           shadows.push(shadowX + 'px ' + shadowY + 'px ' + shadowBlur + 'px ' + shadowColor + shadowHexOpacity);
         }
         layer.style.textShadow = shadows.length > 0 ? shadows.join(', ') : 'none';
-        layer.style.webkitTextStroke = '0 transparent';
+        layer.style.webkitTextStroke = textStroke > 0 ? textStroke.toFixed(2) + 'px ' + textStrokeColor : '0 transparent';
+        layer.style.paintOrder = 'stroke fill';
 
         // Override background & shadow styles to be handled by a separate background layer
         layer.style.backgroundColor = 'transparent';

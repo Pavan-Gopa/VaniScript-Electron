@@ -44,6 +44,7 @@ export interface AppSettings {
   fontScale: number;
   fontFamily: FontFamily;
   annotationMode?: boolean;
+  completedOnboardingBuildId?: string;
   // Chunking
   chunkDurationMin: number;   // 2-20
   sliceMode: SliceMode;
@@ -375,4 +376,3 @@ export interface SourceMediaInfo {
   audioChannelCount?: number;
   importedAt?: string;
 }
-

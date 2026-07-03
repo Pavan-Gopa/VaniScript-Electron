@@ -120,6 +120,7 @@ export function loadSettings(): AppSettings {
       ...DEFAULT_SETTINGS,
       ...parsed,
       annotationMode: parsed.annotationMode !== false,
+      completedOnboardingBuildId: typeof parsed.completedOnboardingBuildId === 'string' ? parsed.completedOnboardingBuildId : undefined,
       transcriptionProvider: normalizeCloudProviderId(parsed.transcriptionProvider, DEFAULT_SETTINGS.transcriptionProvider),
       translationProvider: normalizeTranslationProviderId(parsed.translationProvider),
       geminiBudgetUsd: Number(parsed.geminiBudgetUsd ?? 0) || 0,

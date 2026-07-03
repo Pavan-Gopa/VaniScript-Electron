@@ -13,6 +13,7 @@ export default defineConfig(({ mode }) => {
     },
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY || ''),
+      __VANISCRIPT_BUILD_ID__: JSON.stringify(env.VANISCRIPT_BUILD_ID || new Date().toISOString()),
     },
     resolve: {
       alias: {

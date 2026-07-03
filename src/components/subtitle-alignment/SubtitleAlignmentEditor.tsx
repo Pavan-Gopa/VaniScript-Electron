@@ -33,6 +33,8 @@ import { TextTrackManager } from './TextTrackManager';
 import { IntroOutroManager } from './IntroOutroManager';
 import { loadSettings, saveSettings } from '../../services/storage';
 import { OnboardingTour } from '../OnboardingTour';
+import { currentBuildId } from '../../lib/build-info';
+import { markOnboardingCompletedForBuild, shouldShowOnboardingForBuild } from '../../lib/onboarding';
 
 type AlignmentCue = { startSec: number; endSec: number; text: string };
 
@@ -241,9 +243,11 @@ export function SubtitleAlignmentEditor({
   onSwitchLanguage,
 }: Props) {
   const clipDurationSec = Math.max(1, clipEndSec - clipStartSec);
+  const onboardingBuildId = useMemo(() => currentBuildId(), []);
   const [annotationMode, setAnnotationMode] = useState(() => {
     try {
-      return loadSettings().annotationMode ?? true;
+      const settings = loadSettings();
+      return shouldShowOnboardingForBuild(settings, onboardingBuildId) || settings.annotationMode === true;
     } catch {
       return true;
     }
@@ -793,17 +797,7 @@ export function SubtitleAlignmentEditor({
     const shadowOpacity = style.shadowOpacity ?? 0.72;
     const shadowHexOpacity = Math.round(shadowOpacity * 255).toString(16).padStart(2, '0');
 
-    // Combine Outline & Drop Shadow as multiple text-shadow entries to fix internal overlaps
     const shadows: string[] = [];
-    if (textStroke > 0) {
-      const steps = 16;
-      for (let i = 0; i < steps; i++) {
-        const angle = (i * 2 * Math.PI) / steps;
-        const x = (textStroke * Math.cos(angle)).toFixed(2);
-        const y = (textStroke * Math.sin(angle)).toFixed(2);
-        shadows.push(`${x}px ${y}px 0px ${textStrokeColor}`);
-      }
-    }
     if (dist > 0 || shadowBlur > 0) {
       shadows.push(`${shadowX}px ${shadowY}px ${shadowBlur}px ${shadowColor}${shadowHexOpacity}`);
     }
@@ -821,7 +815,8 @@ export function SubtitleAlignmentEditor({
       bottom: `${bottomPx}px`,
       padding: `${paddingY}px ${paddingX}px`,
       textShadow,
-      WebkitTextStroke: '0 transparent',
+      WebkitTextStroke: textStroke > 0 ? `${textStroke.toFixed(2)}px ${textStrokeColor}` : '0 transparent',
+      paintOrder: 'stroke fill',
       position: 'absolute',
       overflow: 'visible',
     };
@@ -1778,8 +1773,7 @@ export function SubtitleAlignmentEditor({
                 setAnnotationMode(nextMode);
                 try {
                   const s = loadSettings();
-                  s.annotationMode = nextMode;
-                  saveSettings(s);
+                  saveSettings(nextMode ? { ...s, annotationMode: true } : markOnboardingCompletedForBuild(s, onboardingBuildId));
                 } catch (e) {
                   console.error(e);
                 }
@@ -3316,8 +3310,7 @@ export function SubtitleAlignmentEditor({
               setAnnotationMode(enabled);
               try {
                 const s = loadSettings();
-                s.annotationMode = enabled;
-                saveSettings(s);
+                saveSettings(enabled ? { ...s, annotationMode: true } : markOnboardingCompletedForBuild(s, onboardingBuildId));
               } catch (e) {
                 console.error(e);
               }
