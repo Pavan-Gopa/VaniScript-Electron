@@ -1,0 +1,119 @@
+{
+  "name": "vaniscript",
+  "version": "1.0.0",
+  "description": "Gaudiya Vaishnava Lecture Transcription & Translation Engine",
+  "author": "Stichting Kadamba Foundation",
+  "private": true,
+  "main": "electron/main.js",
+  "type": "commonjs",
+  "scripts": {
+    "dev": "vite --port=3000 --host=0.0.0.0",
+    "vite-build": "vite build",
+    "compile": "tsc --noEmit",
+    "electron": "npm run vite-build && npm run prepare-dev-branding && node_modules/electron/dist/Electron.app/Contents/MacOS/Electron .",
+    "start": "npm run electron",
+    "build": "npm run vite-build && electron-builder --mac && node scripts/sign-mac-dmg.mjs",
+    "build:win": "npm run vite-build && electron-builder --win",
+    "build:linux": "npm run vite-build && electron-builder --linux",
+    "pack": "npm run vite-build && electron-builder --dir",
+    "rebuild": "electron-rebuild",
+    "test:identity": "node scripts/verify-release-identity.mjs",
+    "install:llamacpp-runtime": "node scripts/install-llamacpp-runtime.mjs",
+    "prepare-dev-branding": "node scripts/prepare-dev-electron-branding.mjs"
+  },
+  "build": {
+    "appId": "com.gaudiya.vaniscript",
+    "productName": "VaniScript-Electron",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "shared/**/*",
+      "assets/**/*",
+      "src/render-engine/**/*",
+      "src/lib/subtitle-alignment.ts",
+      "src/lib/shorts-render.ts",
+      "node_modules/**/*",
+      "!node_modules/ffmpeg-static/bin/win32/**",
+      "!node_modules/ffmpeg-static/bin/linux/**"
+    ],
+    "asarUnpack": [
+      "**/node_modules/ffmpeg-static/**",
+      "**/node_modules/@kutalia/whisper-node-addon/**"
+    ],
+    "mac": {
+      "artifactName": "VaniScript-Electron.${ext}",
+      "category": "public.app-category.utilities",
+      "icon": "assets/icon.icns",
+      "identity": "Stichting Kadamba Foundation (438UQRF7JV)",
+      "hardenedRuntime": true,
+      "entitlements": "scripts/entitlements.mac.plist",
+      "entitlementsInherit": "scripts/entitlements.mac.plist",
+      "gatekeeperAssess": false
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "icon": "assets/icon.png"
+    },
+    "extraResources": [
+      {
+        "from": "node_modules/ffmpeg-static/",
+        "to": "ffmpeg-bin",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "vendor/llamacpp/",
+        "to": "llamacpp",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "vendor/yt-dlp/",
+        "to": "yt-dlp-bin",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ]
+  },
+  "dependencies": {
+    "@fontsource/cuprum": "^5.2.8",
+    "@google/genai": "^1.29.0",
+    "@hyperframes/producer": "^0.5.7",
+    "@kutalia/whisper-node-addon": "^1.0.0",
+    "electron-log": "^5.2.4",
+    "ffmpeg-static": "^5.2.0",
+    "gsap": "^3.15.0",
+    "lucide-react": "^0.546.0",
+    "motion": "^12.23.24",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
+    "react-markdown": "^10.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.0.4",
+    "clsx": "^2.1.1",
+    "electron": "^34.0.0",
+    "electron-builder": "^24.0.0",
+    "electron-rebuild": "^3.2.9",
+    "tailwind-merge": "^3.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.3"
+  }
+}
