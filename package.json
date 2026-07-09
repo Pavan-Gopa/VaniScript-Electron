@@ -17,12 +17,13 @@
     "build:linux": "npm run vite-build && electron-builder --linux",
     "pack": "npm run vite-build && electron-builder --dir",
     "rebuild": "electron-rebuild",
+    "test:identity": "node scripts/verify-release-identity.mjs",
     "install:llamacpp-runtime": "node scripts/install-llamacpp-runtime.mjs",
     "prepare-dev-branding": "node scripts/prepare-dev-electron-branding.mjs"
   },
   "build": {
     "appId": "com.gaudiya.vaniscript",
-    "productName": "VaniScript",
+    "productName": "VaniScript-Electron",
     "directories": {
       "output": "release"
     },
@@ -43,6 +44,7 @@
       "**/node_modules/@kutalia/whisper-node-addon/**"
     ],
     "mac": {
+      "artifactName": "VaniScript-Electron.${ext}",
       "category": "public.app-category.utilities",
       "icon": "assets/icon.icns",
       "identity": "Stichting Kadamba Foundation (438UQRF7JV)",

@@ -38,8 +38,8 @@ fs.copyFileSync(iconSource, iconTarget);
 // Patch the local Electron runtime in place. Keeping the original bundle path
 // avoids breaking Chromium helper discovery, while CFBundleName controls the
 // first macOS menu item in development.
-plistSet('CFBundleName', 'VaniScript');
-plistSet('CFBundleDisplayName', 'VaniScript');
+plistSet('CFBundleName', 'VaniScript-Electron');
+plistSet('CFBundleDisplayName', 'VaniScript-Electron');
 plistSet('CFBundleExecutable', 'Electron');
 plistSet('CFBundleIconFile', 'VaniScript');
 plistSet('CFBundleShortVersionString', '1.0.0');

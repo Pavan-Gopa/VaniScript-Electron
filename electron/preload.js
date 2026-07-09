@@ -104,6 +104,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   showItemInFolder: (path) => ipcRenderer.invoke('shell:showItemInFolder', path),
   ffmpegGetSourceMediaInfo: (opts) => ipcRenderer.invoke('ffmpeg:getSourceMediaInfo', opts),
 
+  // ─── MCP Integration ──────────────────────────────────────────────────────
+  onMcpCallTool: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('mcp:call-tool', handler);
+    return () => ipcRenderer.removeListener('mcp:call-tool', handler);
+  },
+  mcpToolResponse: (payload) => ipcRenderer.invoke('mcp:tool-response', payload),
+
   // ─── Environment detection ────────────────────────────────────────────────
   isElectron: true,
 });

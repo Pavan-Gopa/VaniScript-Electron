@@ -38,7 +38,7 @@ log.info('VaniScript starting up...');
 const hyperframesRenderControllers = new Map();
 const recordingSessions = new Map();
 const linkImportJobs = new Map();
-const APP_NAME = 'VaniScript';
+const APP_NAME = 'VaniScript-Electron';
 let tray = null;
 let isQuitting = false;
 
@@ -1502,6 +1502,7 @@ app.whenReady().then(() => {
   installAppMenu();
   installTray();
   createWindow();
+  startMcpServer();
 
   app.on('activate', () => {
     showMainWindow();
@@ -1515,6 +1516,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   isQuitting = true;
   cleanupTempDir();
+  stopMcpServer();
 });
 
 app.on('second-instance', () => {
@@ -3002,3 +3004,290 @@ ipcMain.handle('local-asr:transcribeChunk', async (_event, { modelId, chunkPath,
 });
 
 log.info('VaniScript main process ready');
+
+// ─── MCP Server & Renderer IPC Bridge ───────────────────────────────────────
+let mcpHttpServer = null;
+const activeSseConnections = new Map(); // sessionId -> response object
+const pendingMcpRequests = new Map(); // requestId -> { resolve, reject }
+
+function startMcpServer() {
+  const http = require('http');
+  const { parse: parseUrl } = require('url');
+
+  mcpHttpServer = http.createServer((req, res) => {
+    const parsed = parseUrl(req.url, true);
+    const pathname = parsed.pathname;
+
+    // Set CORS headers
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    if (pathname === '/sse' && req.method === 'GET') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      });
+
+      const sessionId = crypto.randomUUID();
+      activeSseConnections.set(sessionId, res);
+
+      // Send the initial event indicating where the client should POST messages
+      res.write(`event: endpoint\ndata: /message?sessionId=${sessionId}\n\n`);
+
+      req.on('close', () => {
+        activeSseConnections.delete(sessionId);
+        log.info(`MCP SSE client disconnected: ${sessionId}`);
+      });
+      
+      log.info(`MCP SSE client connected: ${sessionId}`);
+      return;
+    }
+
+    if (pathname === '/message' && req.method === 'POST') {
+      const sessionId = parsed.query.sessionId;
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', async () => {
+        try {
+          const rpc = JSON.parse(body);
+          log.info(`MCP JSON-RPC request for session ${sessionId}:`, rpc.method);
+
+          // Standard SSE protocol: POST receives immediate 202, actual response goes via SSE
+          res.writeHead(202);
+          res.end();
+
+          const sseResponse = activeSseConnections.get(sessionId);
+          if (!sseResponse) {
+            log.error(`No active SSE connection for session ${sessionId}`);
+            return;
+          }
+
+          if (rpc.method === 'initialize') {
+            const response = {
+              jsonrpc: '2.0',
+              id: rpc.id,
+              result: {
+                protocolVersion: '2024-11-05',
+                capabilities: {
+                  tools: {}
+                },
+                serverInfo: {
+                  name: 'vaniscript-electron-mcp',
+                  version: '1.0.0'
+                }
+              }
+            };
+            sseResponse.write(`event: message\ndata: ${JSON.stringify(response)}\n\n`);
+            return;
+          }
+
+          if (rpc.method === 'notifications/initialized') {
+            return; // no response
+          }
+
+          if (rpc.method === 'tools/list') {
+            const response = {
+              jsonrpc: '2.0',
+              id: rpc.id,
+              result: {
+                tools: [
+                  {
+                    name: 'get_project_state',
+                    description: 'Get the active VaniScript project state (session, settings, screen, shorts plans, styles)',
+                    inputSchema: { type: 'object', properties: {} }
+                  },
+                  {
+                    name: 'update_chunk_text',
+                    description: 'Update the transcription or translation text of a segment',
+                    inputSchema: {
+                      type: 'object',
+                      properties: {
+                        chunkIndex: { type: 'number', description: 'Index of the segment (0-based)' },
+                        original: { type: 'string', description: 'New original transcript text (optional)' },
+                        translated: { type: 'string', description: 'New translation text (optional)' }
+                      },
+                      required: ['chunkIndex']
+                    }
+                  },
+                  {
+                    name: 'approve_chunk',
+                    description: 'Approve or revoke approval for a specific segment',
+                    inputSchema: {
+                      type: 'object',
+                      properties: {
+                        chunkIndex: { type: 'number', description: 'Index of the segment (0-based)' },
+                        approved: { type: 'boolean', description: 'True to approve, false to revoke' }
+                      },
+                      required: ['chunkIndex', 'approved']
+                    }
+                  },
+                  {
+                    name: 'get_subtitle_style',
+                    description: 'Get active subtitle style settings',
+                    inputSchema: { type: 'object', properties: {} }
+                  },
+                  {
+                    name: 'update_subtitle_style',
+                    description: 'Update the style properties for video subtitles',
+                    inputSchema: {
+                      type: 'object',
+                      properties: {
+                        stylePatch: {
+                          type: 'object',
+                          description: 'Partial patch for subtitle style parameters (textColor, fontSize, fontFamily, bold, outline, shadow, etc.)'
+                        }
+                      },
+                      required: ['stylePatch']
+                    }
+                  },
+                  {
+                    name: 'get_shorts_plans',
+                    description: 'List all vertical shorts clip plans planned in timeline',
+                    inputSchema: { type: 'object', properties: {} }
+                  },
+                  {
+                    name: 'create_shorts_plan',
+                    description: 'Create a new vertical shorts plan segment in timeline',
+                    inputSchema: {
+                      type: 'object',
+                      properties: {
+                        plan: {
+                          type: 'object',
+                          description: 'Plan properties like title, start (MM:SS), end (MM:SS), hook, summary, etc.'
+                        }
+                      },
+                      required: ['plan']
+                    }
+                  },
+                  {
+                    name: 'set_background_settings',
+                    description: 'Update background settings for active shorts plan (solid color, blur, linear/radial gradient, feathering)',
+                    inputSchema: {
+                      type: 'object',
+                      properties: {
+                        settings: {
+                          type: 'object',
+                          description: 'Partial background configuration properties (e.g. solidEnabled, blurEnabled, featherTop, etc.)'
+                        }
+                      },
+                      required: ['settings']
+                    }
+                  },
+                  {
+                    name: 'trigger_render',
+                    description: 'Trigger rendering and export for a shorts plan index',
+                    inputSchema: {
+                      type: 'object',
+                      properties: {
+                        planIndex: { type: 'number', description: 'Index of the shorts plan to export' }
+                      },
+                      required: ['planIndex']
+                    }
+                  }
+                ]
+              }
+            };
+            sseResponse.write(`event: message\ndata: ${JSON.stringify(response)}\n\n`);
+            return;
+          }
+
+          if (rpc.method === 'tools/call') {
+            const { name, arguments: args } = rpc.params || {};
+            if (!mainWindow) {
+              const errResponse = {
+                jsonrpc: '2.0',
+                id: rpc.id,
+                error: { code: -32603, message: 'VaniScript main window is not active.' }
+              };
+              sseResponse.write(`event: message\ndata: ${JSON.stringify(errResponse)}\n\n`);
+              return;
+            }
+
+            const requestId = crypto.randomUUID();
+            pendingMcpRequests.set(requestId, {
+              resolve: (result) => {
+                const response = {
+                  jsonrpc: '2.0',
+                  id: rpc.id,
+                  result: {
+                    content: [
+                      { type: 'text', text: typeof result === 'string' ? result : JSON.stringify(result, null, 2) }
+                    ]
+                  }
+                };
+                sseResponse.write(`event: message\ndata: ${JSON.stringify(response)}\n\n`);
+              },
+              reject: (error) => {
+                const response = {
+                  jsonrpc: '2.0',
+                  id: rpc.id,
+                  error: { code: -32603, message: error.message || String(error) }
+                };
+                sseResponse.write(`event: message\ndata: ${JSON.stringify(response)}\n\n`);
+              }
+            });
+
+            // Forward tool call to React renderer
+            mainWindow.webContents.send('mcp:call-tool', { name, arguments: args, requestId });
+            return;
+          }
+
+          // Unhandled
+          const unhandled = {
+            jsonrpc: '2.0',
+            id: rpc.id,
+            error: { code: -32601, message: `Method not found: ${rpc.method}` }
+          };
+          sseResponse.write(`event: message\ndata: ${JSON.stringify(unhandled)}\n\n`);
+        } catch (err) {
+          log.error('Error parsing JSON-RPC request:', err);
+        }
+      });
+      return;
+    }
+
+    res.writeHead(404);
+    res.end();
+  });
+
+  mcpHttpServer.listen(19789, '127.0.0.1', () => {
+    log.info('MCP HTTP/SSE Server listening on http://127.0.0.1:19789/sse');
+  });
+
+  mcpHttpServer.on('error', (err) => {
+    log.error('MCP Server error:', err);
+  });
+}
+
+function stopMcpServer() {
+  if (mcpHttpServer) {
+    try {
+      mcpHttpServer.close();
+      log.info('MCP HTTP/SSE Server closed.');
+    } catch (e) {
+      log.error('Error closing MCP server:', e);
+    }
+    mcpHttpServer = null;
+  }
+}
+
+// Receive tool responses from renderer and route to pending client promises
+ipcMain.handle('mcp:tool-response', async (_event, { requestId, success, result, error }) => {
+  const pending = pendingMcpRequests.get(requestId);
+  if (pending) {
+    pendingMcpRequests.delete(requestId);
+    if (success) {
+      pending.resolve(result);
+    } else {
+      pending.reject(new Error(error));
+    }
+  }
+});
