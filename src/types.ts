@@ -350,6 +350,8 @@ declare global {
       showItemInFolder: (path: string) => Promise<void>;
       ffmpegGetSourceMediaInfo: (opts: { inputPath: string; originalURL?: string; title?: string; durationSec?: number }) => Promise<SourceMediaInfo | null>;
       openExternal: (url: string) => Promise<void>;
+      onMcpCallTool?: (callback: (payload: { name: string; arguments: any; requestId: string }) => void) => () => void;
+      mcpToolResponse?: (payload: { requestId: string; success: boolean; result?: any; error?: string }) => Promise<any>;
     };
   }
 }

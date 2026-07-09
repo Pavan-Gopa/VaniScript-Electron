@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Settings, Download, RefreshCw, Play, Pause, FolderOpen, Share2, Trash2, Upload, Archive, ChevronDown, ChevronRight, ArrowLeft, Search, HelpCircle, Film, FileAudio, Info } from 'lucide-react';
+import { Settings, Download, RefreshCw, Play, Pause, FolderOpen, Share2, Trash2, Upload, Archive, ChevronDown, ChevronRight, ArrowLeft, Search, HelpCircle, Film, FileAudio, Info, Sparkles } from 'lucide-react';
 import { AppSettings, ChunkData, GlossaryEntry, LanguageResult, ProjectSummary, SourceMediaInfo, TranscriptCue, UsageStats } from './types';
 import { loadSettings, saveSettings, loadUsage, applyTheme, trackUsage } from './services/storage';
 import { transcribeChunkGemini, transcribeChunkOpenAI, fileToBase64 } from './services/transcription';
@@ -33,6 +33,7 @@ import { formatDocumentExportLocally, formatDocumentExportWithGemini, formatDocu
 import { reconcileLocalModelStatesWithDisk } from './services/model-presence';
 import { ShortsReelsPanel, ShortsSettings } from './components/ShortsReelsPanel';
 import { SourceMediaKind, sourceMediaKind } from './lib/media-source';
+import { ChatSidebar } from './components/ChatSidebar';
 import { resolveShortsAudioPath } from './lib/shorts-media-source';
 import { buildShortsCuesForClip, buildShortsTranscriptText } from './lib/shorts-transcript';
 import { appendNonOverlappingShortsPlans, buildShortsPrompt, parseShortsPlanResponse, parseTimestampToSeconds, replaceShortsPlanRange, secondsToShortsTimestamp, ShortsClipPlan, ShortsPlanLanguageMode } from './lib/shorts-reels';
@@ -433,6 +434,7 @@ export default function App() {
     ...(loadShortsDefaults().settings ?? {}),
   }));
   const [shortsPlans, setShortsPlans] = useState<ShortsClipPlan[]>([]);
+  const [showChatSidebar, setShowChatSidebar] = useState(false);
   const [shortsBusy, setShortsBusy] = useState(false);
   const [shortsBusyLabel, setShortsBusyLabel] = useState('');
   const [shortsExportProgress, setShortsExportProgress] = useState<ShortsExportProgress | null>(null);
@@ -482,6 +484,8 @@ export default function App() {
     () => verticalResolutionForPreset(shortsSettings.resolutionPreset, shortsVideoSourceInfo ?? { width: 1920, height: 1080 }),
     [shortsSettings.resolutionPreset, shortsVideoSourceInfo]
   );
+
+
 
   useEffect(() => {
     if (!shouldShowOnboardingForBuild(settingsRef.current, onboardingBuildId)) return;
@@ -2480,6 +2484,166 @@ export default function App() {
     setTimeout(() => { syncingRef.current = false; }, 50);
   };
 
+  const executeMcpTool = useCallback(async (name: string, args: any) => {
+    switch (name) {
+      case 'get_project_state':
+        return {
+          session,
+          settings,
+          currentScreen: screen,
+          shortsPlans,
+          shortsSettings,
+        };
+      case 'update_chunk_text': {
+        const { chunkIndex, original, translated } = args;
+        if (!session || chunkIndex < 0 || chunkIndex >= session.chunks.length) {
+          throw new Error(`Invalid chunkIndex ${chunkIndex}`);
+        }
+        handleUpdateChunk(chunkIndex, {
+          ...(original !== undefined ? { original } : {}),
+          ...(translated !== undefined ? { translated } : {}),
+        });
+        return { success: true, message: `Updated segment ${chunkIndex + 1}` };
+      }
+      case 'approve_chunk': {
+        const { chunkIndex, approved } = args;
+        if (!session || chunkIndex < 0 || chunkIndex >= session.chunks.length) {
+          throw new Error(`Invalid chunkIndex ${chunkIndex}`);
+        }
+        handleUpdateChunk(chunkIndex, { approved });
+        return { success: true, message: `Updated approval for segment ${chunkIndex + 1} to ${approved}` };
+      }
+      case 'get_subtitle_style':
+        return { style: shortsSettings };
+      case 'update_subtitle_style': {
+        const { stylePatch } = args;
+        setShortsSettings(prev => ({
+          ...prev,
+          ...stylePatch
+        }));
+        return { success: true, message: 'Updated subtitle styles' };
+      }
+      case 'get_shorts_plans':
+        return { plans: shortsPlans };
+      case 'create_shorts_plan': {
+        const { plan } = args;
+        const newPlan = {
+          id: Math.random().toString(36).substring(2, 9),
+          title: plan.title || 'Untitled Clip',
+          start: plan.start || '00:00',
+          end: plan.end || '00:15',
+          summary: plan.summary || '',
+          category: plan.category || '',
+          hook: plan.hook || '',
+          logo: null,
+          backgroundSettings: {
+            frameGuideColor: '#ffaa19',
+            frameGuideOpacity: 0.8,
+            frameGuideBorderWidth: 2,
+            frameGuideBorderOpacity: 0.35,
+            frameGuideBlur: 10,
+            solidEnabled: false,
+            solidColor: '#000000',
+            blurEnabled: true,
+            blurStrength: 15,
+            blurScale: 1.15,
+            gradientEnabled: false,
+            gradientType: 'linear',
+            gradientColorA: '#FF007F',
+            gradientColorB: '#7F00FF',
+            gradientAngle: 135,
+            gradientOpacity: 0.5,
+            featherEnabled: false,
+            featherTop: 0,
+            featherBottom: 0,
+            featherLeft: 0,
+            featherRight: 0,
+          },
+          textTracks: [],
+          audioTracks: [],
+          timelineCuts: [],
+          timelineTrim: { startSec: 0, endSec: 15 },
+          ...plan
+        };
+        setShortsPlans(prev => [...prev, newPlan]);
+        return { success: true, planIndex: shortsPlans.length, message: 'Created new shorts plan' };
+      }
+      case 'set_background_settings': {
+        const { settings: bgPatch } = args;
+        if (selectedShortsPlanIndex !== null) {
+          setShortsPlans(prev => prev.map((p, i) => {
+            if (i === selectedShortsPlanIndex) {
+              return {
+                ...p,
+                backgroundSettings: {
+                  ...(p.backgroundSettings || {
+                    frameGuideColor: '#ffaa19',
+                    frameGuideOpacity: 0.8,
+                    frameGuideBorderWidth: 2,
+                    frameGuideBorderOpacity: 0.35,
+                    frameGuideBorderColor: '#ffffff',
+                    frameGuideBlur: 10,
+                    solidEnabled: false,
+                    solidColor: '#000000',
+                    blurEnabled: true,
+                    blurStrength: 15,
+                    blurScale: 1.15,
+                    gradientEnabled: false,
+                    gradientType: 'linear',
+                    gradientColorA: '#FF007F',
+                    gradientColorB: '#7F00FF',
+                    gradientAngle: 135,
+                    gradientOpacity: 0.5,
+                    featherEnabled: false,
+                    featherTop: 0,
+                    featherBottom: 0,
+                    featherLeft: 0,
+                    featherRight: 0,
+                  }),
+                  ...bgPatch
+                }
+              };
+            }
+            return p;
+          }));
+          return { success: true, message: `Updated background settings for plan index ${selectedShortsPlanIndex}` };
+        } else {
+          throw new Error('No active shorts plan selected');
+        }
+      }
+      case 'trigger_render': {
+        const { planIndex } = args;
+        if (planIndex < 0 || planIndex >= shortsPlans.length) {
+          throw new Error(`Invalid planIndex ${planIndex}`);
+        }
+        setSelectedShortsPlanIndex(planIndex);
+        setSelectedShortsPlanIndexes([planIndex]);
+        setTimeout(() => {
+          const exportBtn = document.querySelector('[data-tour="export-video-btn"]') as HTMLButtonElement;
+          if (exportBtn) {
+            exportBtn.click();
+          }
+        }, 100);
+        return { success: true, message: `Triggered render for plan ${planIndex + 1}` };
+      }
+      default:
+        throw new Error(`Unknown tool name ${name}`);
+    }
+  }, [session, settings, screen, shortsPlans, shortsSettings, selectedShortsPlanIndex, handleUpdateChunk]);
+
+  useEffect(() => {
+    if (!window.electronAPI?.onMcpCallTool) return;
+    const unsubscribe = window.electronAPI.onMcpCallTool(async ({ name, arguments: args, requestId }) => {
+      try {
+        const result = await executeMcpTool(name, args);
+        window.electronAPI?.mcpToolResponse?.({ requestId, success: true, result });
+      } catch (err: any) {
+        window.electronAPI?.mcpToolResponse?.({ requestId, success: false, error: err.message || String(err) });
+      }
+    });
+    return unsubscribe;
+  }, [executeMcpTool]);
+
   // ─── Render ───────────────────────────────────────────────────────────────
   return (
     <>
@@ -2498,6 +2662,13 @@ export default function App() {
               title={settings.annotationMode ? "Disable Help Tour" : "Enable Help Tour"}
             >
               <HelpCircle size={15} style={{ color: settings.annotationMode ? 'var(--accent)' : 'inherit' }} />
+            </button>
+            <button
+              className={`settings-btn inline ${showChatSidebar ? 'active' : ''}`}
+              onClick={() => setShowChatSidebar(!showChatSidebar)}
+              title="AI Assistant"
+            >
+              <Sparkles size={15} style={{ color: showChatSidebar ? 'var(--accent)' : 'inherit' }} />
             </button>
             <button className="settings-btn inline" onClick={openProjectSidebar} title="Projects">
               <FolderOpen size={15} />
@@ -2614,6 +2785,13 @@ export default function App() {
                       <RefreshCw size={14} /> Retry Translation
                     </button>
                   )}
+                  <button
+                    className={`review-icon-btn ${showChatSidebar ? 'active' : ''}`}
+                    onClick={() => setShowChatSidebar(!showChatSidebar)}
+                    title="AI Assistant"
+                  >
+                    <Sparkles size={14} style={{ color: showChatSidebar ? 'var(--accent)' : 'inherit' }} />
+                  </button>
                   <button
                     className="review-icon-btn"
                     onClick={() => {
@@ -3103,6 +3281,13 @@ export default function App() {
             onTabChange={setSettingsTab}
           />
         )}
+
+        <ChatSidebar
+          isOpen={showChatSidebar}
+          onClose={() => setShowChatSidebar(false)}
+          executeMcpTool={executeMcpTool}
+          settings={settings}
+        />
 
         {shortsExportProgress && (
           <div className="shorts-export-modal-backdrop">
