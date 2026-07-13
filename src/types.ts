@@ -61,6 +61,9 @@ export interface AppSettings {
   localTranslationModels: Record<string, LocalModelState>;
   promptPresets: PromptSettingsMap;
   glossary: GlossaryEntry[];
+  // Chat assistant routing (Grok MCP vs Gemini API)
+  chatRoute?: 'mcp' | 'api';
+  chatGrokModel?: string;
 }
 
 export interface GlossaryEntry {
@@ -352,6 +355,10 @@ declare global {
       openExternal: (url: string) => Promise<void>;
       onMcpCallTool?: (callback: (payload: { name: string; arguments: any; requestId: string }) => void) => () => void;
       mcpToolResponse?: (payload: { requestId: string; success: boolean; result?: any; error?: string }) => Promise<any>;
+      grokChat?: (payload: { messages: Array<{ role: string; text: string }>; systemPrompt?: string; model?: string }) => Promise<{ ok: boolean; error?: string }>;
+      onGrokChunk?: (callback: (payload: { text: string }) => void) => () => void;
+      onGrokError?: (callback: (payload: { error: string; message?: string }) => void) => () => void;
+      onGrokDone?: (callback: (payload: { text?: string }) => void) => () => void;
     };
   }
 }

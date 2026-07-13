@@ -33,6 +33,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   localTranslationModels: createDefaultTranslationModelStateMap(),
   promptPresets: DEFAULT_PROMPT_SETTINGS,
   glossary: STARTER_GLOSSARY,
+  chatRoute: 'api',
+  chatGrokModel: 'grok-4.5',
 };
 
 const LEGACY_TRANSLATION_MODEL_IDS: Record<string, string> = {

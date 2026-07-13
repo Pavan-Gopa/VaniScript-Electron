@@ -6,7 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
 const { pathToFileURL } = require('url');
-const { spawn, fork } = require('child_process');
+const { spawn, fork, execSync } = require('child_process');
 const log = require('electron-log');
 const {
   removeTranslationModel,
@@ -3278,6 +3278,158 @@ function stopMcpServer() {
     mcpHttpServer = null;
   }
 }
+
+// ─── Embedded Grok chat (headless CLI) ───────────────────────────────────────
+// Mirrors the Apple Silicon GrokAgentService: spawn the locally installed `grok`
+// CLI headless against the in-app MCP SSE server (port 19789). That server already
+// forwards tool calls to the renderer through the existing mcp:call-tool bridge, so
+// Grok's tools are executed via the same executeMcpTool path. There is NO silent
+// fallback to Gemini or any other provider.
+const GROK_MCP_PORT = 19789;
+const GROK_EMBEDDED_SERVER_ID = 'vaniscript_embedded';
+
+function resolveGrokExecutable() {
+  const candidates = [
+    path.join(os.homedir(), '.grok', 'bin', 'grok'),
+    '/usr/local/bin/grok',
+    '/opt/homebrew/bin/grok',
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+    } catch { /* ignore */ }
+  }
+  try {
+    const resolved = execSync('command -v grok', { encoding: 'utf8' }).trim();
+    if (resolved) return resolved;
+  } catch { /* ignore */ }
+  return null;
+}
+
+function ensureGrokWorkspace() {
+  const dir = path.join(app.getPath('userData'), 'GrokAgentWorkspace');
+  fs.mkdirSync(dir, { recursive: true });
+  try { fs.chmodSync(dir, 0o700); } catch { /* ignore */ }
+  return dir;
+}
+
+function buildGrokPrompt(messages, systemPrompt) {
+  const conversation = (messages || [])
+    .filter((m) => m.role === 'user' || m.role === 'assistant')
+    .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.text}`)
+    .join('\n\n');
+  const base = systemPrompt || `You are the embedded VaniScript text assistant. Reply directly in this VaniScript chat panel.
+
+Use only the MCP server named ${GROK_EMBEDDED_SERVER_ID} for VaniScript project information and actions. Do not use shell commands, files, browser, computer-use, web, skills, plugins, or any other MCP server.
+
+For requests about the current project, prefer the narrowest authoritative read tool (get_project_state, get_subtitle_style, get_shorts_plans) and the edit tools available on the ${GROK_EMBEDDED_SERVER_ID} server. Never claim an edit occurred unless the MCP tool confirms it.
+
+Reply in the same language as the user's latest message. Keep replies concise and describe completed actions clearly.`;
+  return `${base}\n\nConversation:\n${conversation}\n\nAssistant:`;
+}
+
+// Tolerant parser for `grok`'s streaming-json output. The exact shape should be
+// verified against `grok --help` / real output; the branches below cover the most
+// common streaming-json dialects.
+function extractGrokStreamingText(obj) {
+  if (!obj || typeof obj !== 'object') return '';
+  if (typeof obj.text === 'string' && obj.text) return obj.text;
+  if (Array.isArray(obj.content)) {
+    return obj.content.map((c) => (typeof c === 'string' ? c : (c?.text || c?.input || ''))).join('');
+  }
+  if (obj.message && typeof obj.message === 'object') {
+    if (typeof obj.message.content === 'string') return obj.message.content;
+    if (Array.isArray(obj.message.content)) return obj.message.content.map((c) => c?.text || '').join('');
+  }
+  if (typeof obj.delta === 'string' && obj.delta) return obj.delta;
+  return '';
+}
+
+ipcMain.handle('grok:chat', async (event, { messages, systemPrompt, model } = {}) => {
+  const sender = event.sender;
+  const grokPath = resolveGrokExecutable();
+  if (!grokPath) {
+    sender.send('grok:error', {
+      error: 'grokNotInstalled',
+      message: 'Grok CLI was not found. Install the Grok CLI (for example via Homebrew or `curl` from xAI) and run `grok login` before using the embedded Grok chat.',
+    });
+    return { ok: false, error: 'grokNotInstalled' };
+  }
+
+  const workspace = ensureGrokWorkspace();
+  const mcpEndpoint = `http://127.0.0.1:${GROK_MCP_PORT}/sse`;
+  const configOverride = `mcp_servers.${GROK_EMBEDDED_SERVER_ID}={url="${mcpEndpoint}", default_tools_approval_mode="approve", required=true}`;
+  const prompt = buildGrokPrompt(messages, systemPrompt);
+  const resolvedModel = model || 'grok-4.5';
+
+  const child = spawn(grokPath, [
+    '-p',
+    '--output-format', 'streaming-json',
+    '--ephemeral',
+    '--model', resolvedModel,
+    '--ignore-user-config',
+    '--sandbox', 'read-only',
+    '-c', 'approval_policy="never"',
+    '-c', configOverride,
+    '-C', workspace,
+    '-',
+  ], {
+    cwd: workspace,
+    env: {
+      ...process.env,
+      NO_PROXY: '127.0.0.1,localhost',
+      no_proxy: '127.0.0.1,localhost',
+    },
+  });
+
+  let buffer = '';
+
+  const flushLine = (line) => {
+    if (!line) return;
+    try {
+      const obj = JSON.parse(line);
+      const text = extractGrokStreamingText(obj);
+      if (text) sender.send('grok:chunk', { text });
+    } catch { /* not a complete JSON line yet */ }
+  };
+
+  child.stdout.on('data', (d) => {
+    buffer += d.toString();
+    let idx;
+    while ((idx = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, idx).trim();
+      buffer = buffer.slice(idx + 1);
+      flushLine(line);
+    }
+  });
+
+  child.stderr.on('data', (d) => {
+    log.warn('[grok stderr]', String(d).trim());
+  });
+
+  child.on('error', (err) => {
+    sender.send('grok:error', { error: 'launchFailed', message: `Could not start Grok: ${err.message}` });
+  });
+
+  child.on('close', (code) => {
+    const tail = buffer.trim();
+    if (tail) flushLine(tail);
+    if (code === 0) {
+      sender.send('grok:done', {});
+    } else {
+      sender.send('grok:error', { error: 'unavailable', message: `Grok finished with exit code ${code}.` });
+    }
+  });
+
+  try {
+    child.stdin.write(prompt);
+    child.stdin.end();
+  } catch (err) {
+    sender.send('grok:error', { error: 'launchFailed', message: `Could not send prompt to Grok: ${err.message}` });
+  }
+
+  return { ok: true };
+});
 
 // Receive tool responses from renderer and route to pending client promises
 ipcMain.handle('mcp:tool-response', async (_event, { requestId, success, result, error }) => {

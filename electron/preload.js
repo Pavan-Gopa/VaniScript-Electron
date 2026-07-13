@@ -112,6 +112,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   mcpToolResponse: (payload) => ipcRenderer.invoke('mcp:tool-response', payload),
 
+  // ─── Embedded Grok chat (headless CLI) ──────────────────────────────────
+  grokChat: (payload) => ipcRenderer.invoke('grok:chat', payload),
+  onGrokChunk: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('grok:chunk', handler);
+    return () => ipcRenderer.removeListener('grok:chunk', handler);
+  },
+  onGrokError: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('grok:error', handler);
+    return () => ipcRenderer.removeListener('grok:error', handler);
+  },
+  onGrokDone: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('grok:done', handler);
+    return () => ipcRenderer.removeListener('grok:done', handler);
+  },
+
   // ─── Environment detection ────────────────────────────────────────────────
   isElectron: true,
 });

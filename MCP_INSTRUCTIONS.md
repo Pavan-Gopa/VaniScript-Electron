@@ -70,8 +70,36 @@ Edit your Claude Desktop configuration file (`~/Library/Application Support/Clau
       ]
     }
   }
-}
 ```
+
+---
+
+## 6. Grok
+
+Grok can connect to VaniScript in two ways.
+
+### A. External Grok (desktop app / CLI)
+Point the Grok CLI at the running SSE server (Electron port **19789**):
+
+```bash
+grok mcp add vaniscript --transport sse --url http://127.0.0.1:19789/sse
+```
+
+This exposes every VaniScript tool (read project state, edit transcript/translation, manage subtitle styles and shorts plans, trigger renders) to Grok as a normal MCP server.
+
+### B. Embedded Grok chat (in-app assistant)
+The VaniScript chat panel has a **route selector** in its header:
+
+* **API · Gemini** — the default; the assistant runs entirely through the Gemini API. This route is used *only* when explicitly selected and never as a silent fallback.
+* **MCP · Grok** — VaniScript launches the locally installed `grok` CLI headless in the main process, pointed at the in-app MCP SSE server (`http://127.0.0.1:19789/sse`). Grok performs the agentic loop itself: it calls VaniScript tools through the existing MCP bridge (`onMcpCallTool` / `executeMcpTool`), and the streamed reply is rendered back into the chat panel.
+
+Requirements for the embedded route:
+
+* The `grok` CLI must be installed (checked at `~/.grok/bin/grok`, `/usr/local/bin/grok`, `/opt/homebrew/bin/grok`, or anywhere on `PATH`).
+* You must be logged in (`grok login`).
+* The VaniScript app must be running (the MCP SSE server listens on `127.0.0.1:19789`).
+
+If `grok` is missing or not logged in, the chat shows a clear error and does **not** fall back to any other provider.
 
 ### For Swift/Apple Silicon:
 ```json

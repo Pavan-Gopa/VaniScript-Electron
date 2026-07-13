@@ -964,6 +964,10 @@ export default function App() {
     }
   };
 
+  const handleChatConfigChange = useCallback((patch: { chatRoute?: 'mcp' | 'api'; chatGrokModel?: string }) => {
+    handleSaveSettings({ ...settings, ...patch });
+  }, [settings, handleSaveSettings]);
+
   const editingProviders = useMemo(
     () => getAvailableTranslationProviders(settings, session?.targetLang ?? settings.defaultTargetLang).providers,
     [settings, session?.targetLang]
@@ -3287,6 +3291,9 @@ export default function App() {
           onClose={() => setShowChatSidebar(false)}
           executeMcpTool={executeMcpTool}
           settings={settings}
+          chatRoute={settings.chatRoute ?? 'api'}
+          chatGrokModel={settings.chatGrokModel ?? 'grok-4.5'}
+          onChatConfigChange={handleChatConfigChange}
         />
 
         {shortsExportProgress && (
