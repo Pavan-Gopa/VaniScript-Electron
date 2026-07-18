@@ -3386,7 +3386,9 @@ ipcMain.handle('grok:chat', async (event, { messages, systemPrompt, model } = {}
   const promptFile = path.join(workspace, 'embedded-prompt.txt');
   fs.writeFileSync(promptFile, prompt, { encoding: 'utf8' });
 
+  // --trust: project-scoped MCP in GrokAgentWorkspace is blocked without it.
   const child = spawn(grokPath, [
+    '--trust',
     '--prompt-file', promptFile,
     '--output-format', 'streaming-json',
     '--model', resolvedModel,
