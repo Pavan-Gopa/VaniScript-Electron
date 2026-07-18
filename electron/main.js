@@ -3394,7 +3394,7 @@ ipcMain.handle('grok:chat', async (event, { messages, systemPrompt, model } = {}
     '--model', resolvedModel,
     '--cwd', workspace,
     '--always-approve',
-    '--max-turns', '16',
+    '--max-turns', '64',
     '--no-subagents',
     '--permission-mode', 'bypassPermissions',
   ], {
