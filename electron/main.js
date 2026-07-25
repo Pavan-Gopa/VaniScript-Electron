@@ -3010,18 +3010,58 @@ let mcpHttpServer = null;
 const activeSseConnections = new Map(); // sessionId -> response object
 const pendingMcpRequests = new Map(); // requestId -> { resolve, reject }
 
+// Per-session access token for the Electron MCP server (:19789). Generated at
+// server start and required on every /sse and /message request (parity with the
+// Apple Silicon McpServerConfiguration.isAuthorized() logic in McpContracts.swift).
+let mcpAccessToken = '';
+
+// Validate an incoming MCP request against the session token.
+// Mirrors AS isAuthorized(): Bearer or x-vaniscript-mcp-token header must equal
+// mcpAccessToken; an empty token denies everything (fail-closed).
+function isMcpAuthorized(req) {
+  if (!mcpAccessToken) return false;
+  const auth = (req.headers['authorization'] || '').trim();
+  if (auth.toLowerCase().startsWith('bearer ') &&
+      auth.slice(7).trim() === mcpAccessToken) {
+    return true;
+  }
+  const customHeader = (req.headers['x-vaniscript-mcp-token'] || '').trim();
+  if (customHeader === mcpAccessToken) return true;
+  return false;
+}
+
+// True only for loopback origins (127.0.0.1, ::1, localhost). Mirrors AS isLoopbackHost.
+function isLoopbackOrigin(origin) {
+  try {
+    const u = new URL(origin);
+    const h = u.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    return h === '127.0.0.1' || h === '::1' || h === 'localhost';
+  } catch { return false; }
+}
+
 function startMcpServer() {
   const http = require('http');
   const { parse: parseUrl } = require('url');
+
+  // Generate a fresh session token so only holders of it can use the MCP server.
+  mcpAccessToken = crypto.randomBytes(32).toString('hex');
+  log.info('MCP access token generated for this session');
 
   mcpHttpServer = http.createServer((req, res) => {
     const parsed = parseUrl(req.url, true);
     const pathname = parsed.pathname;
 
-    // Set CORS headers
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    // CORS: allow only loopback origins (parity with AS isAllowedOrigin).
+    // Native MCP clients send no Origin header, so fall back to '*'.
+    const origin = (req.headers['origin'] || '').trim();
+    if (!origin || isLoopbackOrigin(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin || '*');
+    } else {
+      res.setHeader('Access-Control-Allow-Origin', 'http://127.0.0.1');
+    }
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Headers',
+      'Content-Type, Authorization, x-vaniscript-mcp-token');
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -3030,6 +3070,11 @@ function startMcpServer() {
     }
 
     if (pathname === '/sse' && req.method === 'GET') {
+      if (!isMcpAuthorized(req)) {
+        res.writeHead(401, { 'Content-Type': 'text/plain' });
+        res.end('Unauthorized');
+        return;
+      }
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
@@ -3052,6 +3097,11 @@ function startMcpServer() {
     }
 
     if (pathname === '/message' && req.method === 'POST') {
+      if (!isMcpAuthorized(req)) {
+        res.writeHead(401, { 'Content-Type': 'text/plain' });
+        res.end('Unauthorized');
+        return;
+      }
       const sessionId = parsed.query.sessionId;
       let body = '';
       req.on('data', chunk => { body += chunk; });
@@ -3325,6 +3375,7 @@ enabled = []
 [mcp_servers.${GROK_EMBEDDED_SERVER_ID}]
 url = "${endpoint}"
 enabled = true
+headers = { "x-vaniscript-mcp-token" = "${mcpAccessToken}" }
 `;
   const configPath = path.join(grokDir, 'config.toml');
   fs.writeFileSync(configPath, config, { encoding: 'utf8', mode: 0o600 });
@@ -3403,6 +3454,8 @@ ipcMain.handle('grok:chat', async (event, { messages, systemPrompt, model } = {}
       ...process.env,
       NO_PROXY: '127.0.0.1,localhost',
       no_proxy: '127.0.0.1,localhost',
+      // Hand the session MCP token to the Grok subprocess so it can reach :19789.
+      VANISCRIPT_MCP_TOKEN: mcpAccessToken,
     },
   });
 
