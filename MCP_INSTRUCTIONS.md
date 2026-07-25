@@ -129,3 +129,81 @@ To register the server globally inside the Antigravity developer environment:
      ]
    }
    ```
+
+---
+
+## 7. Qwen (external CLI)
+
+This documents how a **manually launched Qwen CLI** (not the in-app embedded Qwen chat)
+can connect to the VaniScript Electron MCP server and use its tools. The embedded chat is
+already wired through `.qwen/settings.json` with env-var token substitution; this is the
+equivalent setup for a terminal Qwen session you start yourself.
+
+### Prerequisites
+
+- The **VaniScript (Electron) application must be running** so the MCP SSE server is active
+  on `http://127.0.0.1:19789/sse`.
+- Install and authenticate the Qwen CLI:
+
+  ```bash
+  npm install -g @qwen-code/qwen-code
+  qwen login
+  ```
+
+- The access token comes from VaniScript **Settings → MCP → Access Token** (or is generated
+  automatically the first time the Local MCP Server is enabled). It is the same bearer token
+  used by the embedded chat.
+
+### Option A — `qwen mcp add` (project scope)
+
+```bash
+# Add the VaniScript MCP server to Qwen CLI (project scope):
+qwen mcp add vaniscript http://127.0.0.1:19789/sse \
+  --transport sse \
+  --header "Authorization: Bearer <YOUR_TOKEN>" \
+  --scope project \
+  --trust
+```
+
+### Option B — `.qwen/settings.json`
+
+```json
+{
+  "mcpServers": {
+    "vaniscript": {
+      "url": "http://127.0.0.1:19789/sse",
+      "transport": "sse",
+      "headers": {
+        "Authorization": "Bearer <YOUR_TOKEN>"
+      },
+      "trust": true
+    }
+  }
+}
+```
+
+### Available tools
+
+Once connected, Qwen can call the VaniScript MCP tools. The exact set is filtered by the
+permission scopes enabled in VaniScript Settings. Start from `get_capabilities`, which
+returns the active scopes and available tool groups without exposing secrets. The Electron
+build exposes, among others:
+
+- `get_project_state` — current project, source media, languages, and providers.
+- `get_subtitle_style` — read the active subtitle/caption style.
+- `get_shorts_plans` — list planned shorts/clip plans.
+- `update_chunk_text`, `approve_chunk` — correct and approve transcript chunks.
+- `update_subtitle_style`, `create_shorts_plan`, `set_background_settings`, `trigger_render`.
+
+Every mutation can accept `expectedRevision` and `requestId`; long-running work returns a
+`jobId` you can follow with `get_job`, `list_jobs`, or `cancel_job`.
+
+### Security notes
+
+- Auth is a **Bearer token** in the `Authorization` header (the server also accepts an
+  `x-vaniscript-mcp-token` header). This is the same token the embedded chat uses.
+- The server binds to loopback only and rejects non-loopback `Origin` headers, so localhost
+  clients work without any CORS change.
+- Token handling follows the QWEN_MCP invariants: no silent MCP→API fallback, isolated
+  project-scope MCP config, and the token lives only in the client environment / config.
+
