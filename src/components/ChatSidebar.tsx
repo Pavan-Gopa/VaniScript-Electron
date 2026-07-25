@@ -8,9 +8,10 @@ interface ChatSidebarProps {
   onClose: () => void;
   executeMcpTool: (name: string, args: any) => Promise<any>;
   settings: AppSettings;
-  chatRoute?: 'mcp' | 'api';
+  chatRoute?: 'mcp' | 'api' | 'qwen';
   chatGrokModel?: string;
-  onChatConfigChange?: (patch: { chatRoute?: 'mcp' | 'api'; chatGrokModel?: string }) => void;
+  chatQwenModel?: string;
+  onChatConfigChange?: (patch: { chatRoute?: 'mcp' | 'api' | 'qwen'; chatGrokModel?: string; chatQwenModel?: string }) => void;
 }
 
 interface Message {
@@ -133,7 +134,7 @@ When the user asks you to do something (e.g. "make text color orange" or "approv
 Keep responses concise, helpful, and professional.
 `;
 
-export function ChatSidebar({ isOpen, onClose, executeMcpTool, settings, chatRoute = 'api', chatGrokModel = 'grok-4.5', onChatConfigChange }: ChatSidebarProps) {
+export function ChatSidebar({ isOpen, onClose, executeMcpTool, settings, chatRoute = 'api', chatGrokModel = 'grok-4.5', chatQwenModel = 'qwen3.8-max-preview', onChatConfigChange }: ChatSidebarProps) {
   const route = chatRoute;
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -171,6 +172,11 @@ export function ChatSidebar({ isOpen, onClose, executeMcpTool, settings, chatRou
 
     if (route === 'mcp') {
       await handleSendGrok(userText, userMessage);
+      return;
+    }
+
+    if (route === 'qwen') {
+      await handleSendQwen(userText, userMessage);
       return;
     }
 
@@ -374,6 +380,82 @@ export function ChatSidebar({ isOpen, onClose, executeMcpTool, settings, chatRou
     }
   };
 
+  // Embedded Qwen route: mirrors handleSendGrok via the qwen:* IPC bridge.
+  const handleSendQwen = async (userText: string, _userMessage: Message) => {
+    const api = window.electronAPI;
+    if (!api?.qwenChat) {
+      setMessages(prev => [
+        ...prev,
+        {
+          id: Math.random().toString(36).substring(2, 9),
+          sender: 'system',
+          text: 'Embedded Qwen chat is not available in this build.',
+          timestamp: new Date(),
+        },
+      ]);
+      setIsLoading(false);
+      return;
+    }
+
+    const assistantId = Math.random().toString(36).substring(2, 9);
+    setMessages(prev => [
+      ...prev,
+      { id: assistantId, sender: 'assistant', text: '', timestamp: new Date() },
+    ]);
+
+    const history = [
+      ...messages
+        .filter(m => m.sender !== 'system')
+        .map(m => ({ role: m.sender === 'user' ? 'user' : 'assistant', text: m.text })),
+      { role: 'user', text: userText },
+    ];
+
+    const unsubChunk = api.onQwenChunk?.(({ text }) => {
+      setMessages(prev => prev.map(m => (m.id === assistantId ? { ...m, text: m.text + text } : m)));
+    }) ?? (() => {});
+
+    const unsubError = api.onQwenError?.(({ error, message }) => {
+      setMessages(prev => [
+        ...prev,
+        {
+          id: Math.random().toString(36).substring(2, 9),
+          sender: 'system',
+          text: `Qwen error (${error}): ${message || ''}`.trim(),
+          timestamp: new Date(),
+        },
+      ]);
+      setIsLoading(false);
+      unsubChunk();
+      unsubError();
+      unsubDone();
+    }) ?? (() => {});
+
+    const unsubDone = api.onQwenDone?.(() => {
+      setIsLoading(false);
+      unsubChunk();
+      unsubError();
+      unsubDone();
+    }) ?? (() => {});
+
+    try {
+      await api.qwenChat({ messages: history, systemPrompt: SYSTEM_PROMPT, model: chatQwenModel });
+    } catch (err: any) {
+      setMessages(prev => [
+        ...prev,
+        {
+          id: Math.random().toString(36).substring(2, 9),
+          sender: 'system',
+          text: `Qwen error: ${err?.message || String(err)}`,
+          timestamp: new Date(),
+        },
+      ]);
+      setIsLoading(false);
+      unsubChunk();
+      unsubError();
+      unsubDone();
+    }
+  };
+
   const handleKeyPress = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -400,10 +482,11 @@ export function ChatSidebar({ isOpen, onClose, executeMcpTool, settings, chatRou
             className="chat-route-select"
             value={route}
             title="Chat route"
-            onChange={(e) => onChatConfigChange?.({ chatRoute: e.target.value as 'mcp' | 'api' })}
+            onChange={(e) => onChatConfigChange?.({ chatRoute: e.target.value as 'mcp' | 'api' | 'qwen' })}
           >
             <option value="api">API · Gemini</option>
             <option value="mcp">MCP · Grok</option>
+            <option value="qwen">MCP · Qwen</option>
           </select>
           <button className="chat-sidebar-close" onClick={onClose}>
             <X size={16} />

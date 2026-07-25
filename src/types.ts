@@ -61,9 +61,10 @@ export interface AppSettings {
   localTranslationModels: Record<string, LocalModelState>;
   promptPresets: PromptSettingsMap;
   glossary: GlossaryEntry[];
-  // Chat assistant routing (Grok MCP vs Gemini API)
-  chatRoute?: 'mcp' | 'api';
+  // Chat assistant routing (Grok MCP vs Gemini API vs Qwen MCP)
+  chatRoute?: 'mcp' | 'api' | 'qwen';
   chatGrokModel?: string;
+  chatQwenModel?: string;
 }
 
 export interface GlossaryEntry {
@@ -359,6 +360,10 @@ declare global {
       onGrokChunk?: (callback: (payload: { text: string }) => void) => () => void;
       onGrokError?: (callback: (payload: { error: string; message?: string }) => void) => () => void;
       onGrokDone?: (callback: (payload: { text?: string }) => void) => () => void;
+      qwenChat?: (payload: { messages: Array<{ role: string; text: string }>; systemPrompt?: string; model?: string }) => Promise<{ ok: boolean; error?: string }>;
+      onQwenChunk?: (callback: (payload: { text: string }) => void) => () => void;
+      onQwenError?: (callback: (payload: { error: string; message?: string }) => void) => () => void;
+      onQwenDone?: (callback: (payload: { text?: string }) => void) => () => void;
     };
   }
 }

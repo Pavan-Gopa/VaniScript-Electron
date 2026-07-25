@@ -3503,6 +3503,164 @@ ipcMain.handle('grok:chat', async (event, { messages, systemPrompt, model } = {}
   return { ok: true };
 });
 
+// ─── Embedded Qwen chat (headless CLI) ───────────────────────────────────────
+// Mirrors the Apple Silicon QwenAgentService: spawn the locally installed `qwen`
+// CLI headless against the in-app MCP SSE server (port 19789). MCP config is
+// written as .qwen/settings.json with env-var token substitution (no raw secret).
+// There is NO silent fallback to any other provider.
+const QWEN_MCP_PORT = 19789;
+const QWEN_EMBEDDED_SERVER_ID = 'vaniscript_embedded';
+
+function resolveQwenExecutable() {
+  const candidates = [
+    path.join(os.homedir(), '.local', 'bin', 'qwen'),
+    '/usr/local/bin/qwen',
+    '/opt/homebrew/bin/qwen',
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+    } catch { /* ignore */ }
+  }
+  try {
+    const resolved = execSync('command -v qwen', { encoding: 'utf8' }).trim();
+    if (resolved) return resolved;
+  } catch { /* ignore */ }
+  return null;
+}
+
+function ensureQwenWorkspace() {
+  const dir = path.join(app.getPath('userData'), 'QwenAgentWorkspace');
+  fs.mkdirSync(dir, { recursive: true });
+  try { fs.chmodSync(dir, 0o700); } catch { /* ignore */ }
+  return dir;
+}
+
+/** Project-scoped Qwen MCP config: vaniscript_embedded via env-var token (no raw secret). */
+function writeQwenProjectConfig(workspace) {
+  const qwenDir = path.join(workspace, '.qwen');
+  fs.mkdirSync(qwenDir, { recursive: true });
+  const endpoint = `http://127.0.0.1:${QWEN_MCP_PORT}/sse`;
+  // Token via ${VANISCRIPT_MCP_TOKEN} env substitution — never inlined as raw secret.
+  const config = JSON.stringify({
+    mcpServers: {
+      [QWEN_EMBEDDED_SERVER_ID]: {
+        url: endpoint,
+        transport: 'sse',
+        headers: { Authorization: 'Bearer ${VANISCRIPT_MCP_TOKEN}' },
+        trust: true,
+      },
+    },
+  }, null, 2);
+  const configPath = path.join(qwenDir, 'settings.json');
+  fs.writeFileSync(configPath, config, { encoding: 'utf8', mode: 0o600 });
+  return configPath;
+}
+
+function buildQwenPrompt(messages, systemPrompt) {
+  const conversation = (messages || [])
+    .filter((m) => m.role === 'user' || m.role === 'assistant')
+    .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.text}`)
+    .join('\n\n');
+  const base = systemPrompt || `You are the embedded VaniScript text assistant. Reply directly in this VaniScript chat panel.
+
+Use only the MCP server named ${QWEN_EMBEDDED_SERVER_ID} for VaniScript project information and actions. Do not use shell commands, files, browser, computer-use, web, skills, plugins, or any other MCP server.
+
+For requests about the current project, prefer the narrowest authoritative read tool (get_project_state, get_subtitle_style, get_shorts_plans) and the edit tools available on the ${QWEN_EMBEDDED_SERVER_ID} server. Never claim an edit occurred unless the MCP tool confirms it.
+
+Reply in the same language as the user's latest message. Keep replies concise and describe completed actions clearly.`;
+  return `${base}\n\nConversation:\n${conversation}`;
+}
+
+// Qwen NDJSON: {"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}}
+// and {"type":"result","subtype":"success","result":"..."}
+function extractQwenStreamingText(obj) {
+  if (!obj || typeof obj !== 'object') return '';
+  if (obj.type === 'assistant' && obj.message && Array.isArray(obj.message.content)) {
+    return obj.message.content
+      .filter((c) => c.type === 'text' && typeof c.text === 'string')
+      .map((c) => c.text)
+      .join('');
+  }
+  if (obj.type === 'result' && typeof obj.result === 'string') return obj.result;
+  return '';
+}
+
+ipcMain.handle('qwen:chat', async (event, { messages, systemPrompt, model } = {}) => {
+  const sender = event.sender;
+  const qwenPath = resolveQwenExecutable();
+  if (!qwenPath) {
+    sender.send('qwen:error', {
+      error: 'qwenNotInstalled',
+      message: 'Qwen CLI was not found. Install Qwen Code (for example via `npm install -g @qwen-code/qwen-code`) and sign in before using the embedded Qwen chat.',
+    });
+    return { ok: false, error: 'qwenNotInstalled' };
+  }
+
+  const workspace = ensureQwenWorkspace();
+  writeQwenProjectConfig(workspace);
+  const prompt = buildQwenPrompt(messages, systemPrompt);
+  const resolvedModel = model || 'qwen3.8-max-preview';
+
+  // Qwen CLI: -p <prompt> -o stream-json -m <model>
+  // No --safe-mode (Q3+), no --trust/--cwd (Qwen uses project-scoped isolation via cwd).
+  const child = spawn(qwenPath, [
+    '-p', prompt,
+    '-o', 'stream-json',
+    '-m', resolvedModel,
+  ], {
+    cwd: workspace,
+    env: {
+      ...process.env,
+      NO_PROXY: '127.0.0.1,localhost',
+      no_proxy: '127.0.0.1,localhost',
+      // Token for MCP SSE auth — referenced as ${VANISCRIPT_MCP_TOKEN} in .qwen/settings.json.
+      VANISCRIPT_MCP_TOKEN: mcpAccessToken,
+    },
+  });
+
+  let buffer = '';
+
+  const flushLine = (line) => {
+    if (!line) return;
+    try {
+      const obj = JSON.parse(line);
+      const text = extractQwenStreamingText(obj);
+      if (text) sender.send('qwen:chunk', { text });
+    } catch { /* not a complete JSON line yet */ }
+  };
+
+  child.stdout.on('data', (d) => {
+    buffer += d.toString();
+    let idx;
+    while ((idx = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, idx).trim();
+      buffer = buffer.slice(idx + 1);
+      flushLine(line);
+    }
+  });
+
+  child.stderr.on('data', (d) => {
+    log.warn('[qwen stderr]', String(d).trim());
+  });
+
+  child.on('error', (err) => {
+    sender.send('qwen:error', { error: 'launchFailed', message: `Could not start Qwen: ${err.message}` });
+  });
+
+  child.on('close', (code) => {
+    const tail = buffer.trim();
+    if (tail) flushLine(tail);
+    if (code === 0) {
+      sender.send('qwen:done', {});
+    } else {
+      sender.send('qwen:error', { error: 'unavailable', message: `Qwen finished with exit code ${code}.` });
+    }
+  });
+
+  return { ok: true };
+});
+
 // Receive tool responses from renderer and route to pending client promises
 ipcMain.handle('mcp:tool-response', async (_event, { requestId, success, result, error }) => {
   const pending = pendingMcpRequests.get(requestId);

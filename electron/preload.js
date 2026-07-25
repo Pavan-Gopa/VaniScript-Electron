@@ -130,6 +130,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('grok:done', handler);
   },
 
+  // ─── Embedded Qwen chat (headless CLI) ──────────────────────────────────
+  qwenChat: (payload) => ipcRenderer.invoke('qwen:chat', payload),
+  onQwenChunk: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('qwen:chunk', handler);
+    return () => ipcRenderer.removeListener('qwen:chunk', handler);
+  },
+  onQwenError: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('qwen:error', handler);
+    return () => ipcRenderer.removeListener('qwen:error', handler);
+  },
+  onQwenDone: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('qwen:done', handler);
+    return () => ipcRenderer.removeListener('qwen:done', handler);
+  },
+
   // ─── Environment detection ────────────────────────────────────────────────
   isElectron: true,
 });

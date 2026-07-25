@@ -964,7 +964,7 @@ export default function App() {
     }
   };
 
-  const handleChatConfigChange = useCallback((patch: { chatRoute?: 'mcp' | 'api'; chatGrokModel?: string }) => {
+  const handleChatConfigChange = useCallback((patch: { chatRoute?: 'mcp' | 'api' | 'qwen'; chatGrokModel?: string; chatQwenModel?: string }) => {
     handleSaveSettings({ ...settings, ...patch });
   }, [settings, handleSaveSettings]);
 
@@ -3293,6 +3293,7 @@ export default function App() {
           settings={settings}
           chatRoute={settings.chatRoute ?? 'api'}
           chatGrokModel={settings.chatGrokModel ?? 'grok-4.5'}
+          chatQwenModel={settings.chatQwenModel ?? 'qwen3.8-max-preview'}
           onChatConfigChange={handleChatConfigChange}
         />
 
