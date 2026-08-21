@@ -14,6 +14,11 @@
     "baseUrl": ".",
     "paths": { "@/*": ["./src/*"] }
   },
-  "include": ["src"],
+  // Type-check the document persistence contract (DOC-02) alongside src.
+  // documents.ts pulls errors.ts transitively; other contract files are
+  // deliberately NOT included yet — they carry pre-existing type errors
+  // (projects.ts: AudioMetadata coercion, ChunkData casts) that are out of
+  // scope for the document lane and must be fixed separately.
+  "include": ["src", "shared/contracts/documents.ts"],
   "exclude": ["node_modules", "dist", "electron"]
 }

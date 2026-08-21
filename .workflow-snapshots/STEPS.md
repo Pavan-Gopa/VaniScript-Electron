@@ -72,7 +72,7 @@
 
 **Do:**
 - [x] [P3A.D1] Document import/preflight: DOCX/PDF/RTF/TXT/MD normalized state
-- [ ] [P3A.D2] Document project persistence: archive/languages/freshness
+- [x] [P3A.D2] Document project persistence: archive/languages/freshness
 - [ ] [P3A.D3] Semantic chunk planner: stable block chunk plans
 - [ ] [P3A.D4] Translation coordinator: pause/repair/commit
 - [ ] [P3A.D5] Editorial editor core: ProseMirror schema/transactions/undo

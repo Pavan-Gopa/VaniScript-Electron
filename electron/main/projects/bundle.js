@@ -29,6 +29,10 @@ const archiver = require('archiver');
 const yauzl = require('yauzl');
 
 const { validateProjectV3, PROJECT_SCHEMA_VERSION } = require('../../../shared/contracts/projects.ts');
+const {
+  validateDocumentArchive,
+  validateTranslationArchive,
+} = require('../../../shared/contracts/documents.ts');
 const { createAppError } = require('../../../shared/contracts/errors.ts');
 const { sanitizeProjectId, defaultProjectStore } = require('./projectStore.js');
 
@@ -305,6 +309,9 @@ async function importProjectBundle(archivePath, options = {}) {
     }
     const project = result.value;
     const safeId = sanitizeProjectId(project.projectId);
+    // Validate every document-lane sibling BEFORE promoting staging. The
+    // validated project type decides whether the archive is REQUIRED.
+    assertValidDocumentLane(projectDir, project.projectId, project.type);
     const dst = path.join(store.baseDirPath(), safeId);
 
     if (await exists(dst)) {
@@ -322,6 +329,91 @@ async function importProjectBundle(archivePath, options = {}) {
   } catch (err) {
     await removeExtracted();
     throw err;
+  }
+}
+
+/**
+ * Exhaustive document-lane validation BEFORE promotion (DOC-02): every
+ * checksum-valid sibling must ALSO be semantically valid and identity-
+ * matched, so a crafted bundle cannot smuggle in corrupt archives that only
+ * surface after import. The lane is REQUIRED for type=document projects —
+ * a document archive-less bundle would fail only at reopen, after it had
+ * already replaced anything in the store. Symmetrically, a translations
+ * lane without its document archive is rejected for EVERY project type:
+ * translations belong to the document lane, never stand alone. Read-path
+ * failures are CORRUPT_DATA.
+ */
+function assertValidDocumentLane(projectDir, projectId, projectType) {
+  const documentPath = path.join(projectDir, 'document.json');
+  const hasDocument = fs.existsSync(documentPath);
+  if (projectType === 'document' && !hasDocument) {
+    throw createAppError(
+      'CORRUPT_DATA',
+      `Bundle project "${projectId}" is type "document" but has no document.json archive`,
+    );
+  }
+  if (hasDocument) {
+    let parsed;
+    try {
+      parsed = JSON.parse(fs.readFileSync(documentPath, 'utf8'));
+    } catch (err) {
+      throw createAppError('CORRUPT_DATA', `Bundle document.json is not valid JSON (${err.message})`);
+    }
+    const result = validateDocumentArchive(parsed);
+    if (!result.ok) {
+      throw createAppError(
+        'CORRUPT_DATA',
+        `Bundle document.json failed validation: ${result.error.message}`,
+      );
+    }
+    if (result.value.projectId !== projectId) {
+      throw createAppError(
+        'CORRUPT_DATA',
+        `Bundle document.json belongs to project "${result.value.projectId}", not "${projectId}"`,
+      );
+    }
+  }
+
+  const translationsDir = path.join(projectDir, 'translations');
+  let names;
+  try {
+    names = fs.readdirSync(translationsDir);
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return;
+    throw createAppError('CORRUPT_DATA', `Bundle translations directory is unreadable (${err.message})`);
+  }
+  if (!hasDocument) {
+    // Reachable only when a translations directory exists without a
+    // document.json — the ENOENT return above already covered the
+    // no-lane-at-all case.
+    throw createAppError(
+      'CORRUPT_DATA',
+      `Bundle has a translations lane but no document.json archive for project "${projectId}"`,
+    );
+  }
+  for (const name of names.filter((n) => n.endsWith('.json')).sort()) {
+    const stem = name.slice(0, -'.json'.length);
+    const filePath = path.join(translationsDir, name);
+    let parsed;
+    try {
+      parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    } catch (err) {
+      throw createAppError('CORRUPT_DATA', `Bundle translation "${name}" is not valid JSON (${err.message})`);
+    }
+    const result = validateTranslationArchive(parsed);
+    if (!result.ok) {
+      throw createAppError(
+        'CORRUPT_DATA',
+        `Bundle translation "${name}" failed validation: ${result.error.message}`,
+      );
+    }
+    // The file stem is the naming authority, exactly as in the live store.
+    if (result.value.projectId !== projectId || result.value.language !== stem) {
+      throw createAppError(
+        'CORRUPT_DATA',
+        `Bundle translation "${name}" carries foreign identity (${result.value.projectId}/${result.value.language})`,
+      );
+    }
   }
 }
 

@@ -5,12 +5,12 @@ onboarding:
   model_pairs_confirmed: true
   completed_at: 2026-08-21T00:00:00Z
 current_step: P3A
-current_work_item_id: P3A.D2
+current_work_item_id: P3A.D3
 current_work_item: >-
-  Document project persistence: archive/languages/freshness. Gate: P3A.O2 persistence/restart.
+  Semantic chunk planner: stable block chunk plans. Gate: deterministic plans.
 step_description: >-
-  P3A Document lane; P3A.D1 CLOSED (full cycle green, backup push executed);
-  active item P3A.D2 — continuous pipeline per Human mandate.
+  P3A Document lane; P3A.D2 CLOSED (7 attempts, 6 review rounds, J2 met under
+  documented boundary, qa_green); active item P3A.D3 — continuous pipeline.
 completed_steps:
   - P0
   - P1
@@ -21,24 +21,17 @@ implementation:
   status: approved
   attempts: 7
   note: >-
-    P3A.D1 attempt 6 (P3AD1CoderFix4) closed the Tester3 blocker: PDF hex
-    strings decode correctly (token regex group 5 captures payload without
-    brackets; name/num/op groups shifted to 6/7/8; pdfHexToBytes hardened
-    against stray angle brackets via [<>\s] strip) plus 6 regressions (hex Tj,
-    TJ array, odd-nibble per PDF 32000-1 §7.3.4.3, intra-hex whitespace,
-    dict-path scalar/array forms, unterminated-hex CORRUPT_DATA). Main
-    verified independently: npm test 220/220, npm run compile clean, diff
-    confined to import.js hex handling + test file. Pre-existing parsePdfDict
-    no-space /ID [<hex>] over-consumption flagged untouched for Reviewer5
-    adjudication.
-    P3A.D1 attempt 7 (P3AD1CoderFix5) closed all three Tester4 defects:
-    shared escape-aware balanced-paren scanner scanPdfLiteralEnd
-    (MAX_PDF_LITERAL_DEPTH=32 content-stream, Infinity dict path), dict hex
-    advancement i+=1 at both delimiter sites, tokenizer literal dispatch with
-    hostile consumption past inner parens, parsePdfDict exported for golden
-    asserts. Lone backslash-paren dict input is now spec-correct CORRUPT_DATA;
-    A2 essence preserved via escaped-backslash tail fixture (flagged for
-    Reviewer6 adjudication). Main verified: 234/234, tsc clean, scope confined.
+    P3A.D2 attempt 1 (P3AD2Coder1, 42m): documentProjectStore.js (821 ln) —
+    versioned document.json archive + translations/<BCP-47>.json under the
+    P2.D6 atomic discipline; ProjectV3 revision as single optimistic-
+    concurrency token (bump first, then atomic content rewrite); freshness
+    computed from SHA-256 of block text (stale iff differs; source edit flips
+    only affected translations); span-tiling validation; CORRUPT_DATA on
+    I/O errors. projectStore.js +6: exports existing writeTempAtomic/
+    cleanupTemp/fileExists for reuse (no logic change). documents.ts +405
+    contract types. Tests +20 (documentProjectStore.test.js, 732 ln).
+    Main verified: 254/254, tsc clean, diff scoped. Coder's structured
+    report was contract-incomplete (requested via DM).
 retry_guard:
   max_attempts_without_progress: 3
   last_failure_signature: "Reviewer attempt-3 residuals: collectPages deep-chain RangeError, literal trailing-escape TypeError, ZIP offset/compSize trust, unclosed XML canImport, nested textbox part routing, sourceHash-per-part"
@@ -81,21 +74,17 @@ review:
   last_feedback_file: AI_Workflow_Kit/docs/AI/FEEDBACK.md
   verdict: approved
   note: >-
-    Reviewer6 delta (12m32s) approved Fix5 with ZERO findings: hex advances
-    exactly one char at all boundaries; scanner iterative (100k-deep literal
-    ~4ms) with sound -1 contract; tokenizer remap + lastIndex recovery clean;
-    hostile depth-33 masks nothing. A2 adjudicated ACCEPTABLE spec-correct
-    evolution (typed CORRUPT_DATA under J3; original intent was never raw
-    TypeError). Prior approvals unregressed; own documentImport run 48/48.
+    Reviewer6 (FINAL): B2/B3 closed; J2 MET under documented boundary;
+    single mechanical C1 fixed and Main-verified against the explicit
+    recipe. Two non-blocking notes transferred to P4 backlog.
 qa:
   status: passed
-  suite: documentImport + full Electron suite
+  suite: documentProjectStore + full Electron suite
   bugs_open: 0
   note: >-
-    P3A.D1 QA closed green: deep round found 3 defects, Fix5 closed all three,
-    Reviewer6 approved with zero findings, focused confirmation (P3AD1Tester5)
-    returned qa_green 234/234 / tsc clean. Suite grew 208 -> 234 across the
-    item. Next: P3A.D2 persistence.
+    D2 closed green: deep adversarial convergence across 6 review rounds;
+    focused confirmation qa_green 297/297, tsc clean incl. contracts
+    coverage. Suite grew 234 -> 297.
 next_actor: coder
 plan_files:
   - Electron/docs_VANISCRIPT_APPLE_SILICON_TO_ELECTRON_MIGRATION_PLAN.md
@@ -106,8 +95,7 @@ checkpoint:
   last_pre_tag: null
   last_post_tag: null
   last_commit: null
-  last_attempt: P3A.D1
-  note: P3A.D1 CLOSED (cycle green; backup push executed per Human policy). Active P3A.D2 — continuous pipeline, no pause.
+  note: P3A.D1 closed+pushed (079a512). P3A.D2 closing with backup push #2; then P3A.D3 dispatch. Continuous pipeline per Human.
 notes: |
   2026-08-21 canonical state repair: STEPS.md rewritten as Step Cards (P0..P5) with
   stable IDs <step>.D/O/J; current_step restored; completed_steps limited to

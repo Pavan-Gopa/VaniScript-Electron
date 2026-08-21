@@ -4,8 +4,10 @@
  * This is the shared Main/Renderer/Worker contract for the document feature
  * lane. DOC-01 owns the import + preflight slice: turning a raw DOCX/PDF/RTF/
  * TXT/MD byte buffer into a normalized `NormalizedDocument` (structural
- * blocks + inline spans + a preflight report). Later DOC steps (persistence,
- * chunk planning, translation, editorial) extend this shape but never redefine
+ * blocks + inline spans + a preflight report). DOC-02 adds the persistence
+ * slice: the versioned `DocumentArchive` and per-language `TranslationArchive`
+ * schemas plus BCP-47 normalization. Later DOC steps (chunk planning,
+ * translation, editorial) extend this shape but never redefine
  * these invariants.
  *
  * Design constraints (migration plan §3, §10.3, §10.4):
@@ -90,7 +92,16 @@ export interface SpanTrait {
   color?: string;
 }
 
-/** A contiguous run of text inside a block sharing one trait set. */
+/**
+ * A contiguous run of text inside a block sharing one trait set.
+ *
+ * Indexing rule: `start`/`end` are offsets in UTF-16 code units over the
+ * owning block's `text` (`start` inclusive, `end` exclusive) — plain
+ * JavaScript string indices, so `span.text === block.text.slice(span.start,
+ * span.end)` always holds. Offsets MAY fall inside a surrogate pair: content
+ * integrity is guaranteed by the slice equality, not by code-point
+ * alignment, and validators enforce exactly that equality.
+ */
 export interface Span {
   spanId: string;
   blockId: string;
@@ -246,7 +257,8 @@ function fail(code: ErrorCode, message: string, details?: unknown): ValidationEr
 function coerceTrait(v: unknown): SpanTrait | undefined {
   if (!isPlainObject(v)) return undefined;
   const out: SpanTrait = {};
-  const keys: (keyof SpanTrait)[] = [
+  // The optional boolean traits, keyed exactly as they appear on SpanTrait.
+  const keys = [
     'bold',
     'italic',
     'underline',
@@ -254,9 +266,9 @@ function coerceTrait(v: unknown): SpanTrait | undefined {
     'superScript',
     'subScript',
     'smallCaps',
-  ];
+  ] as const;
   for (const k of keys) {
-    const b = bool(v[k]);
+    const b: boolean | undefined = bool(v[k]);
     if (b !== undefined) out[k] = b;
   }
   const color = str(v.color);
@@ -309,6 +321,49 @@ function validateBlock(v: unknown): ValidationOk<Block> | ValidationErr {
     const r = validateSpan(s);
     if (!r.ok) return r;
     spans.push(r.value);
+  }
+  // Exact-tiling invariant (plan §10.4): spans tile `text` contiguously,
+  // completely, and exactly once — ordered, non-empty, integer-bounded in
+  // UTF-16 code units (see Span), text-faithful, owned by this block, and
+  // uniquely identified. An empty text is tiled by exactly zero spans.
+  let prevEnd = 0;
+  const seenSpanIds = new Set<string>();
+  for (const span of spans) {
+    if (
+      !Number.isInteger(span.start) ||
+      !Number.isInteger(span.end) ||
+      span.start < 0 ||
+      span.end <= span.start ||
+      span.end > text.length
+    ) {
+      return fail(
+        'VALIDATION_FAILED',
+        `span "${span.spanId}" must be integer-bounded within 0..${text.length} and non-empty.`,
+      );
+    }
+    if (span.start !== prevEnd) {
+      return fail(
+        'VALIDATION_FAILED',
+        `spans must tile the block text contiguously: "${span.spanId}" starts at ${span.start}, expected ${prevEnd}.`,
+      );
+    }
+    if (span.text !== text.slice(span.start, span.end)) {
+      return fail('VALIDATION_FAILED', `span "${span.spanId}".text does not equal its slice of the block text.`);
+    }
+    if (span.blockId !== blockId) {
+      return fail('VALIDATION_FAILED', `span "${span.spanId}" must belong to block "${blockId}".`);
+    }
+    if (seenSpanIds.has(span.spanId)) {
+      return fail('VALIDATION_FAILED', `duplicate spanId "${span.spanId}" in block "${blockId}".`);
+    }
+    seenSpanIds.add(span.spanId);
+    prevEnd = span.end;
+  }
+  if (prevEnd !== text.length) {
+    return fail(
+      'VALIDATION_FAILED',
+      `spans must cover the block text exactly (covered 0..${prevEnd} of ${text.length}).`,
+    );
   }
   const block: Block = {
     blockId,
@@ -461,4 +516,491 @@ export function validateNormalizedDocument(raw: unknown): DocumentValidationResu
 /** Type guard: true iff `raw` is a structurally valid normalized document. */
 export function isNormalizedDocument(raw: unknown): raw is NormalizedDocument {
   return validateNormalizedDocument(raw).ok;
+}
+
+// ============================================================================
+// DOC-02 — Document project persistence (plan §10.4, §10.5, §10.9, §10.11)
+// ============================================================================
+
+/** Current document archive schema version. Bump on shape change. */
+export const DOCUMENT_ARCHIVE_SCHEMA_VERSION = 1 as const;
+export type DocumentArchiveSchemaVersion = typeof DOCUMENT_ARCHIVE_SCHEMA_VERSION;
+
+/** Current per-language translation archive schema version. */
+export const TRANSLATION_ARCHIVE_SCHEMA_VERSION = 1 as const;
+export type TranslationArchiveSchemaVersion = typeof TRANSLATION_ARCHIVE_SCHEMA_VERSION;
+
+/**
+ * Translation/protection policy for a block or span (plan §10.4). Absent
+ * policy means `translate`; `protect` marks content that must never be sent
+ * to a provider.
+ */
+export interface TranslationPolicy {
+  action: 'translate' | 'protect';
+  /** Optional human-readable reason (editor tooltip). */
+  note?: string;
+}
+
+/** Review/approval state of one block translation (plan §10.4). */
+export type TranslationStatus = 'draft' | 'needs-review' | 'approved';
+
+/**
+ * Provenance recorded once per language variant (plan §10.5): every variant
+ * knows exactly how it was produced so retranslation and audit decisions are
+ * reproducible. The record is ALWAYS complete: validators normalize absent
+ * `model`/`profile`/`promptVersion`/`glossaryRevision` values to the
+ * explicit `'unknown'` sentinel (see `UNKNOWN_PROVENANCE`) rather than
+ * leaving holes in the audit trail.
+ */
+export interface LanguageVariantMeta {
+  provider: string;
+  /** Model id used; `'unknown'` when not recorded. */
+  model: string;
+  /** Provider profile used; `'unknown'` when not recorded. */
+  profile: string;
+  /** Prompt version used; `'unknown'` when not recorded. */
+  promptVersion: string;
+  /** Glossary revision used; `'unknown'` when not recorded. */
+  glossaryRevision: string;
+  /**
+   * Canonical SHA-256 hex (lowercase, 64 chars) of the document source state
+   * the variant was created against.
+   */
+  sourceHash: string;
+}
+
+/** One block's translation inside a language variant. */
+export interface BlockTranslation {
+  blockId: string;
+  /** Current translated text of the block. */
+  text: string;
+  /**
+   * Canonical SHA-256 hex (lowercase, 64 chars) of the source block text at
+   * translation time. Freshness is computed by comparing this against the
+   * hash of the current block text (§10.9): a source edit flips only the
+   * affected blocks stale and never deletes the translation (editor
+   * invariant #4).
+   */
+  sourceHash: string;
+  status: TranslationStatus;
+  updatedAt: string;
+}
+
+/**
+ * Persisted document project state — one `document.json` inside the project
+ * directory, written under the project v3 store's atomic/revision discipline.
+ * Captures the normalized import plus everything the editorial lane mutates:
+ * working-copy blocks, per-block edit baselines, protection policies and the
+ * undo recovery boundary. Language variants live in sibling per-BCP-47 files.
+ */
+export interface DocumentArchive {
+  schemaVersion: DocumentArchiveSchemaVersion;
+  projectId: string;
+  format: DocumentFormat;
+  title: string;
+  /** Immutable original asset reference (plan §10.4, invariant #6). */
+  sourceAsset: SourceAssetRef;
+  /** Preflight metadata/warnings captured at import time (plan §10.4). */
+  preflight: PreflightReport;
+  /** Working-copy blocks: stable blockIds preserved, user edits applied. */
+  blocks: Block[];
+  /**
+   * Imported baseline kept for every user-modified block, keyed by blockId.
+   * First edit wins: the baseline is the block exactly as imported, so later
+   * merges/reports can diff against the true original.
+   */
+  editBaselines: Record<string, Block>;
+  /** Per-block policy overrides; absent means `translate`. */
+  blockPolicies: Record<string, TranslationPolicy>;
+  /** Per-span policy overrides; absent means inherit the block policy. */
+  spanPolicies: Record<string, TranslationPolicy>;
+  /**
+   * Monotonic counter bumped by every persisted source edit. Reopen restores
+   * this value; undo history before it is the recovery boundary (§10.11) —
+   * the editor starts a fresh undo stack anchored here.
+   */
+  editEpoch: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Per-language translation archive (`translations/<language>.json`), keyed by
+ * the normalized BCP-47 tag, which is also the file stem. Adding a language
+ * creates a NEW archive and never mutates existing ones (plan §10.5).
+ */
+export interface TranslationArchive {
+  schemaVersion: TranslationArchiveSchemaVersion;
+  projectId: string;
+  /** Canonical (normalized) BCP-47 tag; also the archive file stem. */
+  language: string;
+  meta: LanguageVariantMeta;
+  /** Block translations keyed by blockId (`entry.blockId === key`). */
+  blocks: Record<string, BlockTranslation>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type BlockFreshness = 'missing' | 'stale' | 'fresh';
+
+/** Per-block review filter entry (plan §10.9: All / Needs Review / Stale / Approved). */
+export interface BlockFreshnessInfo {
+  freshness: BlockFreshness;
+  status: TranslationStatus | 'missing';
+}
+
+/** Computed freshness/approval summary for one language variant (§10.9). */
+export interface FreshnessReport {
+  language: string;
+  totalBlocks: number;
+  translated: number;
+  fresh: number;
+  stale: number;
+  missing: number;
+  approved: number;
+  needsReview: number;
+  /** Detail per blockId for review filters and navigation highlights. */
+  blocks: Record<string, BlockFreshnessInfo>;
+}
+
+/** Sentinel persisted when a provenance field was not recorded. */
+export const UNKNOWN_PROVENANCE = 'unknown' as const;
+
+const CANONICAL_SHA256_PATTERN = /^[0-9a-f]{64}$/;
+
+/** True iff `value` is a canonical lowercase 64-char hex SHA-256 digest. */
+export function isCanonicalSha256(value: unknown): value is string {
+  return typeof value === 'string' && CANONICAL_SHA256_PATTERN.test(value);
+}
+
+/** Result of structurally validating an unknown value as a document archive. */
+export type DocumentArchiveValidationResult = ValidationOk<DocumentArchive> | ValidationErr;
+
+/** Result of structurally validating an unknown value as a translation archive. */
+export type TranslationValidationResult = ValidationOk<TranslationArchive> | ValidationErr;
+
+/**
+ * Structural tag pattern. One deliberate extension over the plain regular
+ * grammar: the private-use singleton `x` is accepted as the FIRST subtag so
+ * whole-tag private-use forms (`x-private`) normalize like any other tag.
+ * Underscores are never accepted — callers must convert `_`-separated aliases
+ * to `-` before calling; `normalizeBcp47('en_US')` returns `null`.
+ */
+const BCP47_TAG_PATTERN = /^(?:[A-Za-z]{2,8}|[Xx])(?:-[A-Za-z0-9]{1,8})*$/;
+
+/**
+ * Normalize a BCP-47 language tag to canonical case, context-aware per
+ * RFC 5646 §2.1: primary language lowercase; script subtags Titlecase;
+ * alpha-2 region subtags uppercase; everything after an extension singleton
+ * (`u`, `t`, ...) or the private-use singleton `x` lowercase — extension
+ * keys AND their subtags carry no uppercase (so `en-U-CA-Gregory` and
+ * `en-u-ca-gregory` both normalize to `en-u-ca-gregory`); variants and
+ * numeric regions normalize to their inherent case.
+ *
+ * Grandfathered tags are not special-cased: irregular `i-*` forms fail the
+ * structural pattern and return `null`; legacy tags that happen to match the
+ * regular grammar (`sgn-BE-FR`, `art-lojban`, ...) pass through the normal
+ * rules stably. Callers should canonicalize truly legacy tags upstream (e.g.
+ * `Intl.getCanonicalLocales`).
+ *
+ * Returns `null` for structurally invalid tags. The normalized tag is the
+ * translation archive key and file stem, so it is restricted to characters
+ * that are safe in a file name.
+ */
+export function normalizeBcp47(tag: string): string | null {
+  if (typeof tag !== 'string' || !BCP47_TAG_PATTERN.test(tag)) return null;
+  const out: string[] = [];
+  const subtags = tag.split('-');
+  // Parsing context: 'lang' until an extension/private-use singleton flips
+  // the remainder of the tag into case-insensitive territory.
+  let context = 'lang';
+  for (let i = 0; i < subtags.length; i++) {
+    const s = subtags[i];
+    if (i === 0) {
+      // Primary language subtag — or a whole-tag private-use marker, which
+      // puts the remainder into case-insensitive territory.
+      out.push(s.toLowerCase());
+      if (s.toLowerCase() === 'x') context = 'privateuse';
+      continue;
+    }
+    if (s.length === 1) {
+      // Singleton subtag: extension key or private-use marker.
+      out.push(s.toLowerCase());
+      context = s.toLowerCase() === 'x' ? 'privateuse' : 'extension';
+      continue;
+    }
+    if (context !== 'lang') {
+      // Extension keys/subtags and private-use subtags are lowercase.
+      out.push(s.toLowerCase());
+      continue;
+    }
+    if (s.length === 4 && /^[A-Za-z]{4}$/.test(s)) {
+      // Script subtag: Titlecase.
+      out.push(s[0].toUpperCase() + s.slice(1).toLowerCase());
+    } else if (s.length === 2 && /^[A-Za-z]{2}$/.test(s)) {
+      // Alpha-2 region subtag: uppercase.
+      out.push(s.toUpperCase());
+    } else {
+      // Variants (5-8 alphanumerics or 4 starting with a digit) and numeric
+      // regions have no upper case — normalized lowercase.
+      out.push(s.toLowerCase());
+    }
+  }
+  return out.join('-');
+}
+
+function validatePolicy(v: unknown): ValidationOk<TranslationPolicy> | ValidationErr {
+  if (!isPlainObject(v)) return fail('VALIDATION_FAILED', 'Policy must be an object.');
+  const action = str(v.action);
+  if (action !== 'translate' && action !== 'protect') {
+    return fail('VALIDATION_FAILED', `policy.action invalid: ${action}`);
+  }
+  const policy: TranslationPolicy = { action };
+  const note = str(v.note);
+  if (note !== undefined) policy.note = note;
+  return { ok: true, value: policy };
+}
+
+function validatePolicyRecord(
+  v: unknown,
+  label: string,
+): ValidationOk<Record<string, TranslationPolicy>> | ValidationErr {
+  if (!isPlainObject(v)) return fail('VALIDATION_FAILED', `${label} must be an object.`);
+  const out: Record<string, TranslationPolicy> = {};
+  for (const [key, value] of Object.entries(v)) {
+    if (!key) return fail('VALIDATION_FAILED', `${label} has an empty key.`);
+    const r = validatePolicy(value);
+    if (!r.ok) return fail('VALIDATION_FAILED', `${label}[${key}]: ${r.error.message}`);
+    out[key] = r.value;
+  }
+  return { ok: true, value: out };
+}
+
+function validateBlockRecord(
+  v: unknown,
+  label: string,
+): ValidationOk<Record<string, Block>> | ValidationErr {
+  if (!isPlainObject(v)) return fail('VALIDATION_FAILED', `${label} must be an object.`);
+  const out: Record<string, Block> = {};
+  for (const [key, value] of Object.entries(v)) {
+    if (!key) return fail('VALIDATION_FAILED', `${label} has an empty key.`);
+    const r = validateBlock(value);
+    if (!r.ok) return fail('VALIDATION_FAILED', `${label}[${key}]: ${r.error.message}`);
+    out[key] = r.value;
+  }
+  return { ok: true, value: out };
+}
+
+function validateSourceAsset(v: unknown): ValidationOk<SourceAssetRef> | ValidationErr {
+  if (!isPlainObject(v)) return fail('VALIDATION_FAILED', 'sourceAsset must be an object.');
+  const ref = str(v.ref);
+  const hash = str(v.hash);
+  const sizeBytes = num(v.sizeBytes);
+  const fileName = str(v.fileName);
+  if (!ref || !hash || sizeBytes === undefined || !fileName) {
+    return fail('VALIDATION_FAILED', 'sourceAsset missing required fields.');
+  }
+  return { ok: true, value: { ref, hash, sizeBytes, fileName } };
+}
+
+/**
+ * Validate (and structurally normalize) an unknown value as a strict
+ * `DocumentArchive`. Block IDs must be unique; timestamps and IDs non-empty.
+ */
+export function validateDocumentArchive(raw: unknown): DocumentArchiveValidationResult {
+  if (!isPlainObject(raw)) {
+    return fail('VALIDATION_FAILED', 'DocumentArchive must be an object.');
+  }
+  const declared = num(raw.schemaVersion);
+  if (declared !== DOCUMENT_ARCHIVE_SCHEMA_VERSION) {
+    return fail(
+      'VALIDATION_FAILED',
+      `Unsupported document archive schemaVersion: expected ${DOCUMENT_ARCHIVE_SCHEMA_VERSION}, got ${declared}`,
+    );
+  }
+  const projectId = str(raw.projectId);
+  if (!projectId) return fail('VALIDATION_FAILED', 'archive.projectId is required.');
+  const format = str(raw.format);
+  if (!format || !DOCUMENT_FORMATS.includes(format as DocumentFormat)) {
+    return fail('VALIDATION_FAILED', `archive.format invalid: ${format}`);
+  }
+  const title = str(raw.title);
+  if (!title) return fail('VALIDATION_FAILED', 'archive.title is required.');
+  const sourceAsset = validateSourceAsset(raw.sourceAsset);
+  if (!sourceAsset.ok) return sourceAsset;
+  const preflight = validatePreflight(raw.preflight);
+  if (!preflight.ok) return preflight;
+  if (!Array.isArray(raw.blocks)) return fail('VALIDATION_FAILED', 'archive.blocks must be an array.');
+  const blocks: Block[] = [];
+  const seen = new Set<string>();
+  for (const b of raw.blocks) {
+    const r = validateBlock(b);
+    if (!r.ok) return r;
+    if (seen.has(r.value.blockId)) {
+      return fail('VALIDATION_FAILED', `archive.blocks contains duplicate blockId "${r.value.blockId}".`);
+    }
+    seen.add(r.value.blockId);
+    blocks.push(r.value);
+  }
+  const editBaselines = validateBlockRecord(raw.editBaselines, 'archive.editBaselines');
+  if (!editBaselines.ok) return editBaselines;
+  const blockPolicies = validatePolicyRecord(raw.blockPolicies, 'archive.blockPolicies');
+  if (!blockPolicies.ok) return blockPolicies;
+  const spanPolicies = validatePolicyRecord(raw.spanPolicies, 'archive.spanPolicies');
+  if (!spanPolicies.ok) return spanPolicies;
+  const editEpoch = num(raw.editEpoch);
+  if (editEpoch === undefined || !Number.isInteger(editEpoch) || editEpoch < 0) {
+    return fail('VALIDATION_FAILED', 'archive.editEpoch must be a non-negative integer.');
+  }
+  const createdAt = str(raw.createdAt);
+  if (!createdAt) return fail('VALIDATION_FAILED', 'archive.createdAt is required.');
+  const updatedAt = str(raw.updatedAt);
+  if (!updatedAt) return fail('VALIDATION_FAILED', 'archive.updatedAt is required.');
+  return {
+    ok: true,
+    value: {
+      schemaVersion: DOCUMENT_ARCHIVE_SCHEMA_VERSION,
+      projectId,
+      format: format as DocumentFormat,
+      title,
+      sourceAsset: sourceAsset.value,
+      preflight: preflight.value,
+      blocks,
+      editBaselines: editBaselines.value,
+      blockPolicies: blockPolicies.value,
+      spanPolicies: spanPolicies.value,
+      editEpoch,
+      createdAt,
+      updatedAt,
+    },
+  };
+}
+
+/** Type guard: true iff `raw` is a structurally valid document archive. */
+export function isDocumentArchive(raw: unknown): raw is DocumentArchive {
+  return validateDocumentArchive(raw).ok;
+}
+
+function validateLanguageVariantMeta(
+  v: unknown,
+): ValidationOk<LanguageVariantMeta> | ValidationErr {
+  if (!isPlainObject(v)) return fail('VALIDATION_FAILED', 'meta must be an object.');
+  const provider = str(v.provider);
+  if (!provider) return fail('VALIDATION_FAILED', 'meta.provider is required.');
+  const sourceHash = str(v.sourceHash);
+  if (!sourceHash) return fail('VALIDATION_FAILED', 'meta.sourceHash is required.');
+  if (!isCanonicalSha256(sourceHash)) {
+    return fail(
+      'VALIDATION_FAILED',
+      'meta.sourceHash must be a canonical SHA-256 digest (lowercase 64-char hex).',
+    );
+  }
+  // Provenance completeness (plan §10.5): unrecorded fields persist as the
+  // explicit 'unknown' sentinel instead of leaving the audit trail holey.
+  const meta: LanguageVariantMeta = { provider, sourceHash } as LanguageVariantMeta;
+  for (const key of ['model', 'profile', 'promptVersion', 'glossaryRevision'] as const) {
+    const value = v[key];
+    if (value === undefined || value === null) {
+      meta[key] = UNKNOWN_PROVENANCE;
+      continue;
+    }
+    const s = str(value);
+    if (!s) {
+      return fail('VALIDATION_FAILED', `meta.${key} must be a non-empty string when recorded.`);
+    }
+    meta[key] = s;
+  }
+  return { ok: true, value: meta };
+}
+
+function validateBlockTranslation(
+  v: unknown,
+  key: string,
+): ValidationOk<BlockTranslation> | ValidationErr {
+  if (!isPlainObject(v)) return fail('VALIDATION_FAILED', 'Block translation must be an object.');
+  const blockId = str(v.blockId);
+  if (!blockId) return fail('VALIDATION_FAILED', 'translation.blockId is required.');
+  if (blockId !== key) {
+    return fail('VALIDATION_FAILED', `translation key "${key}" does not match blockId "${blockId}".`);
+  }
+  const text = str(v.text);
+  if (text === undefined) return fail('VALIDATION_FAILED', 'translation.text is required.');
+  const sourceHash = str(v.sourceHash);
+  if (!sourceHash) return fail('VALIDATION_FAILED', 'translation.sourceHash is required.');
+  if (!isCanonicalSha256(sourceHash)) {
+    return fail(
+      'VALIDATION_FAILED',
+      'translation.sourceHash must be a canonical SHA-256 digest (lowercase 64-char hex).',
+    );
+  }
+  const status = str(v.status);
+  if (status !== 'draft' && status !== 'needs-review' && status !== 'approved') {
+    return fail('VALIDATION_FAILED', `translation.status invalid: ${status}`);
+  }
+  const updatedAt = str(v.updatedAt);
+  if (!updatedAt) return fail('VALIDATION_FAILED', 'translation.updatedAt is required.');
+  return {
+    ok: true,
+    value: { blockId, text, sourceHash, status: status as TranslationStatus, updatedAt },
+  };
+}
+
+/**
+ * Validate (and structurally normalize) an unknown value as a strict
+ * `TranslationArchive`. The language tag must already be in normalized
+ * (canonical) form — producers run `normalizeBcp47` first.
+ */
+export function validateTranslationArchive(raw: unknown): TranslationValidationResult {
+  if (!isPlainObject(raw)) {
+    return fail('VALIDATION_FAILED', 'TranslationArchive must be an object.');
+  }
+  const declared = num(raw.schemaVersion);
+  if (declared !== TRANSLATION_ARCHIVE_SCHEMA_VERSION) {
+    return fail(
+      'VALIDATION_FAILED',
+      `Unsupported translation archive schemaVersion: expected ${TRANSLATION_ARCHIVE_SCHEMA_VERSION}, got ${declared}`,
+    );
+  }
+  const projectId = str(raw.projectId);
+  if (!projectId) return fail('VALIDATION_FAILED', 'translation archive.projectId is required.');
+  const language = str(raw.language);
+  if (!language) return fail('VALIDATION_FAILED', 'translation archive.language is required.');
+  if (normalizeBcp47(language) !== language) {
+    return fail(
+      'VALIDATION_FAILED',
+      `translation archive.language must be a normalized BCP-47 tag, got "${language}".`,
+    );
+  }
+  const meta = validateLanguageVariantMeta(raw.meta);
+  if (!meta.ok) return meta;
+  if (!isPlainObject(raw.blocks)) {
+    return fail('VALIDATION_FAILED', 'translation archive.blocks must be an object.');
+  }
+  const blocks: Record<string, BlockTranslation> = {};
+  for (const [key, value] of Object.entries(raw.blocks)) {
+    const r = validateBlockTranslation(value, key);
+    if (!r.ok) return r;
+    blocks[key] = r.value;
+  }
+  const createdAt = str(raw.createdAt);
+  if (!createdAt) return fail('VALIDATION_FAILED', 'translation archive.createdAt is required.');
+  const updatedAt = str(raw.updatedAt);
+  if (!updatedAt) return fail('VALIDATION_FAILED', 'translation archive.updatedAt is required.');
+  return {
+    ok: true,
+    value: {
+      schemaVersion: TRANSLATION_ARCHIVE_SCHEMA_VERSION,
+      projectId,
+      language,
+      meta: meta.value,
+      blocks,
+      createdAt,
+      updatedAt,
+    },
+  };
+}
+
+/** Type guard: true iff `raw` is a structurally valid translation archive. */
+export function isTranslationArchive(raw: unknown): raw is TranslationArchive {
+  return validateTranslationArchive(raw).ok;
 }

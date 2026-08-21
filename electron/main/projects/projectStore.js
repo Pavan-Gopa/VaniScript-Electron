@@ -292,7 +292,11 @@ module.exports = {
   createProjectStore,
   getDefaultBaseDir,
   defaultProjectStore,
-  // exported for tests / reuse
+  // exported for tests / reuse (documentProjectStore shares the atomic
+  // temp+fsync+rename discipline for document.json and translations/*.json)
   sanitizeProjectId,
   readRevision,
+  fileExists,
+  writeTempAtomic,
+  cleanupTemp,
 };
