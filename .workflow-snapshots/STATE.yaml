@@ -1,0 +1,142 @@
+schema_version: 2
+project_prefix: vaniscript-electron
+onboarding:
+  status: complete
+  model_pairs_confirmed: true
+  completed_at: 2026-08-21T00:00:00Z
+current_step: P3A
+current_work_item_id: P3A.D2
+current_work_item: >-
+  Document project persistence: archive/languages/freshness. Gate: P3A.O2 persistence/restart.
+step_description: >-
+  P3A Document lane; P3A.D1 CLOSED (full cycle green, backup push executed);
+  active item P3A.D2 — continuous pipeline per Human mandate.
+completed_steps:
+  - P0
+  - P1
+  - P2
+skipped_steps: []
+parked_steps: []
+implementation:
+  status: approved
+  attempts: 7
+  note: >-
+    P3A.D1 attempt 6 (P3AD1CoderFix4) closed the Tester3 blocker: PDF hex
+    strings decode correctly (token regex group 5 captures payload without
+    brackets; name/num/op groups shifted to 6/7/8; pdfHexToBytes hardened
+    against stray angle brackets via [<>\s] strip) plus 6 regressions (hex Tj,
+    TJ array, odd-nibble per PDF 32000-1 §7.3.4.3, intra-hex whitespace,
+    dict-path scalar/array forms, unterminated-hex CORRUPT_DATA). Main
+    verified independently: npm test 220/220, npm run compile clean, diff
+    confined to import.js hex handling + test file. Pre-existing parsePdfDict
+    no-space /ID [<hex>] over-consumption flagged untouched for Reviewer5
+    adjudication.
+    P3A.D1 attempt 7 (P3AD1CoderFix5) closed all three Tester4 defects:
+    shared escape-aware balanced-paren scanner scanPdfLiteralEnd
+    (MAX_PDF_LITERAL_DEPTH=32 content-stream, Infinity dict path), dict hex
+    advancement i+=1 at both delimiter sites, tokenizer literal dispatch with
+    hostile consumption past inner parens, parsePdfDict exported for golden
+    asserts. Lone backslash-paren dict input is now spec-correct CORRUPT_DATA;
+    A2 essence preserved via escaped-backslash tail fixture (flagged for
+    Reviewer6 adjudication). Main verified: 234/234, tsc clean, scope confined.
+retry_guard:
+  max_attempts_without_progress: 3
+  last_failure_signature: "Reviewer attempt-3 residuals: collectPages deep-chain RangeError, literal trailing-escape TypeError, ZIP offset/compSize trust, unclosed XML canImport, nested textbox part routing, sourceHash-per-part"
+  repeated_failure_count: 0
+  blocker: null # cleared 2026-08-21 ~14:41Z — Human authorized one more same-model Tester attempt
+omp:
+  last_result_artifact: null
+  active_agent: null
+  active_role: coder
+  status: dispatched
+  role: coder
+  primary_agent: workflow-coder
+  failed_model: "opencode-zen/muse-spark-1.2-contributor-free:xhigh (Tester; 429 FreeUsageLimitError x2 sessions after 10 retries each: 13:37:11Z, 13:56:50Z)"
+  evidence: null # history://P3AD1Tester2 expired (process-local); failure recorded in FEEDBACK.md
+  backup_agent: null
+  human_instruction: >-
+    Standing policy (2026-08-21, updated ~15:35Z): после официального закрытия
+    шага/цикла (Coder approved -> Reviewer approved -> Tester verified by Main)
+    Main коммитит и пушит проверенный код в продуктовый репозиторий
+    VaniScript-Electron вместе с GitHub Actions workflows и зеркалом
+    воркфлоу-памяти (.workflow-snapshots/) как страховочный бэкап-рестор.
+    НОВОЕ: «после этого шага останавливаться не нужно — продолжай до конца,
+    пока не закончатся все шаги»: пауза после P3A.D1 ОТМЕНЕНА, Main ведёт
+    конвейер P3A.D2..P5 непрерывно. Середина цикла — никогда. Внешний
+    смешанный workspace целиком не пушить без отдельной явной инструкции.
+  authorized_at: 2026-08-21T15:36:00Z
+interruption:
+  status: none
+  role: null
+  run_id: null
+  candidate_id: null
+  classification: null
+  recovered_artifact: null
+  recorded_at: null
+human_acceptance:
+  status: required
+  evidence: Automated coder-reviewer-tester cycle authorized by Human.
+review:
+  status: approved
+  last_feedback_file: AI_Workflow_Kit/docs/AI/FEEDBACK.md
+  verdict: approved
+  note: >-
+    Reviewer6 delta (12m32s) approved Fix5 with ZERO findings: hex advances
+    exactly one char at all boundaries; scanner iterative (100k-deep literal
+    ~4ms) with sound -1 contract; tokenizer remap + lastIndex recovery clean;
+    hostile depth-33 masks nothing. A2 adjudicated ACCEPTABLE spec-correct
+    evolution (typed CORRUPT_DATA under J3; original intent was never raw
+    TypeError). Prior approvals unregressed; own documentImport run 48/48.
+qa:
+  status: passed
+  suite: documentImport + full Electron suite
+  bugs_open: 0
+  note: >-
+    P3A.D1 QA closed green: deep round found 3 defects, Fix5 closed all three,
+    Reviewer6 approved with zero findings, focused confirmation (P3AD1Tester5)
+    returned qa_green 234/234 / tsc clean. Suite grew 208 -> 234 across the
+    item. Next: P3A.D2 persistence.
+next_actor: coder
+plan_files:
+  - Electron/docs_VANISCRIPT_APPLE_SILICON_TO_ELECTRON_MIGRATION_PLAN.md
+  - AI_Workflow_Kit/docs/STEPS.md
+coder_brief: null
+designer_brief: null
+checkpoint:
+  last_pre_tag: null
+  last_post_tag: null
+  last_commit: null
+  last_attempt: P3A.D1
+  note: P3A.D1 CLOSED (cycle green; backup push executed per Human policy). Active P3A.D2 — continuous pipeline, no pause.
+notes: |
+  2026-08-21 canonical state repair: STEPS.md rewritten as Step Cards (P0..P5) with
+  stable IDs <step>.D/O/J; current_step restored; completed_steps limited to
+  current-plan card IDs. Dashboard contract restored without dashboard changes.
+  Legacy work-package ID map (historical; FEEDBACK.md still uses old IDs):
+  FND-00->P0.D1; FND-01->P1.D1; FND-02->P1.D2; FND-03->P1.D3; SEC-01->P1.D4;
+  NAV-01->P1.D5; SET-01->P2.D1; SET-02->P2.D2; SET-03->P2.D3; SET-04->P2.D4;
+  PROJ-01->P2.D5; PROJ-02->P2.D6; PROJ-03->P2.D7; CAP-01->P2.D8; PRV-01->P2.D9;
+  MOD-01->P2.D10; DOC-01..08->P3A.D1..D8; BAT-01..06->P3B.D1..D6;
+  MCP-01..05->P3C.D1..D5; UPD-01..03->P3D.D1..D3; MED-01..03->P3E.D1..D3;
+  SHT-01..02->P3E.D4..D5; HLP-01->P4.D1; OBS-01->P4.D2; PERF-01->P4.D3;
+  QA-01->P4.D4; QA-02->P4.D5; REL-01->P5.D1; REL-02->P5.D2.
+  Pre-repair completed_steps (all covered by cards P0, P1, P2): FND-00, FND-01,
+  FND-02, FND-03, SEC-01, NAV-01, SET-01, SET-02, SET-03, SET-04, PROJ-01, PROJ-02,
+  PROJ-03, CAP-01, PRV-01, MOD-01.
+  Human instruction history: dispatch Coder for P3A.D1 Reviewer edge cases
+  (pause-after-D1 SUPERSEDED 2026-08-21 ~15:35Z by "продолжай дальше до конца,
+  пока не закончатся все шаги" — continuous pipeline P3A.D2..P5).
+  Push/backup policy (Human, 2026-08-21): after a step officially closes
+  (Coder approved -> Reviewer approved -> Tester verified by Main) Main commits
+  and pushes the product repo VaniScript-Electron, including an adapted GitHub
+  Actions workflow, AND mirrors canonical workflow memory (STATE.yaml,
+  STEPS.md, FEEDBACK.md) into Electron/.workflow-snapshots/ in the same
+  commit — force-majeure backup chosen by Human from offered options.
+  Mid-cycle pushes and whole-workspace pushes are prohibited without explicit
+  Human instruction.
+  SUPERSEDED follow-up ruling (was Reviewer5 minor/non-blocking): Tester4
+  evidence escalated the parsePdfDict hex defect into P3A.D1 scope — :1169
+  i += 2 silently drops the first nibble of scalar hex strings and :1174 i += 2
+  breaks any array-containing-hex form. Fix routed to Coder Fix5 together with
+  balanced escape-aware literal scanning (nested parens per PDF spec ≤32) for
+  both dict path and content-stream tokenizer.

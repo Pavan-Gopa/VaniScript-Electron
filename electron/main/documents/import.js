@@ -23,6 +23,7 @@ const {
   DOCUMENT_SCHEMA_VERSION,
   DOCUMENT_FORMATS,
   DOCUMENT_SIZE_LIMITS,
+  DOCUMENT_PAGE_LIMIT,
   detectFormatFromFileName,
 } = require('../../../shared/contracts/documents.ts');
 
@@ -650,9 +651,18 @@ function readZipEntries(buffer) {
   if (eocd < 0) throw createAppError('CORRUPT_DATA', 'Not a valid ZIP/OOXML package (no end-of-central-directory).');
   const cdOffset = buffer.readUInt32LE(eocd + 16);
   const cdCount = buffer.readUInt16LE(eocd + 10);
+  // Bounds-check every offset before reading through it: mutated/hostile
+  // offsets must fail CORRUPT_DATA instead of surfacing as raw
+  // ERR_OUT_OF_RANGE reads or silently truncated entries.
+  if (cdOffset < 0 || cdOffset + 4 > buffer.length) {
+    throw createAppError('CORRUPT_DATA', `ZIP central directory offset (${cdOffset}) lies outside the file.`);
+  }
   const entries = new Map();
   let p = cdOffset;
   for (let n = 0; n < cdCount; n++) {
+    if (p + 46 > buffer.length) {
+      throw createAppError('CORRUPT_DATA', 'ZIP central directory entry extends past end of file.');
+    }
     if (buffer.readUInt32LE(p) !== 0x02014b50) break;
     const method = buffer.readUInt16LE(p + 10);
     const compSize = buffer.readUInt32LE(p + 20);
@@ -660,16 +670,34 @@ function readZipEntries(buffer) {
     const extraLen = buffer.readUInt16LE(p + 30);
     const commentLen = buffer.readUInt16LE(p + 32);
     const localOffset = buffer.readUInt32LE(p + 42);
+    if (p + 46 + nameLen + extraLen + commentLen > buffer.length) {
+      throw createAppError('CORRUPT_DATA', 'ZIP central directory entry extends past end of file.');
+    }
     const name = buffer.toString('utf8', p + 46, p + 46 + nameLen);
-    const lh = localOffset;
-    const lNameLen = buffer.readUInt16LE(lh + 26);
-    const lExtraLen = buffer.readUInt16LE(lh + 28);
-    const dataStart = lh + 30 + lNameLen + lExtraLen;
+    // The local header must exist, sit inside the buffer, and carry the real
+    // local-header signature before its length fields can be trusted.
+    if (localOffset + 30 > buffer.length || buffer.readUInt32LE(localOffset) !== 0x04034b50) {
+      throw createAppError('CORRUPT_DATA', `ZIP local header for "${name}" is missing or out of range.`);
+    }
+    const lNameLen = buffer.readUInt16LE(localOffset + 26);
+    const lExtraLen = buffer.readUInt16LE(localOffset + 28);
+    const dataStart = localOffset + 30 + lNameLen + lExtraLen;
+    // 0xffffffff is the unsupported ZIP64 size placeholder; any size running
+    // past EOF is a truncated/mutated entry. Both must fail loudly rather
+    // than yield silently truncated entry bytes.
+    if (compSize === 0xffffffff || dataStart + compSize > buffer.length) {
+      throw createAppError('CORRUPT_DATA', `ZIP entry "${name}" has an invalid compressed size.`);
+    }
     const comp = buffer.subarray(dataStart, dataStart + compSize);
     let data;
     if (method === 0) data = Buffer.from(comp);
-    else if (method === 8) data = zlib.inflateRawSync(comp);
-    else throw createAppError('CORRUPT_DATA', `Unsupported ZIP method ${method} in ${name}.`);
+    else if (method === 8) {
+      try {
+        data = zlib.inflateRawSync(comp);
+      } catch (err) {
+        throw createAppError('CORRUPT_DATA', `ZIP entry "${name}" failed to inflate (${err.message}).`);
+      }
+    } else throw createAppError('CORRUPT_DATA', `Unsupported ZIP method ${method} in ${name}.`);
     entries.set(name, data);
     p += 46 + nameLen + extraLen + commentLen;
   }
@@ -700,24 +728,30 @@ function xmlDecodeText(t) {
     .replace(/&amp;/g, '&');
 }
 
+// Tokenizes an OOXML part into open/close/text events. Malformed documents
+// fail loudly here: an unterminated tag, or elements still open at EOF
+// (truncated XML), throws CORRUPT_DATA instead of yielding a partial event
+// stream whose unclosed tail would be silently dropped on import.
 function* xmlEvents(xml) {
   let i = 0;
+  let depth = 0;
   while (i < xml.length) {
     const lt = xml.indexOf('<', i);
     if (lt === -1) {
       const t = xml.slice(i);
       if (t) yield { type: 'text', text: xmlDecodeText(t) };
-      return;
+      break;
     }
     if (lt > i) yield { type: 'text', text: xmlDecodeText(xml.slice(i, lt)) };
     const gt = xml.indexOf('>', lt);
-    if (gt === -1) return;
+    if (gt === -1) throw createAppError('CORRUPT_DATA', 'Malformed XML: tag not closed before end of document.');
     const tag = xml.slice(lt + 1, gt);
     if (tag.startsWith('?') || tag.startsWith('!')) {
       i = gt + 1;
       continue;
     }
     if (tag.startsWith('/')) {
+      if (depth > 0) depth--; // tolerate stray closes; only open-at-EOF is fatal
       yield { type: 'close', name: xmlLocalName(tag.slice(1)) };
       i = gt + 1;
       continue;
@@ -731,9 +765,16 @@ function* xmlEvents(xml) {
     const sp = t.search(/\s/);
     const name = xmlLocalName(sp === -1 ? t : t.slice(0, sp));
     const attrStr = sp === -1 ? '' : t.slice(sp + 1);
+    depth++;
     yield { type: 'open', name, attrs: xmlParseAttrs(attrStr) };
-    if (selfClose) yield { type: 'close', name };
+    if (selfClose) {
+      depth--;
+      yield { type: 'close', name };
+    }
     i = gt + 1;
+  }
+  if (depth > 0) {
+    throw createAppError('CORRUPT_DATA', `Malformed XML: ${depth} element(s) left open at end of document.`);
   }
 }
 
@@ -750,62 +791,132 @@ function classifyStyle(id) {
   return { kind: 'paragraph' };
 }
 
-function parseOoxmlPart(xml, part, partHash, builder) {
-  let inParagraph = false;
-  let paragraphRuns = [];
-  let paragraphStyleId = null;
-  let inRun = false;
-  let runText = '';
-  let runTraits = {};
-  let inTextRun = false;
-  let paraPropsActive = false;
-  let runPropsActive = false;
+// Serialize one table cell: its paragraphs joined by newlines. Runs keep
+// their inline traits so bold/italic inside cells survives into spans.
+function ooxmlCellRuns(cell) {
+  const runs = [];
+  cell.paras.forEach((paraRuns, pi) => {
+    if (pi > 0) runs.push({ text: '\n', traits: {} });
+    runs.push(...paraRuns);
+  });
+  return runs;
+}
 
-  const finishParagraph = () => {
-    if (!inParagraph) return;
-    inParagraph = false;
-    const runs = paragraphRuns;
-    paragraphRuns = [];
-    if (runs.length === 0) {
-      builder.addBlock({ kind: 'empty', part, runs: [] });
+// One table row: cells joined by " | " (same convention as Markdown rows).
+function ooxmlRowRuns(row) {
+  const runs = [];
+  row.cells.forEach((cell, ci) => {
+    if (ci > 0) runs.push({ text: ' | ', traits: {} });
+    runs.push(...ooxmlCellRuns(cell));
+  });
+  return runs;
+}
+
+function ooxmlRowText(row) {
+  return ooxmlRowRuns(row)
+    .map((r) => r.text)
+    .join('');
+}
+
+function parseOoxmlPart(xml, part, partHash, builder) {
+  // `partHash` is the SHA-256 of this part's own XML bytes; every block
+  // emitted below carries it (contract §10.4 sourceHash-per-part) instead of
+  // falling back to the whole-file hash.
+  // Paragraph and run state are stacks: OOXML nests them (a textbox lives
+  // inside `<w:p>`/`<w:r>` through a drawing), and a nested element must not
+  // clobber its parent's in-flight state.
+  const paraFrames = []; // { runs, styleId, propsActive }
+  const runFrames = []; // { text, traits, propsActive, inText }
+  // Table context stack: while a table is open, paragraphs are captured into
+  // the innermost cell instead of being emitted as standalone blocks.
+  // `</w:tbl>` emits one `table` block plus one `row` block per row (the
+  // Markdown convention), preserving the grid instead of flattening it.
+  const tableStack = [];
+  // Textbox paragraphs route to the dedicated `textbox` part (contract
+  // §10.4) rather than being folded into `main`.
+  let textboxDepth = 0;
+  // `mc:Fallback` repeats the `mc:Choice` markup for legacy readers; skipping
+  // it keeps textbox/table content from being emitted twice.
+  let fallbackDepth = 0;
+
+  const activePart = () => (textboxDepth > 0 ? 'textbox' : part);
+  const curPara = () => paraFrames[paraFrames.length - 1];
+  const curRun = () => runFrames[runFrames.length - 1];
+  const ensureRow = () => {
+    const frame = tableStack[tableStack.length - 1];
+    if (!frame.row) frame.row = { cells: [] };
+    return frame.row;
+  };
+  const ensureCell = () => {
+    const row = ensureRow();
+    if (!row.cell) row.cell = { paras: [] };
+    return row.cell;
+  };
+
+  const finishParagraph = (frame) => {
+    // Route by part first: a paragraph inside `txbxContent` belongs to the
+    // `textbox` part even when the shape sits inside a table cell — folding
+    // it into cell runs would leak box text into the serialized table.
+    if (textboxDepth === 0 && tableStack.length > 0) {
+      if (frame.runs.length > 0) ensureCell().paras.push(frame.runs);
       return;
     }
-    const cls = classifyStyle(paragraphStyleId);
-    builder.addBlock({ kind: cls.kind, part, level: cls.level, runs });
+    if (frame.runs.length === 0) {
+      builder.addBlock({ kind: 'empty', part: activePart(), runs: [], sourceHash: partHash });
+      return;
+    }
+    const cls = classifyStyle(frame.styleId);
+    builder.addBlock({ kind: cls.kind, part: activePart(), level: cls.level, runs: frame.runs, sourceHash: partHash });
   };
 
   for (const ev of xmlEvents(xml)) {
+    if (fallbackDepth > 0) {
+      if (ev.type === 'open' && ev.name === 'Fallback') fallbackDepth++;
+      else if (ev.type === 'close' && ev.name === 'Fallback') fallbackDepth--;
+      continue;
+    }
     if (ev.type === 'open') {
       switch (ev.name) {
         case 'p':
-          inParagraph = true;
-          paragraphRuns = [];
-          paragraphStyleId = null;
+          paraFrames.push({ runs: [], styleId: null, propsActive: false });
           break;
         case 'pPr':
-          paraPropsActive = true;
+          if (curPara()) curPara().propsActive = true;
           break;
         case 'rPr':
-          if (inRun) runPropsActive = true;
+          if (curRun()) curRun().propsActive = true;
           break;
         case 'pStyle':
-          if (paraPropsActive) paragraphStyleId = ev.attrs.val || null;
+          if (curPara() && curPara().propsActive) curPara().styleId = ev.attrs.val || null;
           break;
         case 'r':
-          inRun = true;
-          runText = '';
-          runTraits = {};
+          runFrames.push({ text: '', traits: {}, propsActive: false, inText: false });
           break;
         case 't':
         case 'delText':
-          if (ev.name === 't') inTextRun = true;
+          if (curRun() && ev.name === 't') curRun().inText = true;
           break;
         case 'tab':
-          if (inRun) runText += '\t';
+          if (curRun()) curRun().text += '\t';
           break;
         case 'br':
         case 'cr':
-          if (inRun) runText += '\n';
+          if (curRun()) curRun().text += '\n';
+          break;
+        case 'txbxContent':
+          textboxDepth++;
+          break;
+        case 'Fallback':
+          fallbackDepth++;
+          break;
+        case 'tbl':
+          tableStack.push({ rows: [], row: null });
+          break;
+        case 'tr':
+          if (tableStack.length > 0) tableStack[tableStack.length - 1].row = { cells: [] };
+          break;
+        case 'tc':
+          if (tableStack.length > 0) ensureRow().cell = { paras: [] };
           break;
         case 'b':
         case 'i':
@@ -815,46 +926,103 @@ function parseOoxmlPart(xml, part, partHash, builder) {
           // Normalize OOXML element names to the contract trait names
           // (`traitsEqual`/`styleFingerprint` compare the latter).
           const traitNames = { b: 'bold', i: 'italic', u: 'underline', strike: 'strike', smallCaps: 'smallCaps' };
-          if (runPropsActive && inRun) {
-            runTraits[traitNames[ev.name]] = ev.attrs.val
+          const rf = curRun();
+          if (rf && rf.propsActive) {
+            rf.traits[traitNames[ev.name]] = ev.attrs.val
               ? ev.attrs.val !== '0' && ev.attrs.val !== 'false'
               : true;
           }
           break;
         }
-        case 'color':
-          if (runPropsActive && inRun && ev.attrs.val && ev.attrs.val !== 'auto') runTraits.color = `#${ev.attrs.val}`;
+        case 'color': {
+          const rf = curRun();
+          if (rf && rf.propsActive && ev.attrs.val && ev.attrs.val !== 'auto') rf.traits.color = `#${ev.attrs.val}`;
           break;
-        case 'vertAlign':
-          if (runPropsActive && inRun) {
-            if (ev.attrs.val === 'superscript') runTraits.superScript = true;
-            else if (ev.attrs.val === 'subscript') runTraits.subScript = true;
+        }
+        case 'vertAlign': {
+          const rf = curRun();
+          if (rf && rf.propsActive) {
+            if (ev.attrs.val === 'superscript') rf.traits.superScript = true;
+            else if (ev.attrs.val === 'subscript') rf.traits.subScript = true;
           }
           break;
+        }
         default:
           break;
       }
     } else if (ev.type === 'text') {
-      if (inRun && inTextRun) runText += ev.text;
+      if (curRun() && curRun().inText) curRun().text += ev.text;
     } else if (ev.type === 'close') {
       switch (ev.name) {
         case 't':
         case 'delText':
-          inTextRun = false;
+          if (curRun()) curRun().inText = false;
           break;
-        case 'r':
-          if (inRun) {
-            if (runText.length > 0) paragraphRuns.push({ text: runText, traits: { ...runTraits } });
-            inRun = false;
-            runPropsActive = false;
+        case 'r': {
+          const rf = runFrames.pop();
+          if (rf && rf.text.length > 0 && curPara()) {
+            curPara().runs.push({ text: rf.text, traits: { ...rf.traits } });
           }
           break;
+        }
         case 'pPr':
-          paraPropsActive = false;
+          if (curPara()) curPara().propsActive = false;
           break;
-        case 'p':
-          finishParagraph();
+        case 'p': {
+          const pf = paraFrames.pop();
+          if (pf) finishParagraph(pf);
           break;
+        }
+        case 'txbxContent':
+          if (textboxDepth > 0) textboxDepth--;
+          break;
+        case 'tc': {
+          if (tableStack.length === 0) break;
+          const row = tableStack[tableStack.length - 1].row;
+          if (row && row.cell) {
+            row.cells.push(row.cell);
+            row.cell = null;
+          }
+          break;
+        }
+        case 'tr': {
+          if (tableStack.length === 0) break;
+          const frame = tableStack[tableStack.length - 1];
+          const row = frame.row;
+          frame.row = null;
+          if (row) {
+            if (row.cell) {
+              row.cells.push(row.cell); // tolerate a missing </w:tc>
+              row.cell = null;
+            }
+            if (row.cells.length > 0) frame.rows.push(ooxmlRowRuns(row));
+          }
+          break;
+        }
+        case 'tbl': {
+          const frame = tableStack.pop();
+          if (!frame) break;
+          // Tolerate a missing </w:tr> before the table closes.
+          if (frame.row) {
+            if (frame.row.cell) frame.row.cells.push(frame.row.cell);
+            if (frame.row.cells.length > 0) frame.rows.push(ooxmlRowRuns(frame.row));
+            frame.row = null;
+          }
+          if (frame.rows.length === 0) break;
+          if (tableStack.length > 0) {
+            // Nested table folds into the enclosing cell as serialized text.
+            ensureCell().paras.push([{ text: frame.rows.map((rr) => rr.map((r) => r.text).join('')).join('\n'), traits: {} }]);
+            break;
+          }
+          const tableRuns = [];
+          frame.rows.forEach((rowRuns, idx) => {
+            if (idx > 0) tableRuns.push({ text: '\n', traits: {} });
+            tableRuns.push(...rowRuns);
+          });
+          builder.addBlock({ kind: 'table', part: activePart(), runs: tableRuns, sourceHash: partHash });
+          for (const rowRuns of frame.rows) builder.addBlock({ kind: 'row', part: activePart(), runs: rowRuns, sourceHash: partHash });
+          break;
+        }
         default:
           break;
       }
@@ -900,10 +1068,16 @@ function collectBuilderBlocks(builder) {
 // ---------------------------------------------------------------------------
 
 function pdfHexToBytes(hex) {
-  const clean = hex.replace(/\s+/g, '');
+  // Tolerate stray angle brackets — a caller may pass the raw `<...>` token —
+  // alongside whitespace, which PDF allows inside hex strings. The dict path
+  // slices between the brackets before calling; this keeps both sites safe.
+  const clean = hex.replace(/[<>\s]/g, '');
+  // Odd-length hex: the final nibble is the high one followed by an implicit
+  // trailing 0 (PDF 32000-1 §7.3.4.3), so <A> decodes as 0xA0, not 0x0A.
+  const padded = clean.length % 2 === 1 ? `${clean}0` : clean;
   const out = [];
-  for (let i = 0; i + 1 < clean.length + 1; i += 2) {
-    const b = parseInt(clean.slice(i, i + 2), 16);
+  for (let i = 0; i < padded.length; i += 2) {
+    const b = parseInt(padded.slice(i, i + 2), 16);
     if (!Number.isNaN(b)) out.push(b);
   }
   return Buffer.from(out);
@@ -916,6 +1090,14 @@ function pdfLiteralToBytes(inner) {
     const ch = inner[k];
     if (ch === '\\') {
       const nxt = inner[k + 1];
+      if (nxt === undefined) {
+        // Unterminated trailing escape (e.g. `(abc\)`): defined-safe byte
+        // handling — emit the backslash literally rather than crash on the
+        // missing escape character.
+        out.push(0x5c);
+        k += 1;
+        continue;
+      }
       if (nxt === 'n') out.push(10);
       else if (nxt === 'r') out.push(13);
       else if (nxt === 't') out.push(9);
@@ -942,6 +1124,32 @@ function pdfLiteralToBytes(inner) {
   return Buffer.from(out);
 }
 
+// PDF literal strings may nest unescaped parens to 32 levels (32000-1
+// §7.3.4.2). Scan from the opening '(' at `openIdx`, treating a backslash
+// escape (\( \) \\ octal…) as content so escaped characters never count
+// toward nesting. Returns the index of the balancing ')' or -1 when the
+// string is unterminated or nests deeper than maxDepth (hostile input).
+function scanPdfLiteralEnd(s, openIdx, maxDepth) {
+  let depth = 0;
+  let i = openIdx;
+  while (i < s.length) {
+    const ch = s[i];
+    if (ch === '\\') {
+      i += 2; // escaped pair: never a nesting paren
+      continue;
+    }
+    if (ch === '(') {
+      depth += 1;
+      if (depth > maxDepth) return -1;
+    } else if (ch === ')') {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+    i += 1;
+  }
+  return -1;
+}
+
 function pdfByteChar(code, encoding) {
   if (code < 0x20) return code === 0x09 || code === 0x0a || code === 0x0d ? ' ' : '';
   if (code < 0x80) return String.fromCharCode(code);
@@ -958,48 +1166,67 @@ function pdfDecodeBytes(buf, encoding) {
   return out;
 }
 
+// Hard cap on `<<..>>`/`[..]` nesting: hostile deep-nesting input must fail
+// with CORRUPT_DATA instead of exhausting the JS call stack.
+const MAX_PDF_DICT_DEPTH = 64;
+
+// Content-stream literal strings honor the spec's paren-nesting cap
+// (§7.3.4.2): deeper input is hostile and yields no string token, the same
+// defined-safe fragment behavior as an unbalanced string. The dict path
+// stays fully tolerant of depth (balance is still required).
+const MAX_PDF_LITERAL_DEPTH = 32;
+
+// Page-tree walks get their own cap: a deep acyclic /Pages chain is legal
+// enough to dodge the cycle guard yet still overflows the JS stack (~12k
+// levels). No legitimate tree needs more levels than the page limit, so
+// anything deeper fails CORRUPT_DATA instead of RangeError.
+const MAX_PDF_TREE_DEPTH = DOCUMENT_PAGE_LIMIT;
+
 function parsePdfDict(s) {
   let i = 0;
   function skipWs() {
     while (i < s.length && /\s/.test(s[i])) i++;
   }
-  function parseValue() {
+  function corrupt(what) {
+    throw createAppError('CORRUPT_DATA', `Malformed PDF dictionary: ${what}.`);
+  }
+  function parseValue(depth) {
     skipWs();
     const c = s[i];
     if (c === '<') {
       if (s[i + 1] === '<') {
         i += 2;
-        return parseDictBody();
+        return parseDictBody(depth);
       }
-      i += 2;
+      i += 1;
       const start = i;
       while (i < s.length && s[i] !== '>') i++;
+      if (s[i] !== '>') corrupt('unterminated hex string'); // EOF guard
       const hex = s.slice(start, i);
-      i += 2;
+      i += 1;
       return pdfHexToBytes(hex);
     }
     if (c === '(') {
-      i++;
-      const start = i;
-      let depth = 1;
-      while (i < s.length && depth > 0) {
-        if (s[i] === '(') depth++;
-        else if (s[i] === ')') depth--;
-        if (depth === 0) break;
-        i++;
-      }
-      const lit = s.slice(start, i);
-      i++;
+      // Escape-aware scan (Defect 3): \( \) \\ are content, not nesting.
+      const end = scanPdfLiteralEnd(s, i, Number.POSITIVE_INFINITY);
+      if (end === -1) corrupt('unterminated literal string'); // EOF guard
+      const lit = s.slice(i + 1, end);
+      i = end + 1;
       return pdfLiteralToBytes(lit);
     }
     if (c === '[') {
+      if (depth > MAX_PDF_DICT_DEPTH) corrupt('array nesting too deep');
       i++;
       const arr = [];
       skipWs();
-      while (s[i] !== ']') {
-        arr.push(parseValue());
+      // Bounds-checked: an unterminated array must terminate with
+      // CORRUPT_DATA, never spin past EOF (where `s[i]` is undefined and
+      // `undefined !== ']'` would loop forever).
+      while (i < s.length && s[i] !== ']') {
+        arr.push(parseValue(depth + 1));
         skipWs();
       }
+      if (s[i] !== ']') corrupt('unterminated array');
       i++;
       return arr;
     }
@@ -1043,13 +1270,16 @@ function parsePdfDict(s) {
     i++;
     return undefined;
   }
-  function parseDictBody() {
+  function parseDictBody(depth) {
+    if (depth > MAX_PDF_DICT_DEPTH) corrupt('dictionary nesting too deep');
     const obj = {};
     skipWs();
+    let closed = false;
     while (i < s.length) {
       if (s[i] === '>') {
         if (s[i + 1] === '>') {
           i += 2;
+          closed = true;
           break;
         }
         i++;
@@ -1064,14 +1294,15 @@ function parsePdfDict(s) {
       while (i < s.length && !/[\s[\]()<>]/.test(s[i])) i++;
       const key = s.slice(ks, i);
       skipWs();
-      obj[key] = parseValue();
+      obj[key] = parseValue(depth + 1);
     }
+    if (!closed) corrupt('unterminated dictionary'); // EOF guard
     return obj;
   }
   if (s.includes('<<')) {
     i = s.indexOf('<<');
     i += 2;
-    return parseDictBody();
+    return parseDictBody(0);
   }
   return {};
 }
@@ -1123,20 +1354,46 @@ function parsePdf(buffer, fileHash) {
   }
   if (!catalog) throw createAppError('CORRUPT_DATA', 'PDF has no Catalog object.');
 
-  const collectPages = (nodeRef) => {
+  // Cycle- and depth-guarded page-tree walk: a hostile Pages graph must not
+  // recurse forever (kid pointing at an ancestor) or exhaust the stack (deep
+  // acyclic chain); each object participates at most once, and nesting past
+  // MAX_PDF_TREE_DEPTH fails CORRUPT_DATA.
+  const collectPages = (nodeRef, seen, depth) => {
+    if (depth > MAX_PDF_TREE_DEPTH) {
+      throw createAppError('CORRUPT_DATA', 'PDF page tree is nested too deep.');
+    }
     const node = deref(nodeRef);
-    if (!node) return [];
+    if (!node || seen.has(node)) return [];
+    seen.add(node);
     const t = node.dict.Type;
     if (t === 'Page') return [node];
     if (t === 'Pages') {
       const kids = node.dict.Kids || [];
       let out = [];
-      for (const kid of kids) if (kid && kid.ref) out = out.concat(collectPages(kid.ref));
+      for (const kid of kids) if (kid && kid.ref) out = out.concat(collectPages(kid.ref, seen, depth + 1));
       return out;
     }
     return [];
   };
-  const pages = collectPages(catalog.dict.Pages ? catalog.dict.Pages.ref : null);
+  const pages = collectPages(catalog.dict.Pages ? catalog.dict.Pages.ref : null, new Set(), 0);
+
+  // Preflight page-count gate (plan §10.2): reject beyond the shared page
+  // limit before spending time on stream extraction.
+  if (pages.length > DOCUMENT_PAGE_LIMIT) {
+    warnings.push({
+      code: 'PAGE_LIMIT_EXCEEDED',
+      message: `PDF exceeds the ${DOCUMENT_PAGE_LIMIT}-page import limit (${pages.length} pages).`,
+      severity: 'error',
+    });
+    return {
+      blocks: [],
+      pages: pages.length,
+      warnings,
+      protectedContent,
+      extractionAccuracy: 'unknown',
+      canImport: false,
+    };
+  }
 
   function decodeStream(obj) {
     let data = obj.stream;
@@ -1144,7 +1401,13 @@ function parsePdf(buffer, fileHash) {
     const filters = Array.isArray(filter) ? filter : filter ? [filter] : [];
     for (const f of filters) {
       if (f === 'FlateDecode' || f === 'Fl') {
-        data = zlib.inflateRawSync(data);
+        // PDF Flate is RFC 1950 (zlib wrapper). Raw deflate is only correct
+        // for the DOCX ZIP container (readZipEntries method 8).
+        try {
+          data = zlib.inflateSync(data);
+        } catch (err) {
+          throw createAppError('CORRUPT_DATA', `PDF FlateDecode stream is corrupt (${err.message}).`);
+        }
       } else {
         warnings.push({ code: 'UNSUPPORTED_FILTER', message: `PDF stream filter ${f} not decoded; text may be partial.`, severity: 'warning' });
       }
@@ -1166,12 +1429,32 @@ function parsePdf(buffer, fileHash) {
 
   function extractSegment(seg, fontMap) {
     const tokens = [];
-    const tokRe = /(\[|\])|(\(((?:\\.|[^\\()])*)\))|(<[0-9A-Fa-f\s]*>)|(\/[A-Za-z0-9+\-#]+)|(-?\d+(?:\.\d+)?)|([A-Za-z\*\'\"]+)/g;
+    // Group 2 anchors only the opening '(' of a literal string; the shared
+    // escape-aware scanner finds its true end, since raw nested parens are
+    // legal (§7.3.4.2) and the previous single-alternative regex dropped the
+    // whole operand whenever one appeared. Group 4 still captures the hex
+    // payload WITHOUT its < > delimiters; name/num/op shift to 5/6/7.
+    const tokRe = /(\[|\])|(\()|(<([0-9A-Fa-f\s]*)>)|(\/[A-Za-z0-9+\-#]+)|(-?\d+(?:\.\d+)?)|([A-Za-z\*\'\"]+)/g;
     let tm;
     while ((tm = tokRe.exec(seg)) !== null) {
       if (tm[1] !== undefined) tokens.push({ type: tm[1] === '[' ? 'arropen' : 'arrclose' });
-      else if (tm[2] !== undefined) tokens.push({ type: 'str', value: tm[3] });
-      else if (tm[4] !== undefined) tokens.push({ type: 'hex', value: tm[4] });
+      else if (tm[2] !== undefined) {
+        const end = scanPdfLiteralEnd(seg, tm.index, MAX_PDF_LITERAL_DEPTH);
+        if (end !== -1) {
+          tokens.push({ type: 'str', value: seg.slice(tm.index + 1, end) });
+          tokRe.lastIndex = end + 1;
+        } else {
+          // Hostile literal (unbalanced, or nested deeper than the
+          // §7.3.4.2 cap): emit no string token and consume through its
+          // balancing ')' when one exists — otherwise the regex would
+          // re-anchor at an inner paren and resurrect a shallower phantom
+          // string. Truly unterminated input swallows the rest of the
+          // segment (defined-safe, typed via the OCR path, never a crash).
+          const raw = scanPdfLiteralEnd(seg, tm.index, Number.POSITIVE_INFINITY);
+          tokRe.lastIndex = raw === -1 ? seg.length : raw + 1;
+        }
+      }
+      else if (tm[3] !== undefined) tokens.push({ type: 'hex', value: tm[4] });
       else if (tm[5] !== undefined) tokens.push({ type: 'name', value: tm[5] });
       else if (tm[6] !== undefined) tokens.push({ type: 'num', value: parseFloat(tm[6]) });
       else if (tm[7] !== undefined) tokens.push({ type: 'op', value: tm[7] });
@@ -1310,14 +1593,15 @@ function parsePdf(buffer, fileHash) {
 
   const builder = createBuilder(fileHash);
   let totalChars = 0;
-  for (const pt of pageTexts) {
+  for (const [pageIndex, pt] of pageTexts.entries()) {
     totalChars += pt.replace(/\s/g, '').length;
     const lines = pt.split('\n');
     let para = [];
     const flush = () => {
       if (para.length === 0) return;
       const text = para.join(' ').trim();
-      if (text.length > 0) builder.addBlock({ kind: 'paragraph', part: 'main', runs: [{ text, traits: {} }] });
+      // Contract §10.4: `page` is the 1-based source page of the block.
+      if (text.length > 0) builder.addBlock({ kind: 'paragraph', part: 'main', runs: [{ text, traits: {} }], page: pageIndex + 1 });
       para = [];
     };
     for (const line of lines) {
@@ -1455,6 +1739,9 @@ module.exports = {
   parseRtf,
   parseDocx,
   parsePdf,
+  // Exported for the golden tests that pin exact decoded dict values
+  // (dict values never surface in blocks/preflight).
+  parsePdfDict,
   createBuilder,
   validateNormalizedDocument:
     require('../../../shared/contracts/documents.ts').validateNormalizedDocument,

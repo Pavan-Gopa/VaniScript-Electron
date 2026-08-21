@@ -1,0 +1,42 @@
+name: Electron CI
+
+# Product-repo CI for VaniScript-Electron (FND-00 baseline: clean build + test
+# matrix on macOS, Windows, and Linux). Adapted from the workspace-level
+# workflow when P3A.D1 closed: the product repo root IS the Electron app, so
+# there are no `Electron/**` path filters and no subdirectory working-directory.
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.os }} build & test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build (package, no signing)
+        # CSC_IDENTITY_AUTO_DISCOVERY=false disables macOS code signing so the
+        # dir-target build stays unsigned and reproducible in CI.
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run build:ci

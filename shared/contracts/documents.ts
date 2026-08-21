@@ -186,6 +186,12 @@ export const DOCUMENT_SIZE_LIMITS: Readonly<Record<DocumentFormat, number>> = {
   md: 32 * 1024 * 1024,
 };
 
+/**
+ * Maximum page count accepted for paginated imports (plan §10.2). Preflight
+ * rejects documents beyond this limit with `PAGE_LIMIT_EXCEEDED`.
+ */
+export const DOCUMENT_PAGE_LIMIT = 2000 as const;
+
 /** Resolve a format from a file name extension (case-insensitive). */
 export function detectFormatFromFileName(fileName: string): DocumentFormat | null {
   const ext = String(fileName).toLowerCase().split('.').pop();
