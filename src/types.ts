@@ -173,6 +173,7 @@ declare global {
   interface Window {
     electronAPI?: {
       isElectron: boolean;
+      migrateLegacySettings?: (payload: { settings?: unknown; usage?: unknown; clientVersion?: string }) => Promise<{ ok: boolean; summary?: unknown; error?: string; errorCode?: string }>;
       openFile: () => Promise<string | null>;
       openGenericFile: (opts?: { filters?: any[] }) => Promise<string | null>;
       saveFile: (opts: { defaultName: string; filters?: any[] }) => Promise<string | null>;

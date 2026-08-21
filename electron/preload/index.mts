@@ -1,0 +1,223 @@
+/**
+ * Typed preload bridge (VaniScript Electron Migration Plan §4.3 — FND-02).
+ *
+ * Exposes a single typed `electronAPI` to the renderer via `contextBridge`,
+ * rejecting malformed or locally-invalid payloads before they ever reach
+ * `ipcMain`. Every call is wrapped in the shared `RequestEnvelope` and the
+ * `ResultEnvelope` returned by the router is unwrapped back into a plain value
+ * (or a thrown `IpcBridgeError` on failure).
+ *
+ * The module is Electron-independent at load time: only the renderer install
+ * path (guarded by `process.type === 'renderer'`) dynamically imports
+ * `electron`, so the bridge logic can be unit-tested directly in Node.
+ */
+import {
+  createRequest,
+  type RequestEnvelope,
+  type RequestOptions,
+  type ResultEnvelope,
+  SETTINGS_GET_COMMAND,
+  SETTINGS_UPDATE_COMMAND,
+  type SettingsGetResult,
+  type SettingsUpdateRequest,
+  type SettingsUpdateResult,
+  CAPABILITIES_GET_COMMAND,
+  type CapabilitiesGetResult,
+} from '../../shared/contracts/ipc.ts';
+import {
+  createAppError,
+  isAppError,
+  type AppError,
+} from '../../shared/contracts/errors.ts';
+import {
+  PROVIDER_INVOKE_COMMAND,
+  type ProviderInvokeRequest,
+  type ProviderInvokeResult,
+} from '../../shared/contracts/providers.ts';
+import { IPC_DISPATCH_CHANNEL, type Command } from '../main/ipc/index.mts';
+import type { IpcRenderer } from 'electron';
+
+/** Opt-in local validation for registered methods. */
+interface MethodSpec {
+  /** Validate args before dispatch; returning false rejects the call locally. */
+  validateArgs?: (args: unknown) => boolean;
+}
+
+/**
+ * Local guard rail: known methods get a cheap structural check so a bad call
+ * fails immediately in the renderer instead of round-tripping to main.
+ */
+const METHOD_REGISTRY: Record<string, MethodSpec> = {
+  'dialog:openFile': { validateArgs: (a) => a === undefined || a === null },
+  'fs:writeFile': {
+    validateArgs: (a) => {
+      if (a === null || typeof a !== 'object') return false;
+      if (!('filePath' in a) || !('content' in a)) return false;
+      return typeof a.filePath === 'string' && typeof a.content === 'string';
+    },
+  },
+  'settings:get': { validateArgs: (a) => a === undefined || a === null },
+  'settings:update': {
+    validateArgs: (a) => {
+      if (a === undefined || a === null) return false;
+      if (typeof a !== 'object' || Array.isArray(a)) return false;
+      const patch = a as Partial<SettingsUpdateRequest>;
+      if (patch.settings !== undefined && typeof patch.settings !== 'object') return false;
+      if (patch.usage !== undefined && typeof patch.usage !== 'object') return false;
+      return true;
+    },
+  },
+  'capabilities:get': { validateArgs: (a) => a === undefined || a === null },
+  // provider:invoke is a raw ipcMain.handle in main.js (PRV-01), not routed via
+  // the typed ipc:dispatch facade; it still gets a local shape guard here.
+  [PROVIDER_INVOKE_COMMAND]: {
+    validateArgs: (a) =>
+      !!a &&
+      typeof a === 'object' &&
+      !Array.isArray(a) &&
+      typeof (a as ProviderInvokeRequest).providerId === 'string',
+  },
+};
+
+/** Error surfaced to renderer code when a call is rejected or fails. */
+export class IpcBridgeError extends Error {
+  readonly appError: AppError;
+  constructor(appError: AppError) {
+    super(appError.message);
+    this.name = 'IpcBridgeError';
+    this.appError = appError;
+    Object.setPrototypeOf(this, IpcBridgeError.prototype);
+  }
+}
+
+/** The typed surface exposed to the renderer as `window.electronAPI`. */
+export interface ElectronApi {
+  invoke<R = unknown>(method: string, args?: unknown, options?: RequestOptions): Promise<R>;
+  send(method: string, args?: unknown, options?: RequestOptions): void;
+  getVersion(): Promise<string>;
+  openFileDialog(): Promise<{ canceled: boolean; filePaths: string[] } | null>;
+  writeFile(args: { filePath: string; content: string }): Promise<{ ok: boolean }>;
+  listProjects(): Promise<unknown[]>;
+  getSettings(): Promise<SettingsGetResult>;
+  getCapabilities(): Promise<CapabilitiesGetResult>;
+  updateSettings(args: SettingsUpdateRequest): Promise<SettingsUpdateResult>;
+  invokeProvider(args: ProviderInvokeRequest): Promise<ProviderInvokeResult>;
+}
+
+function buildCommand(method: string, args: unknown): Command {
+  return { method, args };
+}
+
+function validateLocalArgs(method: string, args: unknown): void {
+  const spec = METHOD_REGISTRY[method];
+  if (spec?.validateArgs && !spec.validateArgs(args)) {
+    throw new IpcBridgeError(
+      createAppError('VALIDATION_FAILED', `Invalid args for IPC method "${method}"`),
+    );
+  }
+}
+
+/** Unwrap a `ResultEnvelope` to its value, or throw `IpcBridgeError`. */
+function unwrapResult<R>(response: unknown): R {
+  if (response === null || typeof response !== 'object' || !('ok' in response)) {
+    throw new IpcBridgeError(
+      createAppError('CORRUPT_DATA', 'Empty or malformed IPC response'),
+    );
+  }
+  const envelope = response as ResultEnvelope<R>;
+  if (envelope.ok) return envelope.value;
+  const error = envelope.error;
+  if (isAppError(error)) throw new IpcBridgeError(error);
+  throw new IpcBridgeError(
+    createAppError('INTERNAL', 'IPC response carried an unknown error'),
+  );
+}
+
+/**
+ * Narrow an IPC response to the AppError envelope that main.js returns when a
+ * raw handler (e.g. `provider:invoke`) rejects. Used instead of an inline cast
+ * so `code`/`message`/`details` are typed after narrowing.
+ */
+function isAppErrorEnvelope(v: unknown): v is {
+  __appError: true;
+  code: string;
+  message: string;
+  details?: unknown;
+} {
+  if (typeof v !== 'object' || v === null) return false;
+  const r = v as Record<string, unknown>;
+  return (
+    r.__appError === true &&
+    typeof r.code === 'string' &&
+    typeof r.message === 'string'
+  );
+}
+
+/**
+ * Build the typed bridge around any object exposing `invoke`/`send`
+ * (the real `ipcRenderer`, or a mock in tests).
+ */
+export function createTypedIpcBridge(
+  ipc: Pick<IpcRenderer, 'invoke' | 'send'>,
+): ElectronApi {
+  async function invoke<R = unknown>(
+    method: string,
+    args?: unknown,
+    options?: RequestOptions,
+  ): Promise<R> {
+    validateLocalArgs(method, args);
+    const envelope = createRequest<Command>(buildCommand(method, args), options);
+    const response = await ipc.invoke(IPC_DISPATCH_CHANNEL, envelope);
+    return unwrapResult<R>(response);
+  }
+
+  function send(method: string, args?: unknown, options?: RequestOptions): void {
+    validateLocalArgs(method, args);
+    const envelope = createRequest<Command>(buildCommand(method, args), options);
+    ipc.send(IPC_DISPATCH_CHANNEL, envelope);
+  }
+
+  return {
+    invoke,
+    send,
+    getVersion: () => invoke<string>('app:getVersion'),
+    openFileDialog: () =>
+      invoke<{ canceled: boolean; filePaths: string[] } | null>('dialog:openFile'),
+    writeFile: (args: { filePath: string; content: string }) =>
+      invoke<{ ok: boolean }>('fs:writeFile', args),
+    listProjects: () => invoke<unknown[]>('project:list'),
+    getSettings: () => invoke<SettingsGetResult>(SETTINGS_GET_COMMAND),
+    getCapabilities: () => invoke<CapabilitiesGetResult>(CAPABILITIES_GET_COMMAND),
+    updateSettings: (args: SettingsUpdateRequest) =>
+      invoke<SettingsUpdateResult>(SETTINGS_UPDATE_COMMAND, args),
+    invokeProvider: (args: ProviderInvokeRequest) => {
+      // Routed directly to the raw `provider:invoke` channel in main.js (PRV-01),
+      // not through the typed ipc:dispatch facade. Main proxies the cloud call
+      // and never returns the secret; errors arrive as an __appError envelope.
+      validateLocalArgs(PROVIDER_INVOKE_COMMAND, args);
+      return ipc.invoke(PROVIDER_INVOKE_COMMAND, args).then((response) => {
+        if (isAppErrorEnvelope(response)) {
+          throw new IpcBridgeError(
+            createAppError(response.code, response.message, response.details),
+          );
+        }
+        return response as ProviderInvokeResult;
+      });
+    },
+  };
+}
+
+/** Install the bridge into the renderer world; no-op outside Electron. */
+function installRendererBridge(): void {
+  if (typeof process === 'undefined' || process.type !== 'renderer') return;
+  import('electron')
+    .then((electron) => {
+      const { contextBridge, ipcRenderer } = electron as typeof import('electron');
+      contextBridge.exposeInMainWorld('electronAPI', createTypedIpcBridge(ipcRenderer));
+    })
+    .catch((err) => {
+      console.error('[preload] failed to install electronAPI', err);
+    });
+}
+
+installRendererBridge();

@@ -22,6 +22,10 @@ const {
   resolveSessionCurrentIndex,
   resolveSessionReviewProgressIndex,
 } = require('./project-session');
+const windowManager = require('./main/windows/window-manager');
+const { handleMigrateLegacy } = require('./main/storage/migrationHandler');
+const { invokeProvider } = require('./main/providers/router');
+const { manageModels, MODELS_MANAGE_CHANNEL } = require('./main/models/modelManager.js');
 
 for (const stream of [process.stdout, process.stderr]) {
   stream?.on?.('error', (error) => {
@@ -38,25 +42,6 @@ log.info('VaniScript starting up...');
 const hyperframesRenderControllers = new Map();
 const recordingSessions = new Map();
 const linkImportJobs = new Map();
-const APP_NAME = 'VaniScript-Electron';
-let tray = null;
-let isQuitting = false;
-
-app.setName(APP_NAME);
-if (process.platform === 'darwin') {
-  app.setAboutPanelOptions({
-    applicationName: APP_NAME,
-    applicationVersion: app.getVersion(),
-    copyright: '© 2026 VaniScript Audio Processor',
-  });
-}
-
-// ─── Single instance lock ────────────────────────────────────────────────────
-const gotLock = app.requestSingleInstanceLock();
-if (!gotLock) {
-  app.quit();
-  process.exit(0);
-}
 
 // ─── FFmpeg path ─────────────────────────────────────────────────────────────
 function getFfmpegPath() {
@@ -144,8 +129,6 @@ function getYtDlpJavaScriptRuntimeArgs() {
   return [];
 }
 
-// ─── Windows ─────────────────────────────────────────────────────────────────
-let mainWindow = null;
 let localWhisperWorker = null;
 let localParakeetWorker = null;
 let localTranslationWorker = null;
@@ -153,12 +136,6 @@ let localRequestCounter = 0;
 const localWhisperPending = new Map();
 const localParakeetPending = new Map();
 const localTranslationPending = new Map();
-const DEV_SERVER_CANDIDATES = [
-  process.env.ELECTRON_RENDERER_URL,
-  process.env.VITE_DEV_SERVER_URL,
-  process.env.RENDERER_URL,
-  process.env.DEV_SERVER_URL,
-].filter(Boolean);
 
 const PARAKEET_MODEL_MAP = {
   'parakeet-english': 'istupakov/parakeet-tdt-0.6b-v2-onnx',
@@ -217,8 +194,8 @@ function scanSharedLocalModels() {
 function broadcastSharedLocalModels() {
   try {
     const payload = scanSharedLocalModels();
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('local-models:updated', payload);
+    if (windowManager.getMainWindow() && !windowManager.getMainWindow().isDestroyed()) {
+      windowManager.getMainWindow().webContents.send('local-models:updated', payload);
     }
     return { ok: true, ...payload };
   } catch (error) {
@@ -228,8 +205,8 @@ function broadcastSharedLocalModels() {
 }
 
 function emitLocalModelDownloadProgress(payload) {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  mainWindow.webContents.send('local-model:download-progress', payload);
+  if (!windowManager.getMainWindow() || windowManager.getMainWindow().isDestroyed()) return;
+  windowManager.getMainWindow().webContents.send('local-model:download-progress', payload);
 }
 
 function statSize(filePath) {
@@ -1184,160 +1161,6 @@ function ensureLocalTranslationWorker() {
   return localTranslationWorker;
 }
 
-function showMainWindow() {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    createWindow();
-    return;
-  }
-  revealMainWindow('show-main-window');
-}
-
-function openSettingsFromShell() {
-  showMainWindow();
-  if (!mainWindow) return;
-  if (mainWindow.webContents.isLoadingMainFrame()) {
-    mainWindow.webContents.once('did-finish-load', () => {
-      mainWindow?.webContents.send('app:open-settings');
-    });
-    return;
-  }
-  mainWindow.webContents.send('app:open-settings');
-}
-
-function createVaniScriptIcon(template = false, size = 0) {
-  const candidates = [
-    path.join(__dirname, '..', 'assets', 'VS_Logo x256.png'),
-    path.join(__dirname, '..', 'assets', 'icon.png'),
-    path.join(process.resourcesPath || '', 'assets', 'VS_Logo x256.png'),
-    path.join(process.resourcesPath || '', 'assets', 'icon.png'),
-  ];
-  const iconPath = candidates.find((candidate) => candidate && fs.existsSync(candidate));
-  const source = iconPath ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
-  const image = size > 0 && !source.isEmpty() ? source.resize({ width: size, height: size }) : source;
-  image.setTemplateImage(template);
-  return image;
-}
-
-function revealMainWindow(reason) {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  if (mainWindow.isMinimized()) mainWindow.restore();
-  mainWindow.show();
-  mainWindow.moveTop();
-  mainWindow.focus();
-  if (process.platform === 'darwin') {
-    app.focus({ steal: true });
-  }
-  log.info('Main window reveal', {
-    reason,
-    visible: mainWindow.isVisible(),
-    focused: mainWindow.isFocused(),
-    bounds: mainWindow.getBounds(),
-  });
-}
-
-function installAppMenu() {
-  const template = [
-    {
-      label: APP_NAME,
-      submenu: [
-        { role: 'about', label: `About ${APP_NAME}` },
-        { type: 'separator' },
-        {
-          label: 'Settings…',
-          accelerator: 'CommandOrControl+,',
-          click: openSettingsFromShell,
-        },
-        { type: 'separator' },
-        { role: 'hide', label: `Hide ${APP_NAME}` },
-        { role: 'hideOthers' },
-        { role: 'unhide' },
-        { type: 'separator' },
-        {
-          label: `Quit ${APP_NAME}`,
-          accelerator: 'CommandOrControl+Q',
-          click: () => {
-            isQuitting = true;
-            app.quit();
-          },
-        },
-      ],
-    },
-    {
-      label: 'File',
-      submenu: [
-        { label: 'Settings…', accelerator: 'CommandOrControl+,', click: openSettingsFromShell },
-        { type: 'separator' },
-        { role: 'close' },
-      ],
-    },
-    {
-      label: 'Edit',
-      submenu: [
-        { role: 'undo' },
-        { role: 'redo' },
-        { type: 'separator' },
-        { role: 'cut' },
-        { role: 'copy' },
-        { role: 'paste' },
-        { role: 'selectAll' },
-      ],
-    },
-    {
-      label: 'View',
-      submenu: [
-        { role: 'reload' },
-        { role: 'forceReload' },
-        { role: 'toggleDevTools' },
-        { type: 'separator' },
-        { role: 'resetZoom' },
-        { role: 'zoomIn' },
-        { role: 'zoomOut' },
-        { type: 'separator' },
-        { role: 'togglefullscreen' },
-      ],
-    },
-    {
-      label: 'Window',
-      submenu: [
-        { role: 'minimize' },
-        { role: 'zoom' },
-        { type: 'separator' },
-        { role: 'front' },
-      ],
-    },
-  ];
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
-}
-
-function installTray() {
-  if (tray) return;
-  const trayIcon = createVaniScriptIcon(false, process.platform === 'darwin' ? 18 : 0);
-  const dockIcon = createVaniScriptIcon(false);
-  if (process.platform === 'darwin' && app.dock && !dockIcon.isEmpty()) {
-    app.dock.setIcon(dockIcon);
-  }
-  tray = new Tray(trayIcon);
-  tray.setToolTip(APP_NAME);
-  const trayMenu = Menu.buildFromTemplate([
-    { label: `Open ${APP_NAME}`, click: showMainWindow },
-    { label: 'Settings…', click: openSettingsFromShell },
-    { type: 'separator' },
-    {
-      label: `Quit ${APP_NAME}`,
-      click: () => {
-        isQuitting = true;
-        app.quit();
-      },
-    },
-  ]);
-  if (process.platform === 'darwin') {
-    tray.on('click', showMainWindow);
-    tray.on('right-click', () => tray?.popUpContextMenu(trayMenu));
-  } else {
-    tray.setContextMenu(trayMenu);
-  }
-}
-
 function removeLocalModelFiles(kind, modelId) {
   const baseDir = resolveLocalAsrStorageDir(kind);
   const modelPath = kind === 'whisper' && /\.bin$/i.test(String(modelId || ''))
@@ -1347,103 +1170,6 @@ function removeLocalModelFiles(kind, modelId) {
   return { ok: true, id: modelId };
 }
 
-function createWindow() {
-  mainWindow = new BrowserWindow({
-    width: 1536,
-    height: 984,
-    minWidth: 900,
-    minHeight: 640,
-    titleBarStyle: 'hiddenInset',
-    backgroundColor: '#0a0a12',
-    icon: createVaniScriptIcon(false),
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-    },
-    show: false,
-    title: APP_NAME,
-  });
-
-  const devServerUrl = DEV_SERVER_CANDIDATES.find((candidate) => /^https?:\/\//i.test(candidate));
-  const builtIndexPath = path.join(__dirname, '..', 'dist', 'index.html');
-
-  if (devServerUrl) {
-    log.info('Loading renderer from dev server:', devServerUrl);
-    mainWindow.loadURL(devServerUrl);
-    // mainWindow.webContents.openDevTools();
-  } else {
-    log.info('Loading renderer from built file:', builtIndexPath);
-    mainWindow.loadFile(builtIndexPath);
-  }
-
-  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
-    log.error('Renderer failed to load', { errorCode, errorDescription, validatedURL });
-    revealMainWindow('renderer-failed-load');
-  });
-
-  mainWindow.webContents.on('did-finish-load', () => {
-    log.info('Renderer finished loading');
-    revealMainWindow('renderer-finished-load');
-    broadcastSharedLocalModels();
-  });
-
-  mainWindow.webContents.on('dom-ready', () => {
-    log.info('Renderer DOM ready');
-    revealMainWindow('renderer-dom-ready');
-  });
-
-  mainWindow.webContents.on('render-process-gone', (_event, details) => {
-    log.error('Renderer process gone', details);
-  });
-
-  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
-    const payload = `[renderer:${level}] ${message} (${sourceId}:${line})`;
-    if (level >= 2) log.warn(payload);
-    else log.info(payload);
-  });
-
-  mainWindow.once('ready-to-show', () => {
-    log.info('Main window ready to show');
-    revealMainWindow('ready-to-show');
-  });
-
-  setTimeout(() => {
-    revealMainWindow('startup-fallback');
-  }, 1200);
-
-  mainWindow.on('close', (event) => {
-    if (isQuitting) return;
-    event.preventDefault();
-    mainWindow.hide();
-  });
-
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
-}
-
-function configureDisplayMediaCapture() {
-  session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
-    try {
-      const sources = await desktopCapturer.getSources({
-        types: ['window', 'screen'],
-        thumbnailSize: { width: 320, height: 180 },
-        fetchWindowIcons: true,
-      });
-      const video = sources[0];
-      if (!video) return callback({});
-      callback({
-        video,
-        audio: request.audioRequested && process.platform === 'win32' ? 'loopback' : undefined,
-      });
-    } catch (error) {
-      log.error('Display media request failed:', error);
-      callback({});
-    }
-  }, { useSystemPicker: true });
-}
 
 // ─── Temp directory ───────────────────────────────────────────────────────────
 // Lazy getter — evaluated only after app is ready to ensure correct temp path
@@ -1495,37 +1221,10 @@ async function callLocalTranslationWorker(message) {
   });
 }
 
-// ─── App lifecycle ────────────────────────────────────────────────────────────
-app.whenReady().then(() => {
-  getTempDir(); // create on startup
-  configureDisplayMediaCapture();
-  installAppMenu();
-  installTray();
-  createWindow();
-  startMcpServer();
-
-  app.on('activate', () => {
-    showMainWindow();
-  });
-});
-
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
-
-app.on('before-quit', () => {
-  isQuitting = true;
-  cleanupTempDir();
-  stopMcpServer();
-});
-
-app.on('second-instance', () => {
-  showMainWindow();
-});
 
 // ─── IPC: File dialog ────────────────────────────────────────────────────────
 ipcMain.handle('dialog:openFile', async () => {
-  const result = await dialog.showOpenDialog(mainWindow, {
+  const result = await dialog.showOpenDialog(windowManager.getMainWindow(), {
     properties: ['openFile'],
     filters: [
       { name: 'Audio / Video', extensions: ['mp3', 'wav', 'm4a', 'flac', 'ogg', 'mp4', 'mkv', 'webm', 'aac', 'wma', 'mov'] },
@@ -1536,7 +1235,7 @@ ipcMain.handle('dialog:openFile', async () => {
 });
 
 ipcMain.handle('dialog:openGenericFile', async (_, { filters } = {}) => {
-  const result = await dialog.showOpenDialog(mainWindow, {
+  const result = await dialog.showOpenDialog(windowManager.getMainWindow(), {
     properties: ['openFile'],
     filters: filters || [{ name: 'All Files', extensions: ['*'] }],
   });
@@ -1544,7 +1243,7 @@ ipcMain.handle('dialog:openGenericFile', async (_, { filters } = {}) => {
 });
 
 ipcMain.handle('dialog:saveFile', async (_, { defaultName, filters }) => {
-  const result = await dialog.showSaveDialog(mainWindow, {
+  const result = await dialog.showSaveDialog(windowManager.getMainWindow(), {
     defaultPath: defaultName,
     filters: filters || [{ name: 'Text', extensions: ['txt'] }],
   });
@@ -1552,7 +1251,7 @@ ipcMain.handle('dialog:saveFile', async (_, { defaultName, filters }) => {
 });
 
 ipcMain.handle('dialog:openDirectory', async () => {
-  const result = await dialog.showOpenDialog(mainWindow, {
+  const result = await dialog.showOpenDialog(windowManager.getMainWindow(), {
     properties: ['openDirectory', 'createDirectory'],
   });
   return result.canceled ? null : result.filePaths[0];
@@ -1665,8 +1364,8 @@ function linkImportsRootDir() {
 }
 
 function emitLinkImportProgress(payload) {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  mainWindow.webContents.send('link-import:progress', payload);
+  if (!windowManager.getMainWindow() || windowManager.getMainWindow().isDestroyed()) return;
+  windowManager.getMainWindow().webContents.send('link-import:progress', payload);
 }
 
 function normalizeImportUrl(value) {
@@ -2533,7 +2232,7 @@ ipcMain.handle('hyperframes:exportShortClip', async (_, {
       return { success: false, error: 'Missing HyperFrames render project, output path, or input video path.' };
     }
     const ffmpegPath = getFfmpegPath();
-    mainWindow?.webContents.send('hyperframes:export-progress', {
+    windowManager.getMainWindow()?.webContents.send('hyperframes:export-progress', {
       jobId: renderJobId,
       status: 'starting',
       progress: 0,
@@ -2551,7 +2250,7 @@ ipcMain.handle('hyperframes:exportShortClip', async (_, {
       log,
       abortSignal: abortController.signal,
       onProgress: (payload) => {
-        mainWindow?.webContents.send('hyperframes:export-progress', {
+        windowManager.getMainWindow()?.webContents.send('hyperframes:export-progress', {
           jobId: renderJobId,
           ...payload,
         });
@@ -2789,7 +2488,7 @@ ipcMain.handle('project:clearAll', async () => {
 ipcMain.handle('project:export', async (_event, { id }) => {
   try {
     const project = readProject(id);
-    const result = await dialog.showSaveDialog(mainWindow, {
+    const result = await dialog.showSaveDialog(windowManager.getMainWindow(), {
       defaultPath: `${safeName(project.name || project.session?.sourceFileName || 'VaniScript Project')}.vaniscript`,
       filters: [{ name: 'VaniScript Project', extensions: ['vaniscript'] }],
     });
@@ -2804,7 +2503,7 @@ ipcMain.handle('project:export', async (_event, { id }) => {
 ipcMain.handle('project:exportAll', async () => {
   try {
     const projects = listProjects().map((summary) => readProject(summary.id));
-    const result = await dialog.showSaveDialog(mainWindow, {
+    const result = await dialog.showSaveDialog(windowManager.getMainWindow(), {
       defaultPath: 'VaniScript Library.vaniscript-library',
       filters: [{ name: 'VaniScript Library', extensions: ['vaniscript-library'] }],
     });
@@ -2818,7 +2517,7 @@ ipcMain.handle('project:exportAll', async () => {
 
 ipcMain.handle('project:import', async () => {
   try {
-    const result = await dialog.showOpenDialog(mainWindow, {
+    const result = await dialog.showOpenDialog(windowManager.getMainWindow(), {
       properties: ['openFile'],
       filters: [
         { name: 'VaniScript Projects', extensions: ['vaniscript', 'vaniscript-library'] },
@@ -2871,6 +2570,51 @@ ipcMain.handle('project:import', async () => {
     }
   } catch (error) {
     return { ok: false, error: error.message || String(error) };
+  }
+});
+
+// ─── IPC: Legacy localStorage → Main disk store migration (one-shot) ─────────
+ipcMain.handle('settings:migrateLegacy', async (_event, payload) => {
+  try {
+    // No explicit paths: handler writes to the canonical settings/vault defaults.
+    return await handleMigrateLegacy(payload || {}, {});
+  } catch (error) {
+    return {
+      ok: false,
+      errorCode: 'INTERNAL',
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+});
+
+// ─── IPC: Cloud provider routing (secure proxy) ───────────────────────────────
+// The renderer never receives API keys. Main resolves the key from the vault,
+// injects it into the outgoing request, and returns only the normalized result.
+// App-level errors cross IPC as a resolved envelope carrying the AppError marker
+// (Electron drops the thrown error's prototype/flag during serialization).
+ipcMain.handle('provider:invoke', async (_event, request) => {
+  try {
+    return await invokeProvider(request);
+  } catch (err) {
+    if (err && err.isAppError) {
+      return { __appError: true, code: err.code, message: err.message, details: err.details };
+    }
+    return { __appError: true, code: 'INTERNAL', message: err && err.message ? err.message : 'Unknown error', details: String(err) };
+  }
+});
+
+// ─── IPC: Local model manager (MOD-01) ───────────────────────────────────────
+// Scan / verify / relocate local models entirely in the Main process. The
+// renderer only passes intent; the manager enforces path-traversal guards and
+// checksum verification, and never exposes model bytes or secret material.
+ipcMain.handle(MODELS_MANAGE_CHANNEL, async (_event, request) => {
+  try {
+    return { ok: true, result: await manageModels(request) };
+  } catch (err) {
+    if (err && err.isAppError) {
+      return { ok: false, error: { code: err.code, message: err.message, details: err.details } };
+    }
+    return { ok: false, error: { code: 'INTERNAL', message: err && err.message ? err.message : 'Unknown error', details: String(err) } };
   }
 });
 
@@ -3251,7 +2995,7 @@ function startMcpServer() {
 
           if (rpc.method === 'tools/call') {
             const { name, arguments: args } = rpc.params || {};
-            if (!mainWindow) {
+            if (!windowManager.getMainWindow()) {
               const errResponse = {
                 jsonrpc: '2.0',
                 id: rpc.id,
@@ -3286,7 +3030,7 @@ function startMcpServer() {
             });
 
             // Forward tool call to React renderer
-            mainWindow.webContents.send('mcp:call-tool', { name, arguments: args, requestId });
+            windowManager.getMainWindow().webContents.send('mcp:call-tool', { name, arguments: args, requestId });
             return;
           }
 
@@ -3672,4 +3416,14 @@ ipcMain.handle('mcp:tool-response', async (_event, { requestId, success, result,
       pending.reject(new Error(error));
     }
   }
+});
+
+// ─── App bootstrap ───────────────────────────────────────────────────────────
+registerAppLifecycle({
+  getTempDir,
+  cleanupTempDir,
+  startMcpServer,
+  stopMcpServer,
+  broadcastSharedLocalModels,
+  windowManager,
 });

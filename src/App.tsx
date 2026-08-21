@@ -52,6 +52,10 @@ import { alignedSegmentsToCues, AlignedSubtitleSegment } from './lib/subtitle-al
 import { currentBuildId } from './lib/build-info';
 import { markOnboardingCompletedForBuild, shouldShowOnboardingForBuild } from './lib/onboarding';
 
+import { NavigationProvider } from './stores/navigationStore';
+import { useLegacySettingsMigration } from './stores/migrationStore';
+import { usePaneStore, paneStore } from './stores/paneStore';
+
 type Screen = 'upload' | 'config' | 'processing' | 'review' | 'export';
 type ViewMode = 'source' | 'translated' | 'dual';
 type OutputFormat = 'TXT' | 'SRT' | 'VTT' | 'Markdown';
@@ -415,7 +419,6 @@ export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [procMsg, setProcMsg] = useState('');
   const [procProgress, setProcProgress] = useState(0);
-  const [viewMode, setViewMode] = useState<ViewMode>('dual');
   const outputFormat: OutputFormat = 'TXT';
   const [audioSrc, setAudioSrc] = useState('');
   const [audioStatus, setAudioStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
@@ -434,7 +437,6 @@ export default function App() {
     ...(loadShortsDefaults().settings ?? {}),
   }));
   const [shortsPlans, setShortsPlans] = useState<ShortsClipPlan[]>([]);
-  const [showChatSidebar, setShowChatSidebar] = useState(false);
   const [shortsBusy, setShortsBusy] = useState(false);
   const [shortsBusyLabel, setShortsBusyLabel] = useState('');
   const [shortsExportProgress, setShortsExportProgress] = useState<ShortsExportProgress | null>(null);
@@ -443,15 +445,13 @@ export default function App() {
   const [shortsVideoSourceInfo, setShortsVideoSourceInfo] = useState<{ width: number; height: number; durationSec: number; fps?: number } | null>(null);
   const [glossaryDraft, setGlossaryDraft] = useState<GlossaryDraft | null>(null);
   const [editingProvider, setEditingProvider] = useState<string>(() => loadShortsDefaults().planningProvider || settings.translationProvider);
-  const [projectSidebarOpen, setProjectSidebarOpen] = useState(false);
-  const [projectSidebarClosing, setProjectSidebarClosing] = useState(false);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [expandedProjectId, setExpandedProjectId] = useState<string | null>(null);
   const [activeMediaInfo, setActiveMediaInfo] = useState<SourceMediaInfo | null>(null);
+  const pane = usePaneStore();
   const isTranscribing = useRef(false);
   const autosaveTimerRef = useRef<number | null>(null);
   const autosaveSnapshotRef = useRef('');
-  const projectSidebarCloseTimerRef = useRef<number | null>(null);
   const shortsExportCancelRef = useRef(false);
   const shortsExportJobIdRef = useRef('');
   const shortsExportCompletedRef = useRef(0);
@@ -557,27 +557,24 @@ export default function App() {
     return window.electronAPI.onOpenSettings(() => setShowSettings(true));
   }, []);
 
-  const openProjectSidebar = useCallback(() => {
-    if (projectSidebarCloseTimerRef.current) {
-      window.clearTimeout(projectSidebarCloseTimerRef.current);
-      projectSidebarCloseTimerRef.current = null;
+  // One-shot migration of legacy (Apple-Silicon era) localStorage settings into
+  // the Main process disk store + credential vault, on app boot.
+  const legacyMigration = useLegacySettingsMigration();
+  useEffect(() => {
+    if (legacyMigration.status === 'migrated') {
+      console.info('[migration] legacy settings migrated to disk store');
+    } else if (legacyMigration.status === 'failed') {
+      console.warn('[migration] legacy settings migration failed; will retry on next launch', legacyMigration.detail);
     }
-    setProjectSidebarClosing(false);
-    setProjectSidebarOpen(true);
+  }, [legacyMigration.status, legacyMigration.detail]);
+
+
+  const openProjectSidebar = useCallback(() => {
+    paneStore.openProjectSidebar();
   }, []);
 
   const closeProjectSidebar = useCallback(() => {
-    setProjectSidebarClosing(true);
-    if (projectSidebarCloseTimerRef.current) window.clearTimeout(projectSidebarCloseTimerRef.current);
-    projectSidebarCloseTimerRef.current = window.setTimeout(() => {
-      setProjectSidebarOpen(false);
-      setProjectSidebarClosing(false);
-      projectSidebarCloseTimerRef.current = null;
-    }, 190);
-  }, []);
-
-  useEffect(() => () => {
-    if (projectSidebarCloseTimerRef.current) window.clearTimeout(projectSidebarCloseTimerRef.current);
+    paneStore.closeProjectSidebar();
   }, []);
 
   const reconcileLocalModelsWithDisk = useCallback(async () => {
@@ -931,8 +928,7 @@ export default function App() {
     };
   }, [audioCurrentSec, glossaryDraft, screen, seekCurrentAudio, session, showSettings, toggleCurrentAudio]);
 
-  const handleSaveSettings = (nextSettings: AppSettings) => {
-    saveSettings(nextSettings);
+  const handleSettingsPersist = (nextSettings: AppSettings) => {
     setSettings(nextSettings);
 
     setSession(prev => {
@@ -965,8 +961,10 @@ export default function App() {
   };
 
   const handleChatConfigChange = useCallback((patch: { chatRoute?: 'mcp' | 'api' | 'qwen'; chatGrokModel?: string; chatQwenModel?: string }) => {
-    handleSaveSettings({ ...settings, ...patch });
-  }, [settings, handleSaveSettings]);
+    const next = { ...settings, ...patch };
+    saveSettings(next);
+    handleSettingsPersist(next);
+  }, [settings, session, handleSettingsPersist]);
 
   const editingProviders = useMemo(
     () => getAvailableTranslationProviders(settings, session?.targetLang ?? settings.defaultTargetLang).providers,
@@ -2650,7 +2648,7 @@ export default function App() {
 
   // ─── Render ───────────────────────────────────────────────────────────────
   return (
-    <>
+    <NavigationProvider>
       <div className="app-bg" />
       <div className="app-shell">
         <div className="drag-region" />
@@ -2668,11 +2666,11 @@ export default function App() {
               <HelpCircle size={15} style={{ color: settings.annotationMode ? 'var(--accent)' : 'inherit' }} />
             </button>
             <button
-              className={`settings-btn inline ${showChatSidebar ? 'active' : ''}`}
-              onClick={() => setShowChatSidebar(!showChatSidebar)}
+              className={`settings-btn inline ${pane.showChatSidebar ? 'active' : ''}`}
+              onClick={() => paneStore.setChatSidebar(!pane.showChatSidebar)}
               title="AI Assistant"
             >
-              <Sparkles size={15} style={{ color: showChatSidebar ? 'var(--accent)' : 'inherit' }} />
+              <Sparkles size={15} style={{ color: pane.showChatSidebar ? 'var(--accent)' : 'inherit' }} />
             </button>
             <button className="settings-btn inline" onClick={openProjectSidebar} title="Projects">
               <FolderOpen size={15} />
@@ -2762,9 +2760,9 @@ export default function App() {
                   )}
                   {/* View mode */}
                   <div className="review-view-group" data-tour="review-view-group">
-                    <button className={`review-view-btn ${viewMode === 'source' ? 'active' : ''}`} onClick={() => setViewMode('source')}>Source</button>
-                    <button className={`review-view-btn ${viewMode === 'translated' ? 'active' : ''}`} onClick={() => setViewMode('translated')}>Translated</button>
-                    <button className={`review-view-btn ${viewMode === 'dual' ? 'active-accent' : ''}`} onClick={() => setViewMode('dual')}>Dual View</button>
+                    <button className={`review-view-btn ${pane.viewMode === 'source' ? 'active' : ''}`} onClick={() => paneStore.setViewMode('source')}>Source</button>
+                    <button className={`review-view-btn ${pane.viewMode === 'translated' ? 'active' : ''}`} onClick={() => paneStore.setViewMode('translated')}>Translated</button>
+                    <button className={`review-view-btn ${pane.viewMode === 'dual' ? 'active-accent' : ''}`} onClick={() => paneStore.setViewMode('dual')}>Dual View</button>
                   </div>
                 </div>
 
@@ -2790,11 +2788,11 @@ export default function App() {
                     </button>
                   )}
                   <button
-                    className={`review-icon-btn ${showChatSidebar ? 'active' : ''}`}
-                    onClick={() => setShowChatSidebar(!showChatSidebar)}
+                    className={`review-icon-btn ${pane.showChatSidebar ? 'active' : ''}`}
+                    onClick={() => paneStore.setChatSidebar(!pane.showChatSidebar)}
                     title="AI Assistant"
                   >
-                    <Sparkles size={14} style={{ color: showChatSidebar ? 'var(--accent)' : 'inherit' }} />
+                    <Sparkles size={14} style={{ color: pane.showChatSidebar ? 'var(--accent)' : 'inherit' }} />
                   </button>
                   <button
                     className="review-icon-btn"
@@ -2915,9 +2913,9 @@ export default function App() {
                   </button>
                 </div>
               ) : (
-                <div className="review-panes" style={{ gridTemplateColumns: viewMode === 'dual' ? '1fr 1fr' : '1fr' }}>
+                <div className="review-panes" style={{ gridTemplateColumns: pane.viewMode === 'dual' ? '1fr 1fr' : '1fr' }}>
                   {/* Original pane */}
-                  {(viewMode === 'source' || viewMode === 'dual') && (
+                  {(pane.viewMode === 'source' || pane.viewMode === 'dual') && (
                     <div className="review-pane" data-tour="review-pane-original">
                       <div className="review-pane-header">
                         <span className="review-pane-label">ORIGINAL TRANSCRIPTION</span>
@@ -2940,8 +2938,8 @@ export default function App() {
                         content={originalPreview}
                         format={outputFormat}
                         lang="original"
-                        scrollRef={viewMode === 'dual' ? leftPaneRef : { current: null }}
-                        onScroll={viewMode === 'dual' ? handleLeftScroll : (() => {})}
+                        scrollRef={pane.viewMode === 'dual' ? leftPaneRef : { current: null }}
+                        onScroll={pane.viewMode === 'dual' ? handleLeftScroll : (() => {})}
                         onUpdateContent={(val) => {
                           if (!isEditableTextMode) return;
                           handleUpdateChunk(session.currentIndex, {
@@ -2964,7 +2962,7 @@ export default function App() {
                   )}
 
                   {/* Translation pane */}
-                  {hasTranslation && (viewMode === 'translated' || viewMode === 'dual') && (
+                  {hasTranslation && (pane.viewMode === 'translated' || pane.viewMode === 'dual') && (
                     <div className="review-pane" data-tour="review-pane-translation">
                       <div className="review-pane-header">
                         <span className="review-pane-label" style={{ color: 'var(--accent)' }}>TRANSLATED: {session.targetLang.toUpperCase()}</span>
@@ -2988,8 +2986,8 @@ export default function App() {
                         content={translatedPreview}
                         format={outputFormat}
                         lang="translated"
-                        scrollRef={viewMode === 'dual' ? rightPaneRef : { current: null }}
-                        onScroll={viewMode === 'dual' ? handleRightScroll : (() => {})}
+                        scrollRef={pane.viewMode === 'dual' ? rightPaneRef : { current: null }}
+                        onScroll={pane.viewMode === 'dual' ? handleRightScroll : (() => {})}
                         onUpdateContent={(val) => {
                           if (!isEditableTextMode) return;
                           handleUpdateChunk(session.currentIndex, {
@@ -3014,7 +3012,7 @@ export default function App() {
                 </div>
               )}
 
-              {viewMode !== 'dual' && (chunk?.unrecognizedFragments?.length || 0) > 0 && (
+              {pane.viewMode !== 'dual' && (chunk?.unrecognizedFragments?.length || 0) > 0 && (
                 <div className="review-fragments">
                   <div className="review-fragments-title">UNRECOGNIZED FRAGMENTS</div>
                   <ul className="review-fragments-list">
@@ -3279,7 +3277,7 @@ export default function App() {
           <SettingsModal
             settings={settings}
             usage={usage}
-            onSave={handleSaveSettings}
+            onPersist={handleSettingsPersist}
             onClose={() => setShowSettings(false)}
             tabIndex={settingsTab}
             onTabChange={setSettingsTab}
@@ -3287,8 +3285,8 @@ export default function App() {
         )}
 
         <ChatSidebar
-          isOpen={showChatSidebar}
-          onClose={() => setShowChatSidebar(false)}
+          isOpen={pane.showChatSidebar}
+          onClose={() => paneStore.setChatSidebar(false)}
           executeMcpTool={executeMcpTool}
           settings={settings}
           chatRoute={settings.chatRoute ?? 'api'}
@@ -3328,8 +3326,8 @@ export default function App() {
           </div>
         )}
 
-        {projectSidebarOpen && (
-          <div className={`project-sidebar-backdrop ${projectSidebarClosing ? 'closing' : ''}`} onMouseDown={closeProjectSidebar}>
+        {pane.projectSidebarOpen && (
+          <div className={`project-sidebar-backdrop ${pane.projectSidebarClosing ? 'closing' : ''}`} onMouseDown={closeProjectSidebar}>
             <aside className="project-sidebar" onMouseDown={(event) => event.stopPropagation()}>
               <div className="project-sidebar-header">
                 <div>
@@ -3711,6 +3709,6 @@ export default function App() {
           />
         )}
       </div>
-    </>
+    </NavigationProvider>
   );
 }

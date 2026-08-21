@@ -1,6 +1,8 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { AppSettings, UsageStats } from '../types';
 import { DEFAULT_SETTINGS, saveUsage } from '../services/storage';
+import { useSettingsStore } from '../hooks/useSettingsStore';
+import type { Settings, AgentsSettings, UpdatesSettings } from '../../shared/contracts/settings';
 import { X, Eye, EyeOff, Download, Trash2, RefreshCw, Upload, Plus, CheckCircle2, ExternalLink } from 'lucide-react';
 import { getAvailableTranscriptionProviders, getAvailableTranslationProviders, ProviderOption } from '../lib/provider-registry';
 import { createGlossaryEntry } from '../lib/glossary';
@@ -8,7 +10,7 @@ import { filterGlossaryEntries, GlossarySortMode, joinGlossaryEntries, listGloss
 import { PROMPT_DEFINITIONS, PROMPT_SLOTS, type PromptPresetId, type PromptSlot } from '../lib/prompt-presets';
 import { reconcileLocalModelStatesWithDisk } from '../services/model-presence';
 
-const TABS = ['API Keys', 'Models', 'Appearance', 'Glossary', 'Chunking', 'Transcription', 'Prompts', 'Statistics'];
+const TABS = ['API Keys', 'Models', 'Appearance', 'Glossary', 'Chunking', 'Transcription', 'Prompts', 'Agents', 'Updates'];
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -42,7 +44,7 @@ function ApiKey({ label, value, onChange, placeholder }: { label: string; value:
 interface Props {
   settings: AppSettings;
   usage: UsageStats;
-  onSave: (s: AppSettings) => void;
+  onPersist?: (s: AppSettings) => void;
   onClose: () => void;
   tabIndex?: number;
   onTabChange?: (tab: number) => void;
@@ -132,7 +134,7 @@ function renderProviderOptions(options: ProviderOption[]) {
   );
 }
 
-export function SettingsModal({ settings, usage, onSave, onClose, tabIndex, onTabChange }: Props) {
+export function SettingsModal({ settings, usage, onPersist, onClose, tabIndex, onTabChange }: Props) {
   const [s, setS] = useState<AppSettings>({ ...settings });
   const [localTab, setLocalTab] = useState(0);
   const tab = tabIndex !== undefined ? tabIndex : localTab;
@@ -143,7 +145,30 @@ export function SettingsModal({ settings, usage, onSave, onClose, tabIndex, onTa
   const [selectedGlossaryIds, setSelectedGlossaryIds] = useState<string[]>([]);
   const [selectedPromptId, setSelectedPromptId] = useState<PromptPresetId>('transcriptionSystem');
   const downloadSnapshotsRef = useRef<Record<string, { bytes: number; unchangedTicks: number }>>({});
-  const onSaveRef = useRef(onSave);
+  const onPersistRef = useRef(onPersist);
+  // SET-04: read/write the main-process settings store via IPC instead of
+  // localStorage. The hook keeps a cached copy; we mirror it into `s` once on
+  // mount and write every persisted change back to Main.
+  const settingsStore = useSettingsStore();
+  const storeUpdateRef = useRef(settingsStore.updateSettings);
+  const storeFetchRef = useRef(settingsStore.fetchSettings);
+  useEffect(() => {
+    storeUpdateRef.current = settingsStore.updateSettings;
+  }, [settingsStore.updateSettings]);
+  useEffect(() => {
+    storeFetchRef.current = settingsStore.fetchSettings;
+  }, [settingsStore.fetchSettings]);
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (seeded.current) return;
+    seeded.current = true;
+    // SET-04: hydrate the IPC store cache so the Agents/Updates sections can
+    // read `settingsStore.settings` (a nested `Settings` shape). The flat
+    // editor state `s` stays sourced from the `settings` prop — a nested
+    // `Settings` object must not clobber the flat `AppSettings` fields this
+    // component reads throughout (geminiKey, theme, glossary, ...).
+    void storeFetchRef.current();
+  }, []);
   const settingsRef = useRef(s);
   const upd = (p: Partial<AppSettings>) => setS(prev => ({ ...prev, ...p }));
   const transcriptionProviders = getAvailableTranscriptionProviders(s);
@@ -152,6 +177,20 @@ export function SettingsModal({ settings, usage, onSave, onClose, tabIndex, onTa
   const latestUsage = Object.entries(usage).sort(([, a], [, b]) => {
     return new Date(b.lastUsed || 0).getTime() - new Date(a.lastUsed || 0).getTime();
   })[0];
+  const storeSettings = settingsStore.settings;
+  const agents: AgentsSettings = storeSettings?.agents ?? {
+    localMcpEnabled: false,
+    mcpPort: null,
+    accessTokenRef: '',
+    preferredAgent: 'codex',
+    embeddedChatEnabled: false,
+    permissions: { read: true, mutate: false, processing: true, file: false, network: false, destructive: false },
+  };
+  const updates: UpdatesSettings = storeSettings?.updates ?? { autoCheck: true, channel: 'stable' };
+  const writeAgents = (patch: Partial<AgentsSettings>) =>
+    void storeUpdateRef.current({ agents: { ...agents, ...patch } } as Partial<Settings>);
+  const writeUpdates = (patch: Partial<UpdatesSettings>) =>
+    void storeUpdateRef.current({ updates: { ...updates, ...patch } } as Partial<Settings>);
   const glossaryCategories = listGlossaryCategories(s.glossary);
   const visibleGlossary = sortGlossaryEntries(filterGlossaryEntries(s.glossary, glossarySearch, glossaryCategory), glossarySort);
   const promptStages = Array.from(new Set(PROMPT_DEFINITIONS.map((definition) => definition.stage)));
@@ -160,8 +199,8 @@ export function SettingsModal({ settings, usage, onSave, onClose, tabIndex, onTa
   const activePromptSlot = selectedPromptSettings?.active ?? 'default';
 
   useEffect(() => {
-    onSaveRef.current = onSave;
-  }, [onSave]);
+    onPersistRef.current = onPersist;
+  }, [onPersist]);
 
   useEffect(() => {
     settingsRef.current = s;
@@ -189,15 +228,12 @@ export function SettingsModal({ settings, usage, onSave, onClose, tabIndex, onTa
 
     settingsRef.current = next;
     setS(next);
-    onSaveRef.current(next);
+    persistSettings(next);
   }, []);
 
   useEffect(() => {
     void reconcileLocalModelsWithDisk();
-    const onFocus = () => void reconcileLocalModelsWithDisk();
-    window.addEventListener('focus', onFocus);
-    return () => window.removeEventListener('focus', onFocus);
-  }, [reconcileLocalModelsWithDisk]);
+  }, []);
 
   const updatePromptPreset = useCallback((id: PromptPresetId, patch: Partial<AppSettings['promptPresets'][PromptPresetId]>) => {
     setS((prev) => ({
@@ -218,8 +254,9 @@ export function SettingsModal({ settings, usage, onSave, onClose, tabIndex, onTa
 
   const persistSettings = useCallback((next: AppSettings) => {
     setS(next);
-    onSave(next);
-  }, [onSave]);
+    onPersistRef.current?.(next);
+    void storeUpdateRef.current(next as unknown as Partial<Settings>);
+  }, [onPersist]);
 
   const selectProvider = useCallback((kind: 'asr' | 'translation', providerId: string) => {
     const next = {
@@ -355,7 +392,7 @@ export function SettingsModal({ settings, usage, onSave, onClose, tabIndex, onTa
         }
 
         const next = { ...prev, localAsrModels, localTranslationModels };
-        onSaveRef.current(next);
+        persistSettings(next);
         return next;
       });
     };
@@ -1124,7 +1161,7 @@ export function SettingsModal({ settings, usage, onSave, onClose, tabIndex, onTa
             </div>
           )}
 
-          {/* Statistics */}
+          {/* Prompts */}
           {tab === 6 && (
             <div>
               <div className="s-section">
@@ -1206,60 +1243,144 @@ export function SettingsModal({ settings, usage, onSave, onClose, tabIndex, onTa
             </div>
           )}
 
-          {/* Statistics */}
+          {/* Agents */}
           {tab === 7 && (
             <div>
-              <p className="s-section-title">Cloud API Usage</p>
-              {latestUsage && (
-                <div className="s-stats-item">
-                  <div className="s-stats-header">
-                    <span className="s-stats-name">Last Transaction Details</span>
-                    <span className="s-badge">{providerDisplayName(latestUsage[0])}</span>
-                  </div>
-                  <div className="s-stats-grid">
-                    <div className="s-stats-cell"><div className="val">{(latestUsage[1].lastInputTokens ?? 0).toLocaleString()}</div><div className="lbl">Prompt tokens</div></div>
-                    <div className="s-stats-cell"><div className="val">{(latestUsage[1].lastOutputTokens ?? 0).toLocaleString()}</div><div className="lbl">Completion tokens</div></div>
-                    <div className="s-stats-cell"><div className="val">{((latestUsage[1].lastInputTokens ?? 0) + (latestUsage[1].lastOutputTokens ?? 0)).toLocaleString()}</div><div className="lbl">Total tokens</div></div>
+              <div className="s-section">
+                <p className="s-section-title">Local Agent Runtime</p>
+                <div className="s-card">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ marginRight: 16 }}>
+                      <span className="s-label" style={{ fontWeight: 600, display: 'block', fontSize: 13 }}>Local MCP Server</span>
+                      <span style={{ fontSize: 11, color: 'rgba(255, 255, 255, 0.45)', marginTop: 2, display: 'block' }}>
+                        Expose an MCP endpoint so external coding agents can drive VaniScript.
+                      </span>
+                    </div>
+                    <label className="glossary-select-row" style={{ display: 'flex', alignItems: 'center', gap: 6, margin: 0, padding: 0, border: 'none', background: 'none' }}>
+                      <input type="checkbox" checked={agents.localMcpEnabled} onChange={e => writeAgents({ localMcpEnabled: e.target.checked })} />
+                      <span style={{ fontSize: 12 }}>Enabled</span>
+                    </label>
                   </div>
                 </div>
-              )}
-              <div className="s-card" style={{ marginBottom: 12 }}>
-                <div className="api-active-summary">
-                  <div>
-                    <span className="s-label">Transcribing</span>
-                    <strong>{providerDisplayName(s.transcriptionProvider)}</strong>
-                  </div>
-                  <div>
-                    <span className="s-label">Translation / Editing</span>
-                    <strong>{providerDisplayName(s.translationProvider)}</strong>
-                  </div>
+                <div className="s-card" style={{ marginTop: 12 }}>
+                  <Field label="MCP Bind Port">
+                    <input
+                      className="s-input"
+                      type="number"
+                      value={agents.mcpPort ?? ''}
+                      placeholder="auto"
+                      onChange={e => writeAgents({ mcpPort: e.target.value === '' ? null : Number(e.target.value) })}
+                    />
+                  </Field>
+                  <Field label="Preferred Agent">
+                    <select className="s-input s-select" value={agents.preferredAgent} onChange={e => writeAgents({ preferredAgent: e.target.value as AgentsSettings['preferredAgent'] })}>
+                      <option value="codex">Codex</option>
+                      <option value="grok">Grok</option>
+                      <option value="qwen">Qwen</option>
+                    </select>
+                  </Field>
+                  <label className="glossary-select-row" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
+                    <input type="checkbox" checked={agents.embeddedChatEnabled} onChange={e => writeAgents({ embeddedChatEnabled: e.target.checked })} />
+                    <span style={{ fontSize: 12 }}>Embedded chat panel</span>
+                  </label>
                 </div>
               </div>
-              {Object.keys(usage).length === 0 ? (
-                <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.3)', textAlign: 'center', paddingTop: 40 }}>No usage recorded yet.</p>
-              ) : Object.entries(usage).map(([provider, stats]) => {
-                const spent = estimateUsageCost(provider, stats);
-                const budget = provider === 'gemini-cloud' ? s.geminiBudgetUsd : provider === 'gpt-cloud' ? s.openaiBudgetUsd : 0;
-                const remaining = Math.max(0, budget - spent);
-                return (
-                  <div key={provider} className="s-stats-item">
-                    <div className="s-stats-header">
-                      <span className="s-stats-name">{providerDisplayName(provider)}</span>
-                      <span className="s-badge">{stats.sessions} transactions</span>
+              <div className="s-section" style={{ marginTop: 16 }}>
+                <p className="s-section-title">Agent Permissions</p>
+                <div className="s-card">
+                  {(['read', 'mutate', 'processing', 'file', 'network', 'destructive'] as const).map((perm) => (
+                    <label key={perm} className="glossary-select-row" style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '4px 0' }}>
+                      <input
+                        type="checkbox"
+                        checked={agents.permissions[perm]}
+                        onChange={e => writeAgents({ permissions: { ...agents.permissions, [perm]: e.target.checked } })}
+                      />
+                      <span style={{ fontSize: 12, textTransform: 'capitalize' }}>{perm}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Updates */}
+          {tab === 8 && (
+            <div>
+              <div className="s-section">
+                <p className="s-section-title">Updates</p>
+                <div className="s-card">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ marginRight: 16 }}>
+                      <span className="s-label" style={{ fontWeight: 600, display: 'block', fontSize: 13 }}>Automatic Update Checks</span>
+                      <span style={{ fontSize: 11, color: 'rgba(255, 255, 255, 0.45)', marginTop: 2, display: 'block' }}>
+                        Periodically check for new releases on launch.
+                      </span>
                     </div>
-                    <div className="s-stats-grid usage-grid">
-                      <div className="s-stats-cell"><div className="val">{stats.inputTokens.toLocaleString()}</div><div className="lbl">Prompt / input tokens</div></div>
-                      <div className="s-stats-cell"><div className="val">{stats.outputTokens.toLocaleString()}</div><div className="lbl">Completion tokens</div></div>
-                      <div className="s-stats-cell"><div className="val">{(stats.inputTokens + stats.outputTokens).toLocaleString()}</div><div className="lbl">Total tokens</div></div>
-                      <div className="s-stats-cell"><div className="val">{stats.audioMinutes.toFixed(1)}</div><div className="lbl">Audio min</div></div>
-                      <div className="s-stats-cell"><div className="val">${spent.toFixed(4)}</div><div className="lbl">Estimated spent</div></div>
-                      <div className="s-stats-cell"><div className="val">{budget > 0 ? `$${remaining.toFixed(2)}` : '—'}</div><div className="lbl">Estimated remaining</div></div>
-                    </div>
-                    <p className="usage-estimate-note">Cost is an estimate based on locally counted text tokens; provider billing can differ.</p>
+                    <label className="glossary-select-row" style={{ display: 'flex', alignItems: 'center', gap: 6, margin: 0, padding: 0, border: 'none', background: 'none' }}>
+                      <input type="checkbox" checked={updates.autoCheck} onChange={e => writeUpdates({ autoCheck: e.target.checked })} />
+                      <span style={{ fontSize: 12 }}>Enabled</span>
+                    </label>
                   </div>
-                );
-              })}
-              <button className="btn-danger-sm" style={{ marginTop: 12 }} onClick={() => { saveUsage({}); window.location.reload(); }}>Reset Statistics</button>
+                  <Field label="Release Channel">
+                    <select className="s-input s-select" value={updates.channel} onChange={e => writeUpdates({ channel: e.target.value as UpdatesSettings['channel'] })}>
+                      <option value="stable">Stable</option>
+                      <option value="beta">Beta</option>
+                    </select>
+                  </Field>
+                </div>
+              </div>
+              <div className="s-section" style={{ marginTop: 16 }}>
+                <p className="s-section-title">Cloud API Usage</p>
+                {latestUsage && (
+                  <div className="s-stats-item">
+                    <div className="s-stats-header">
+                      <span className="s-stats-name">Last Transaction Details</span>
+                      <span className="s-badge">{providerDisplayName(latestUsage[0])}</span>
+                    </div>
+                    <div className="s-stats-grid">
+                      <div className="s-stats-cell"><div className="val">{(latestUsage[1].lastInputTokens ?? 0).toLocaleString()}</div><div className="lbl">Prompt tokens</div></div>
+                      <div className="s-stats-cell"><div className="val">{(latestUsage[1].lastOutputTokens ?? 0).toLocaleString()}</div><div className="lbl">Completion tokens</div></div>
+                      <div className="s-stats-cell"><div className="val">{((latestUsage[1].lastInputTokens ?? 0) + (latestUsage[1].lastOutputTokens ?? 0)).toLocaleString()}</div><div className="lbl">Total tokens</div></div>
+                    </div>
+                  </div>
+                )}
+                <div className="s-card" style={{ marginBottom: 12 }}>
+                  <div className="api-active-summary">
+                    <div>
+                      <span className="s-label">Transcribing</span>
+                      <strong>{providerDisplayName(s.transcriptionProvider)}</strong>
+                    </div>
+                    <div>
+                      <span className="s-label">Translation / Editing</span>
+                      <strong>{providerDisplayName(s.translationProvider)}</strong>
+                    </div>
+                  </div>
+                </div>
+                {Object.keys(usage).length === 0 ? (
+                  <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.3)', textAlign: 'center', paddingTop: 40 }}>No usage recorded yet.</p>
+                ) : Object.entries(usage).map(([provider, stats]) => {
+                  const spent = estimateUsageCost(provider, stats);
+                  const budget = provider === 'gemini-cloud' ? s.geminiBudgetUsd : provider === 'gpt-cloud' ? s.openaiBudgetUsd : 0;
+                  const remaining = Math.max(0, budget - spent);
+                  return (
+                    <div key={provider} className="s-stats-item">
+                      <div className="s-stats-header">
+                        <span className="s-stats-name">{providerDisplayName(provider)}</span>
+                        <span className="s-badge">{stats.sessions} transactions</span>
+                      </div>
+                      <div className="s-stats-grid usage-grid">
+                        <div className="s-stats-cell"><div className="val">{stats.inputTokens.toLocaleString()}</div><div className="lbl">Prompt / input tokens</div></div>
+                        <div className="s-stats-cell"><div className="val">{stats.outputTokens.toLocaleString()}</div><div className="lbl">Completion tokens</div></div>
+                        <div className="s-stats-cell"><div className="val">{(stats.inputTokens + stats.outputTokens).toLocaleString()}</div><div className="lbl">Total tokens</div></div>
+                        <div className="s-stats-cell"><div className="val">${spent.toFixed(4)}</div><div className="lbl">Estimated spent</div></div>
+                        <div className="s-stats-cell"><div className="val">{budget > 0 ? `$${remaining.toFixed(2)}` : '—'}</div><div className="lbl">Estimated remaining</div></div>
+                      </div>
+                      <p className="usage-estimate-note">Cost is an estimate based on locally counted text tokens; provider billing can differ.</p>
+                    </div>
+                  );
+                })}
+                <button className="btn-danger-sm" style={{ marginTop: 12 }} onClick={() => { saveUsage({}); window.location.reload(); }}>Reset Statistics</button>
+              </div>
             </div>
           )}
 
@@ -1274,7 +1395,7 @@ export function SettingsModal({ settings, usage, onSave, onClose, tabIndex, onTa
               </button>
             )}
             <button className="btn-ghost-sm" onClick={onClose}>Cancel</button>
-            <button className="btn-save" onClick={() => { onSave(s); onClose(); }}>Save Settings</button>
+            <button className="btn-save" onClick={() => { persistSettings(s); onClose(); }}>Save Settings</button>
           </div>
         </div>
       </div>

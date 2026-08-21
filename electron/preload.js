@@ -60,6 +60,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
 		  localTranscribeChunk: (opts) => ipcRenderer.invoke('local-asr:transcribeChunk', opts),
 	  localScanModels: () => ipcRenderer.invoke('local-models:scan'),
 	  localReconcileModels: (opts) => ipcRenderer.invoke('local-models:reconcile', opts),
+	  // MOD-01 — secure local model manager (scan / verify / relocate).
+	  // Channel is canonical in shared/contracts/models.ts (MODELS_MANAGE_CHANNEL).
+	  manageModels: (action, payload = {}) => ipcRenderer.invoke('models:manage', { action, ...payload }),
 	  onLocalModelsUpdated: (callback) => {
     const handler = (_event, payload) => callback(payload);
     ipcRenderer.on('local-models:updated', handler);
@@ -150,4 +153,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // ─── Environment detection ────────────────────────────────────────────────
   isElectron: true,
+  // ─── Legacy settings migration (one-shot localStorage → Main disk store) ──
+  migrateLegacySettings: (payload) => ipcRenderer.invoke('settings:migrateLegacy', payload),
 });
