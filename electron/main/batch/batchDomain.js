@@ -38,10 +38,11 @@ const BATCH_DB_FILENAME = 'batch.sqlite';
 
 const ALLOWED_TRANSITIONS = Object.freeze({
   pending: Object.freeze(['running', 'cancelled']),
-  running: Object.freeze(['pending', 'done', 'failed', 'cancelled']),
+  running: Object.freeze(['pending', 'done', 'failed', 'cancelled', 'blockedOutputCollision']),
   done: Object.freeze([]),
   failed: Object.freeze([]),
   cancelled: Object.freeze([]),
+  blockedOutputCollision: Object.freeze(['pending']),
 });
 
 const MIGRATIONS = Object.freeze({
@@ -123,6 +124,16 @@ const MIGRATIONS = Object.freeze({
         SELECT RAISE(ABORT, 'job_events is append-only');
       END;
   `,
+  3: `
+    CREATE TABLE IF NOT EXISTS output_receipts (
+      job_id TEXT NOT NULL REFERENCES batch_jobs(job_id) ON DELETE CASCADE,
+      output_path TEXT PRIMARY KEY NOT NULL,
+      output_fingerprint TEXT NOT NULL,
+      written_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_output_receipts_job
+      ON output_receipts(job_id, written_at);
+  `,
 });
 
 function nowIso() {
@@ -158,6 +169,27 @@ function parseJson(value, label, fallback) {
     });
   }
 }
+function normalizeOutputFingerprint(value, field = 'outputFingerprint') {
+  let candidate = value;
+  if (typeof candidate === 'string') candidate = parseJson(candidate, field, null);
+  if (!isPlainObject(candidate)) {
+    throw createAppError('VALIDATION_FAILED', `${field} must contain sizeBytes and sha256.`);
+  }
+  const sizeBytes = candidate.sizeBytes;
+  const sha256 = candidate.sha256;
+  if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0) {
+    throw createAppError('VALIDATION_FAILED', `${field}.sizeBytes must be a non-negative safe integer.`);
+  }
+  if (typeof sha256 !== 'string' || !/^[0-9a-f]{64}$/i.test(sha256)) {
+    throw createAppError('VALIDATION_FAILED', `${field}.sha256 must be a SHA-256 hex string.`);
+  }
+  return { sizeBytes, sha256: sha256.toLowerCase() };
+}
+
+function outputFingerprintToken(value, field = 'outputFingerprint') {
+  return json(normalizeOutputFingerprint(value, field), field);
+}
+
 
 function requireId(value, field) {
   if (typeof value !== 'string' || value.length === 0) {
@@ -469,6 +501,27 @@ function jobFromRow(row) {
   };
   return validateOrThrow(validateBatchJob(value));
 }
+function outputReceiptFromRow(row) {
+  if (!row) return null;
+  const outputPath = row.output_path;
+  if (typeof outputPath !== 'string' || outputPath.length === 0) {
+    throw createAppError('CORRUPT_DATA', 'output_receipts.output_path is invalid.');
+  }
+  const writtenAt = row.written_at;
+  if (typeof writtenAt !== 'string' || Number.isNaN(Date.parse(writtenAt))) {
+    throw createAppError('CORRUPT_DATA', 'output_receipts.written_at is invalid.');
+  }
+  return {
+    jobId: row.job_id,
+    outputPath,
+    outputFingerprint: normalizeOutputFingerprint(
+      row.output_fingerprint,
+      'output_receipts.output_fingerprint',
+    ),
+    writtenAt,
+  };
+}
+
 
 function checkpointFromRow(row) {
   if (!row) return null;
@@ -1095,21 +1148,28 @@ class BatchDomain {
           maxAttempts: current.maxAttempts,
         });
       }
-      if (nextState === 'failed' && (typeof details.error !== 'string' || details.error.length === 0)) {
-        throw createAppError('VALIDATION_FAILED', 'A failed job requires a non-empty error.');
+      if (
+        ['failed', 'blockedOutputCollision'].includes(nextState)
+        && (typeof details.error !== 'string' || details.error.length === 0)
+      ) {
+        throw createAppError(
+          'VALIDATION_FAILED',
+          `${nextState} jobs require a non-empty error.`,
+        );
       }
       if (details.error !== undefined && (typeof details.error !== 'string' || details.error.length === 0)) {
         throw createAppError('VALIDATION_FAILED', 'transition error must be a non-empty string.');
       }
 
       const updatedAt = nowIso();
+      const terminal = ['done', 'failed', 'cancelled', 'blockedOutputCollision'].includes(nextState);
       const next = {
         ...current,
         state: nextState,
         phase: details.phase === undefined ? current.phase : details.phase,
         progress: details.progress === undefined ? current.progress : details.progress,
         outputFingerprint: details.outputFingerprint === undefined ? current.outputFingerprint : details.outputFingerprint,
-        lastError: nextState === 'failed'
+        lastError: ['failed', 'blockedOutputCollision'].includes(nextState)
           ? details.error
           : nextState === 'running' || nextState === 'done' || nextState === 'cancelled'
             ? null
@@ -1118,7 +1178,7 @@ class BatchDomain {
               : details.error,
         attempt: nextState === 'running' ? current.attempt + 1 : current.attempt,
         startedAt: nextState === 'running' ? updatedAt : current.startedAt,
-        completedAt: ['done', 'failed', 'cancelled'].includes(nextState) ? updatedAt : null,
+        completedAt: terminal ? updatedAt : null,
         updatedAt,
       };
       if (nextState === 'done') next.progress = 1;
@@ -1158,6 +1218,144 @@ class BatchDomain {
   completeJob(jobId, details = {}) {
     return this.transitionJob(jobId, 'done', details);
   }
+  getOutputReceipt(outputPath) {
+    if (typeof outputPath !== 'string' || outputPath.length === 0) {
+      throw createAppError('VALIDATION_FAILED', 'outputPath must be a non-empty string.');
+    }
+    assertSafePathSyntax(outputPath, 'outputPath');
+    this._assertOpen();
+    const query = this._db.prepare(`
+      SELECT job_id, output_path, output_fingerprint, written_at
+      FROM output_receipts
+      WHERE output_path = ?
+    `);
+    const direct = query.get(outputPath);
+    if (direct) return outputReceiptFromRow(direct);
+    // Receipts are stored under the writer's realpath-canonical output. Accept
+    // the equivalent macOS /var or /tmp alias when callers look one up.
+    let canonicalPath;
+    try {
+      canonicalPath = fs.realpathSync.native(outputPath);
+    } catch {
+      return null;
+    }
+    if (canonicalPath === outputPath) return null;
+    return outputReceiptFromRow(query.get(canonicalPath));
+  }
+
+  listOutputReceipts(jobId) {
+    requireId(jobId, 'jobId');
+    this._assertOpen();
+    return this._db.prepare(`
+      SELECT job_id, output_path, output_fingerprint, written_at
+      FROM output_receipts
+      WHERE job_id = ?
+      ORDER BY written_at ASC, output_path ASC
+    `).all(jobId).map(outputReceiptFromRow);
+  }
+
+  /**
+   * Persist the output receipt and terminal job transition as one SQLite
+   * mutation. The caller must have completed the filesystem rename first;
+   * callers compensate the rename if this transaction fails.
+   */
+  completeJobWithOutputReceipt(jobId, details = {}) {
+    requireId(jobId, 'jobId');
+    if (!isPlainObject(details)) {
+      throw createAppError('VALIDATION_FAILED', 'output completion details must be an object.');
+    }
+    const allowed = ['outputPath', 'outputFingerprint'];
+    for (const key of Object.keys(details)) {
+      if (!allowed.includes(key)) {
+        throw createAppError('VALIDATION_FAILED', `Unsupported output completion field "${key}".`);
+      }
+    }
+    const outputPath = assertSafePathSyntax(details.outputPath, 'outputPath');
+    const fingerprint = normalizeOutputFingerprint(details.outputFingerprint);
+    const fingerprintToken = outputFingerprintToken(fingerprint);
+
+    return this._runMutation(() => {
+      const row = this._db.prepare('SELECT * FROM batch_jobs WHERE job_id = ?').get(jobId);
+      if (!row) throw createAppError('NOT_FOUND', `Batch job "${jobId}" not found.`, { jobId });
+      const current = jobFromRow(row);
+      if (current.state !== 'running') {
+        throw createAppError('CONFLICT', `Batch job "${jobId}" is not running.`, {
+          jobId,
+          state: current.state,
+        });
+      }
+
+      const writtenAt = nowIso();
+      const receipt = {
+        jobId,
+        outputPath,
+        outputFingerprint: fingerprint,
+        writtenAt,
+      };
+      this._inject('outputReceipt:before-insert', receipt);
+      this._db.prepare(`
+        INSERT INTO output_receipts(job_id, output_path, output_fingerprint, written_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(output_path) DO UPDATE SET
+          job_id = excluded.job_id,
+          output_fingerprint = excluded.output_fingerprint,
+          written_at = excluded.written_at
+      `).run(jobId, outputPath, fingerprintToken, writtenAt);
+      this._inject('outputReceipt:after-insert', receipt);
+
+      const next = validateOrThrow(validateBatchJob({
+        ...current,
+        state: 'done',
+        progress: 1,
+        outputFingerprint: fingerprintToken,
+        lastError: null,
+        completedAt: writtenAt,
+        updatedAt: writtenAt,
+      }));
+      this._db.prepare(`
+        UPDATE batch_jobs
+        SET state = ?, phase = ?, progress = ?, output_fingerprint = ?,
+            last_error = ?, completed_at = ?, updated_at = ?
+        WHERE job_id = ? AND state = 'running'
+      `).run(
+        next.state,
+        next.phase,
+        next.progress,
+        next.outputFingerprint,
+        next.lastError,
+        next.completedAt,
+        next.updatedAt,
+        jobId,
+      );
+      this._inject('job:after-state-update', { before: current, after: next });
+      this._insertEvent(jobId, 'job.stateChanged', {
+        from: current.state,
+        to: next.state,
+        attempt: next.attempt,
+        outputPath,
+        outputFingerprint: fingerprintToken,
+      }, writtenAt);
+      return {
+        job: jobFromRow(this._db.prepare('SELECT * FROM batch_jobs WHERE job_id = ?').get(jobId)),
+        receipt: outputReceiptFromRow(this._db.prepare(`
+          SELECT job_id, output_path, output_fingerprint, written_at
+          FROM output_receipts
+          WHERE output_path = ?
+        `).get(outputPath)),
+      };
+    }, 'Batch output completion failed.');
+  }
+
+  blockOutputCollision(jobId, error) {
+    requireId(jobId, 'jobId');
+    if (typeof error !== 'string' || error.length === 0) {
+      throw createAppError('VALIDATION_FAILED', 'Output collision requires a non-empty error.');
+    }
+    const current = this.getJob(jobId);
+    if (current.state === 'blockedOutputCollision') return current;
+    return this.transitionJob(jobId, 'blockedOutputCollision', { error });
+  }
+
 
   failJob(jobId, error) {
     return this.transitionJob(jobId, 'failed', { error });

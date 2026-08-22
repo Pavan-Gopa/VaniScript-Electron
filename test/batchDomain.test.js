@@ -84,7 +84,7 @@ test('fresh database applies forward-only migrations and enables WAL', (t) => {
   const domain = openDomain(t, dbPath);
 
   assert.equal(domain.getSchemaVersion(), BATCH_DB_SCHEMA_VERSION);
-  assert.deepEqual(domain.getSchemaMigrations().map((row) => row.version), [1, 2]);
+  assert.deepEqual(domain.getSchemaMigrations().map((row) => row.version), [1, 2, 3]);
   assert.equal(domain.journalMode(), 'wal');
   assert.equal(fs.existsSync(dbPath), true);
 });
@@ -159,7 +159,7 @@ test('an existing v1 database upgrades without losing rows', (t) => {
   legacy.close();
 
   const domain = openDomain(t, dbPath);
-  assert.equal(domain.getSchemaVersion(), 2);
+  assert.equal(domain.getSchemaVersion(), 3);
   assert.equal(domain.getProfile('legacy-profile').recursive, false);
   assert.deepEqual(domain.getProfile('legacy-profile').config, {});
   const legacyJob = domain.getJob('legacy-job');

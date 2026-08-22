@@ -5,13 +5,13 @@ onboarding:
   model_pairs_confirmed: true
   completed_at: 2026-08-21T00:00:00Z
 current_step: P3B
-current_work_item_id: P3B.D5
+current_work_item_id: P3B.D6
 current_work_item: >-
-  Atomic companion writer — safe .txt output/receipts. IN PROGRESS under the
-  standing continuous-pipeline order.
+  Separate Batch workspace — button/queue/details/controls. IN PROGRESS under
+  the standing continuous-pipeline order; final item of card P3B.
 step_description: >-
-  P3B Batch lane; D1-D4 CLOSED, gates O1/J1 checked (suite 424 -> 461).
-  Continuous pipeline per Human standing order — currently entering D5.
+  P3B Batch lane; D1-D5 CLOSED, gates O1/J1/J2 checked (suite 424 -> 472).
+  Continuous pipeline per Human standing order — entering D6; O2 closes with it.
 completed_steps:
   - P0
   - P1
@@ -23,17 +23,17 @@ implementation:
   status: in_progress
   attempts: 0
   note: >-
-    Fresh cycle for P3B.D5 (BAT-05): atomic companion writer — safe .txt
-    output next to source, receipts, blockedOutputCollision state lands here
-    per binding adjudication; acceptance = collision tests per §20/§11.7.
+    Fresh cycle for P3B.D6 (BAT-06): separate Batch workspace UI — button/
+    queue/details/controls per §11.1-11.2; acceptance = 10k-row virtualization
+    E2E per §20/§11.9. Consumes D1-D5 domain APIs only.
 retry_guard:
   max_attempts_without_progress: 3
   last_failure_signature: "Reviewer attempt-3 residuals: collectPages deep-chain RangeError, literal trailing-escape TypeError, ZIP offset/compSize trust, unclosed XML canImport, nested textbox part routing, sourceHash-per-part"
   repeated_failure_count: 0
   blocker: null # cleared 2026-08-21 ~14:41Z — Human authorized one more same-model Tester attempt
 omp:
-  last_result_artifact: history://P3BD4Tester1
-  active_agent: P3BD5Coder1 (workflow-coder)
+  last_result_artifact: history://P3BD5Tester1
+  active_agent: P3BD6Coder1 (workflow-coder)
   active_role: coder
   status: dispatched
   role: coder
@@ -69,19 +69,19 @@ review:
   last_feedback_file: AI_Workflow_Kit/docs/AI/FEEDBACK.md
   verdict: null
   note: >-
-    D4 closed after fix round + delta approval (records retained). D5 review
-    queued after its coder attempt. Binding adjudications retained.
+    D5 closed approved zero-findings (record retained). D6 review queued after
+    its coder attempt. Binding adjudications retained.
 qa:
   status: passed
-  suite: batchScheduler + batch suites + full Electron suite
+  suite: batchCompanion + batch suites + full Electron suite
   bugs_open: 0
-  note: D4 confirmation PASS 461/461 fail 0, scheduler 12/12, tsc 0 (retained); D5 QA queued after review.
+  note: D5 confirmation PASS 472/472 fail 0, batch 48/48, tsc 0 (retained); D6 QA queued after review.
 next_actor: coder
-omp_status_note: running_p3b_d5_coder_dispatched
+omp_status_note: running_p3b_d6_coder_dispatched
 checkpoint:
   last_pre_tag: null
   last_post_tag: null
-  last_commit: 19d479b
+  last_commit: 66b3adb
   note: >-
     Pushes: #9 797fa62 (D1), #10 d98952f (D2), #11 19d479b (D3), synced.
     Continuous pipeline — P3B.D4 coder dispatched.

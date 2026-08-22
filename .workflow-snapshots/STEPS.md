@@ -101,7 +101,7 @@
 - [x] [P3B.D2] Folder access/watchers: adapters/reconciliation
 - [x] [P3B.D3] Stability/path safety: fingerprint/confinement
 - [x] [P3B.D4] Scheduler/recovery: claim/run/checkpoint/retry
-- [ ] [P3B.D5] Atomic companion writer: safe `.txt` output/receipts
+- [x] [P3B.D5] Atomic companion writer: safe `.txt` output/receipts
 - [ ] [P3B.D6] Separate Batch workspace: button/queue/details/controls
 
 ### Objective gates
@@ -110,7 +110,7 @@
 
 ### Judgment gates
 - [x] [P3B.J1] Symlink/case fuzz cannot escape path confinement
-- [ ] [P3B.J2] Companion `.txt` writes are collision-safe and receipted
+- [x] [P3B.J2] Companion `.txt` writes are collision-safe and receipted
 
 ## P3C — MCP/Agents lane
 

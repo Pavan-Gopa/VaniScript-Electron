@@ -596,3 +596,24 @@
 - **Gate evidence**: P3B.O1 now fully covered (D1 migration/transaction + D4 crash/restart recovery) — checked in STEPS; P3B.J1 covered by D3 seeded fuzz — checked.
 - **Closure transaction**: STEPS `[x] P3B.D4` + `[x] P3B.O1` + `[x] P3B.J1`; backup push #12.
 - **Next Step**: `P3B.D5` Atomic companion writer — continuous pipeline.
+
+## P3B.D5 — Attempt 1 (network-aborted, not counted)
+- **`P3BD5Coder1`** aborted at 14m by provider-side network failure (`getaddrinfo ENOTFOUND chatgpt.com`) — transient infrastructure fault per failover policy; does NOT increment product attempts. Partial work preserved in tree per Human resume order: NEW batchCompanionWriter.js, batchDomain.js +194/-6 (migration 3 + integration), shared/contracts/batch.ts +5/-1 (enum); tests NOT started.
+- **Main authorization during attempt**: output_receipts = forward migration 3 (no speculative v4 no-op); batchDomain.test.js opened STRICTLY for migration-version assertion updates ([1,2]->[1,2,3], upgrade path) after coder flagged hard baseline assertions — all other assertions untouchable.
+- **Next Step**: fresh session `P3BD5Coder2` — assess preserved partials, complete implementation + tests per original assignment.
+
+## P3B.D5 — Attempt 2
+- **Continuation (`P3BD5Coder2`)**: completed from preserved partials after dual-writer incident resolved (Coder1 hard-stopped after surviving its failed session; its migration-3 restoration and /var diagnosis credited). Salvage summary per coder: kept writer/domain/enum partials; canonicalized source/output derivation fixing /var->/private/var mismatch (realpath-canonical once at derivation, alias-tolerant receipt lookup :1232-1243); NEW batchCompanionWriter.js finalized (temp wx -> fsync -> rename -> completeJobWithOutputReceipt single-transaction pairing, rollback of renamed bytes on post-rename failure, beforeCommit/beforeReceipt injection hooks); blockedOutputCollision landed per binding adjudication (enum + running->blocked + blocked->pending transitions, terminal-with-error semantics); migration 3 output_receipts (PK output_path, FK cascade, index); scheduler untouched.
+- **Main verification**: npm test **472/472** (+11), focused batchCompanion **11/11**, `tsc --noEmit` exit 0; git scope exactly the five authorized files (incl. batchDomain.test.js limited 4-line assertion update [1,2]->[1,2,3]); all mechanisms confirmed at cited lines.
+- **Next Step**: `P3BD5Reviewer1` full review — focus: collision matrix soundness, rename/receipt transactional pairing under injected failures, cleanup semantics vs prior-generated outputs, confinement reuse correctness.
+
+## P3B.D5 — Review 1
+- **Review (`P3BD5Reviewer1`, 2m49s)**: **approved**, zero findings; 5-file surface read end-to-end, metrics reproduced. All six focus areas PASS: rename/receipt pairing sound (fsync+rename+single-tx; created vs replacedGenerated compensation preserving foreign bytes); collision matrix complete (alias-tolerant lookup, empty-allow, same-fingerprint replace, double-inspect re-check); cleanup correct for cancelled/failed; confinement via folderAccess realpath-canonical with symlink refusal; migration forward-only; tests discriminating via injection hooks.
+- **Next Step**: `P3BD5Tester1` QA confirmation -> close D5 -> backup push #13.
+
+## P3B.D5 — CLOSED
+- **Confirmation (`P3BD5Tester1`)**: PASS — npm test **472/472** fail 0; combined batch suites **48/48**; `tsc --noEmit` exit 0. Spots confirmed: external bytes preserved + blocked/retry transitions (:92-104; :39-45; contracts :20-29); same-fingerprint replaceGenerated with receipt ownership update (:107-131; writer :405-479); receipt-insert failure -> output absent/receipt null/job running/temp clean + prior restored (:195-253); /var alias runtime + alias-tolerant lookup (:17-27/:58-74; writer :351-356; domain :1221-1243); traversal/override/hidden/symlink rejections (:156-193); migration 3 fresh+upgrade ([1,2,3] both paths). Scope exact 5 files. Read-only honored.
+- **Full cycle**: attempt 1 network-aborted (not counted) -> Coder2 continuation salvaging preserved partials after dual-writer incident resolved; Reviewer approved zero-findings. Suite grew 461 -> 472.
+- **Gate evidence**: P3B.J2 (companion .txt collision-safe and receipted) fully covered by D5 + this QA — checked in STEPS.
+- **Closure transaction**: STEPS `[x] P3B.D5` + `[x] P3B.J2`; backup push #13.
+- **Next Step**: `P3B.D6` Separate Batch workspace — final item of card P3B.

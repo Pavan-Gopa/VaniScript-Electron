@@ -13,16 +13,19 @@ import { AppError, createAppError, type ErrorCode } from './errors.ts';
 export const BATCH_SCHEMA_VERSION = 1 as const;
 export type BatchSchemaVersion = typeof BATCH_SCHEMA_VERSION;
 
-/** Current SQLite migration version owned by BAT-01. */
-export const BATCH_DB_SCHEMA_VERSION = 2 as const;
+/** Current SQLite migration version owned by the Batch domain. */
+export const BATCH_DB_SCHEMA_VERSION = 3 as const;
 export type BatchDbSchemaVersion = typeof BATCH_DB_SCHEMA_VERSION;
 
+// blockedOutputCollision is terminal until the user removes/renames the
+// conflicting companion. A retry may move it back to pending.
 export const BATCH_JOB_STATES = [
   'pending',
   'running',
   'done',
   'failed',
   'cancelled',
+  'blockedOutputCollision',
 ] as const;
 export type BatchJobState = (typeof BATCH_JOB_STATES)[number];
 
