@@ -399,3 +399,19 @@
 - **Full cycle**: 7 coder attempts across split sessions (survived 2 provider deaths + 1 runtime-limit abort with zero progress loss via incremental/split strategy); findings converged 10 → 0 on the rewritten atomic core; Reviewer2 approved zero-findings; invariants 1-8 held.
 - **Closure transaction**: STEPS `[x] P3A.D5`; backup push #5 (product diff + snapshot mirror refresh).
 - **Next Step**: P3A.D6 Multi-language/review — continuous pipeline, no pause.
+
+## P3A.D6 — Attempt 1
+- **Attempt 1 (workflow-coder `P3AD6Coder1`)**: NEW reviewService.js (537 ln) + test/reviewService.test.js (6 broad tests, 319 ln) + documents.ts D6 types. APIs: createDocumentReviewService, approveBlock/revokeBlock/setBlockNeedsReview (CAS), pure filterReviewBlocks/queryReviewBlocks/filterReviewBlockIds, getReviewProgress (D3 token reconciliation), language state/provenance exposure, active-language view wrapper, removeLanguage confirmation+backup contract. Main verified: **395/395**, tsc clean, diff scoped to 3 files.
+- **Next Step**: P3AD6Reviewer1 full review.
+
+## P3A.D6 — Review 1
+- **Review (`P3AD6Reviewer1`, 1m39s)**: **approved**, zero blockers. §10.5/§10.9 correctly implemented over D2 primitives: revision-guarded transition matrix (approve/revoke/needs-review with CAS-first ordering, idempotent no-op), pure deterministic filters orthogonalizing stale(freshness) vs status, plan-reconciled token progress without cross-language copies, isolated per-language archives. Scope clean three-file diff.
+  - Advisory (non-blocking): (a) JSDoc on filterReviewBlocks/matchesFilter — filters are orthogonal predicates, stale+approved may appear in both sets, 'all' is union; (b) document in planTokenProgress that done is per-slice reconciling against per-slice total (relies on D3 canonical equality); (c) additive test gaps: revoke/setNeedsReview/removeLanguage CAS conflicts, approve-on-approved VALIDATION_FAILED, unknown-filter TypeError, language-keyed plans in listLanguageReviewStates; (d) ReviewProgress dual-boxing noted harmless/additive.
+  - Advisories (a)-(c) transferred to the P4/D6-hardening backlog; (d) no action.
+- **Next Step**: QA confirmation -> close D6 -> backup push -> P3A.D7.
+
+## P3A.D6 — CLOSED
+- **Confirmation (`P3AD6Tester1`, 2m11s)**: PASS — npm test 395/395; focused reviewService suite 6/6; tsc exit 0; named spot gate 5/5 (lifecycle CAS, filters determinism, byte-wise isolation, removal confirmation/backup, progress reconciliation).
+- **Full cycle**: 1 coder attempt, 1 review round — **approved zero blockers** on first pass; advisories (JSDoc orthogonality, planTokenProgress invariant, additive test gaps) transferred to P4/D6-hardening backlog. Suite grew 389 → 395.
+- **Closure transaction**: STEPS `[x] P3A.D6`; backup push #6 (product diff + snapshot mirror refresh).
+- **Next Step**: P3A.D7 Selection/find/replace/proofread — continuous pipeline, no pause.

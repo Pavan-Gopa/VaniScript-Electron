@@ -1643,3 +1643,58 @@ export type SelectionGuardDenyReason =
 export type SelectionGuardResult =
   | { ok: true }
   | { ok: false; reason: SelectionGuardDenyReason };
+// ============================================================================
+// DOC-06 — Multi-language review (plan §10.5, §10.9)
+// ============================================================================
+
+/** Headless review filters shared by the Main service and Renderer view-models. */
+export type ReviewFilter = 'all' | 'needs-review' | 'stale' | 'approved';
+
+export const REVIEW_FILTERS: readonly ReviewFilter[] = [
+  'all',
+  'needs-review',
+  'stale',
+  'approved',
+] as const;
+
+/** One row returned by a pure review filter query. */
+export interface ReviewBlockRow {
+  blockId: string;
+  freshness: BlockFreshness;
+  status: TranslationStatus | 'missing';
+}
+
+/** Deterministic sidebar/review progress for one language variant. */
+export interface ReviewProgress {
+  language: string | null;
+  totalBlocks: number;
+  translated: number;
+  fresh: number;
+  stale: number;
+  missing: number;
+  statusCounts: {
+    draft: number;
+    needsReview: number;
+    approved: number;
+    missing: number;
+  };
+  blocksDone: number;
+  blocksTotal: number;
+  /** Null when no D3 plan was supplied; otherwise plan-aligned estimates. */
+  tokensDone: number | null;
+  tokensTotal: number | null;
+  tokenProgress: { done: number; total: number } | null;
+}
+
+/** UI confirmation payload for a destructive language-archive removal. */
+export interface LanguageRemovalConfirmation {
+  kind: 'language-removal-confirmation';
+  action: 'remove-language';
+  requiresConfirmation: true;
+  projectId: string;
+  language: string;
+  expectedRevision: string;
+  backupDir: string | null;
+  meta: LanguageVariantMeta;
+  blockCount: number;
+}
