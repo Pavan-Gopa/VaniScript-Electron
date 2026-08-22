@@ -100,16 +100,16 @@
 - [x] [P3B.D1] Batch domain/SQLite: profiles/jobs/checkpoints/events
 - [x] [P3B.D2] Folder access/watchers: adapters/reconciliation
 - [x] [P3B.D3] Stability/path safety: fingerprint/confinement
-- [ ] [P3B.D4] Scheduler/recovery: claim/run/checkpoint/retry
+- [x] [P3B.D4] Scheduler/recovery: claim/run/checkpoint/retry
 - [ ] [P3B.D5] Atomic companion writer: safe `.txt` output/receipts
 - [ ] [P3B.D6] Separate Batch workspace: button/queue/details/controls
 
 ### Objective gates
-- [ ] [P3B.O1] Migration/transaction and crash/restart recovery tests pass
+- [x] [P3B.O1] Migration/transaction and crash/restart recovery tests pass
 - [ ] [P3B.O2] 10k-row virtualization E2E passes
 
 ### Judgment gates
-- [ ] [P3B.J1] Symlink/case fuzz cannot escape path confinement
+- [x] [P3B.J1] Symlink/case fuzz cannot escape path confinement
 - [ ] [P3B.J2] Companion `.txt` writes are collision-safe and receipted
 
 ## P3C — MCP/Agents lane

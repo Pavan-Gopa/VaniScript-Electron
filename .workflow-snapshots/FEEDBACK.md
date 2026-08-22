@@ -564,3 +564,35 @@
 - **Full cycle**: 1 coder attempt (18m); Reviewer approved zero-blocking (2 informational MINORs -> P4 backlog). Suite grew 441 -> 449 across the item.
 - **Closure transaction**: STEPS `[x] P3B.D3`; backup push #11.
 - **Next Step**: `P3B.D4` Scheduler/recovery — continuous pipeline.
+
+## P3B.D4 — Attempt 1
+- **Attempt 1 (workflow-coder `P3BD4Coder1`)**: batchDomain.js (+163/-2): transactional claimNextJob (pending->running, attempt+1, job.claimed+stateChanged events :903-951); recoverRunningJobs (policy retry|fail, liveJobIds exclusion, retryable -> job.retryScheduled else job.failed w/ reason crash-recovery :968-1030); ALLOWED_TRANSITIONS running->pending added (retry path, no new states — D1 adjudication intact). NEW batchScheduler.js (560 ln): injected runner/readiness seams, single-flight claim (_active/_claimPromise), checkpoint resume token -> runner -> save, retry bounded by maxAttempts (terminal failed), pause / pause-after-current / resume / drain modes, cooperative cancel + partial cleanup, generation-normalized restart. NEW test/batchScheduler.test.js (312 ln, 10 tests): crash/restart exactly-once recovery + resume token, max-attempts terminal, single-active invariant, readiness denial, controls matrix, cancel, generation restart.
+- **Main verification**: npm test **459/459** (+10), combined batch suites **35/35**, `tsc --noEmit` exit 0; git scope exactly 3 authorized files; claim/recovery mechanics confirmed at cited lines.
+- **Next Step**: `P3BD4Reviewer1` full review — focus: exactly-once recovery under double-boot, cancel races mid-runner, drain semantics vs in-flight watcher enqueues, transition-matrix completeness.
+
+## P3B.D4 — Review 1
+- **Review (`P3BD4Reviewer1`, 3m25s)**: **changes_requested** — final source re-verified (460/460, tsc 0, scheduler 11/11); single-process claim guard and single-flight correct; two MAJOR cross-process hardening gaps:
+  1. [MAJOR] claimNextJob :948-985 — deferred transaction + separate SELECT running guard allows double-claim across OS processes (both pass empty SELECT before either UPDATE); wrapBetterSqlite uses raw DEFERRED while wrapNodeSqlite uses BEGIN IMMEDIATE. Required: IMMEDIATE transaction or single-statement atomic claim with changes==0 check.
+  2. [MAJOR] recoverRunningJobs :1015-1060 — concurrent double-boot emits duplicate job.retryScheduled/job.failed events; UPDATE result.changes ignored. Required: only emit/return rows actually transitioned; concurrent-recovery test with two domain handles on one file.
+  3. [MINOR] batchScheduler cancel :425-448/:470-530 — double-cancel may invoke cooperative hook twice; guard by cancelRequested/cancelHookInvoked.
+  Otherwise sound: retry bounds, readiness per-claim, transition matrix, cancel idempotency at state level, scope clean.
+- **Main routing**: bounded fix round `P3BD4CoderFix1` for all three findings; then Reviewer delta confirm; then Tester QA.
+
+## P3B.D4 — Attempt 2 (fix round)
+- **Fix round (`P3BD4CoderFix1`)**: closed all three Reviewer1 findings, scoped to batchDomain.js / batchScheduler.js / test/batchScheduler.test.js.
+  - F1: better-sqlite3 transactions promoted to .immediate() (:213; wrapNodeSqlite already BEGIN IMMEDIATE :243); claimNextJob now single-statement atomic UPDATE with NOT EXISTS running-guard subquery and explicit changes==0 -> no-claim return BEFORE injector/events (:931-957).
+  - F2: recoverRunningJobs checks updateResult.changes — 0 skips events and recovered entry (:1034); NEW concurrent-recovery regression test/batchScheduler.test.js:203-262 — two separate BatchDomain handles on one DB via worker_threads/barrier, asserts event/recovered unions duplicate-free.
+  - F3: cancel guard active.cancelRequested set before abort/hook (batchScheduler.js:373-374), initialized in active record (:397), consulted at completion/failure paths (:455/:464); double-cancel regression asserts hook count 1.
+- **Main verification**: npm test **461/461** (+1 concurrent regression), focused scheduler **12/12**, `tsc --noEmit` exit 0; git scope exactly 3 files; all three fix sites confirmed at cited lines.
+- **Next Step**: `P3BD4Reviewer2` delta confirm of F1-F3.
+
+## P3B.D4 — Review 2 (delta)
+- **Review (`P3BD4Reviewer2`, 2m32s)**: **approved**, zero findings. F1 (immediate tx + atomic NOT EXISTS claim with changes==0 guard before side-effects), F2 (recovery idempotent via changes==0 skip; two-handle worker_threads regression duplicate-free), F3 (cancelRequested before abort/hook with double-cancel dedup) — all CLOSED in real source. Fix round introduced no new issues; scope 3 files.
+- **Next Step**: `P3BD4Tester1` QA confirmation -> close D4 -> backup push #12.
+
+## P3B.D4 — CLOSED
+- **Confirmation (`P3BD4Tester1`, 4m16s)**: PASS — npm test **461/461** fail 0; combined batch suites **37/37**; focused scheduler **12/12**; `tsc --noEmit` exit 0. Spots confirmed: two-handle worker_threads/barrier recovery duplicate-free (test:73-97/:203-262); atomic claim UPDATE/NOT EXISTS/changes==0 prevents double-running (:931-957); immediate tx both adapters (:213/:243); recovery changes==0 before events (:1008-1054); retry bound attempt==max -> failed (:264-314); double-cancel hook exactly once (:388-418; guard :373-398). Scope exact, read-only honored.
+- **Full cycle**: 1 coder attempt (23m) + 1 fix round (8m53s); Reviewer1 changes_requested (2 MAJOR cross-process, 1 MINOR) -> all closed -> Reviewer2 delta approved zero-findings. Suite grew 449 -> 461.
+- **Gate evidence**: P3B.O1 now fully covered (D1 migration/transaction + D4 crash/restart recovery) — checked in STEPS; P3B.J1 covered by D3 seeded fuzz — checked.
+- **Closure transaction**: STEPS `[x] P3B.D4` + `[x] P3B.O1` + `[x] P3B.J1`; backup push #12.
+- **Next Step**: `P3B.D5` Atomic companion writer — continuous pipeline.

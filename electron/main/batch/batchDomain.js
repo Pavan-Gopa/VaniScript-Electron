@@ -38,7 +38,7 @@ const BATCH_DB_FILENAME = 'batch.sqlite';
 
 const ALLOWED_TRANSITIONS = Object.freeze({
   pending: Object.freeze(['running', 'cancelled']),
-  running: Object.freeze(['done', 'failed', 'cancelled']),
+  running: Object.freeze(['pending', 'done', 'failed', 'cancelled']),
   done: Object.freeze([]),
   failed: Object.freeze([]),
   cancelled: Object.freeze([]),
@@ -210,7 +210,7 @@ function wrapBetterSqlite(raw) {
       };
     },
     transaction(fn) {
-      return raw.transaction(fn)();
+      return raw.transaction(fn).immediate();
     },
     close() {
       raw.close();
@@ -891,6 +891,172 @@ class BatchDomain {
     return rows.map(jobFromRow);
   }
 
+  /**
+   * Atomically claim the oldest pending job whose attempt budget is not
+   * exhausted.  The transaction is the cross-scheduler single-flight guard;
+   * callers never need to read a row and then race a separate state update.
+   *
+   * `includeEvents` is an internal scheduler seam that returns the events
+   * written in the same transaction without changing the default job-shaped
+   * API.
+   */
+  claimNextJob(options = {}) {
+    if (!isPlainObject(options)) throw createAppError('VALIDATION_FAILED', 'job claim options must be an object.');
+    if (options.profileId !== undefined) requireId(options.profileId, 'profileId');
+    const includeEvents = options.includeEvents === true;
+    return this._runMutation(() => {
+      const profileClause = options.profileId === undefined ? '' : ' AND profile_id = ?';
+      const values = options.profileId === undefined ? [] : [options.profileId];
+      const row = this._db.prepare(`
+        SELECT * FROM batch_jobs
+        WHERE state = 'pending' AND attempt < max_attempts
+          AND NOT EXISTS (SELECT 1 FROM batch_jobs WHERE state = 'running')
+          ${profileClause}
+        ORDER BY created_at ASC, job_id ASC
+        LIMIT 1
+      `).get(...values);
+      if (!row) return includeEvents ? { job: null, events: [] } : null;
+
+      const current = jobFromRow(row);
+      const updatedAt = nowIso();
+      const next = validateOrThrow(validateBatchJob({
+        ...current,
+        state: 'running',
+        attempt: current.attempt + 1,
+        lastError: null,
+        startedAt: updatedAt,
+        completedAt: null,
+        updatedAt,
+      }));
+      const updateResult = this._db.prepare(`
+        UPDATE batch_jobs
+        SET state = ?, phase = ?, attempt = ?, progress = ?, output_fingerprint = ?,
+            last_error = ?, started_at = ?, completed_at = ?, updated_at = ?
+        WHERE job_id = (
+          SELECT job_id FROM batch_jobs
+          WHERE state = 'pending' AND attempt < max_attempts
+            AND NOT EXISTS (SELECT 1 FROM batch_jobs WHERE state = 'running')
+            ${profileClause}
+          ORDER BY created_at ASC, job_id ASC
+          LIMIT 1
+        ) AND state = 'pending'
+      `).run(
+        next.state,
+        next.phase,
+        next.attempt,
+        next.progress,
+        next.outputFingerprint,
+        next.lastError,
+        next.startedAt,
+        next.completedAt,
+        next.updatedAt,
+        ...values,
+      );
+      if (rowsNumber(updateResult && updateResult.changes) === 0) {
+        return includeEvents ? { job: null, events: [] } : null;
+      }
+
+      this._inject('job:after-state-update', { before: current, after: next });
+      const events = [
+        this._insertEvent(current.jobId, 'job.claimed', {
+          attempt: next.attempt,
+          maxAttempts: next.maxAttempts,
+        }, updatedAt),
+        this._insertEvent(current.jobId, 'job.stateChanged', {
+          from: current.state,
+          to: next.state,
+          attempt: next.attempt,
+        }, updatedAt),
+      ];
+      const job = jobFromRow(this._db.prepare('SELECT * FROM batch_jobs WHERE job_id = ?').get(current.jobId));
+      return includeEvents ? { job, events } : job;
+    }, 'Batch job claim failed.');
+  }
+
+  /**
+   * Convert jobs left in `running` by a previous process into a durable,
+   * retryable pending row or a terminal failure.  Only running rows are
+   * touched, so calling this repeatedly is idempotent.
+   */
+  recoverRunningJobs(options = {}) {
+    if (!isPlainObject(options)) throw createAppError('VALIDATION_FAILED', 'recovery options must be an object.');
+    const policy = options.policy === undefined ? 'retry' : options.policy;
+    if (policy !== 'retry' && policy !== 'fail') {
+      throw createAppError('VALIDATION_FAILED', 'recovery policy must be "retry" or "fail".');
+    }
+    const liveJobIds = options.liveJobIds === undefined ? [] : options.liveJobIds;
+    if (!Array.isArray(liveJobIds) || liveJobIds.some((jobId) => typeof jobId !== 'string' || jobId.length === 0)) {
+      throw createAppError('VALIDATION_FAILED', 'recovery liveJobIds must be an array of non-empty strings.');
+    }
+    const live = new Set(liveJobIds);
+    const errorMessage = options.error === undefined
+      ? 'Interrupted processing recovered after scheduler restart.'
+      : options.error;
+    if (typeof errorMessage !== 'string' || errorMessage.length === 0) {
+      throw createAppError('VALIDATION_FAILED', 'recovery error must be a non-empty string.');
+    }
+    const includeEvents = options.includeEvents === true;
+
+    return this._runMutation(() => {
+      const rows = this._db
+        .prepare(`SELECT * FROM batch_jobs WHERE state = 'running' ORDER BY created_at ASC, job_id ASC`)
+        .all();
+      const recovered = [];
+      for (const row of rows) {
+        const current = jobFromRow(row);
+        if (live.has(current.jobId)) continue;
+        const retryable = policy === 'retry' && current.attempt < current.maxAttempts;
+        const updatedAt = nowIso();
+        const next = validateOrThrow(validateBatchJob({
+          ...current,
+          state: retryable ? 'pending' : 'failed',
+          lastError: errorMessage,
+          completedAt: retryable ? null : updatedAt,
+          updatedAt,
+        }));
+        const updateResult = this._db.prepare(`
+          UPDATE batch_jobs
+          SET state = ?, phase = ?, attempt = ?, progress = ?, output_fingerprint = ?,
+              last_error = ?, started_at = ?, completed_at = ?, updated_at = ?
+          WHERE job_id = ? AND state = 'running'
+        `).run(
+          next.state,
+          next.phase,
+          next.attempt,
+          next.progress,
+          next.outputFingerprint,
+          next.lastError,
+          next.startedAt,
+          next.completedAt,
+          next.updatedAt,
+          current.jobId,
+        );
+        if (rowsNumber(updateResult && updateResult.changes) === 0) continue;
+        this._inject('job:after-state-update', { before: current, after: next });
+        const eventType = retryable ? 'job.retryScheduled' : 'job.failed';
+        const events = [
+          this._insertEvent(current.jobId, eventType, {
+            reason: 'crash-recovery',
+            attempt: next.attempt,
+            ...(retryable ? { nextAttempt: next.attempt + 1 } : {}),
+            error: errorMessage,
+          }, updatedAt),
+          this._insertEvent(current.jobId, 'job.stateChanged', {
+            from: current.state,
+            to: next.state,
+            attempt: next.attempt,
+            error: errorMessage,
+          }, updatedAt),
+        ];
+        const job = jobFromRow(this._db.prepare('SELECT * FROM batch_jobs WHERE job_id = ?').get(current.jobId));
+        recovered.push(includeEvents
+          ? { job, action: retryable ? 'retry' : 'failed', events }
+          : job);
+      }
+      return recovered;
+    }, 'Batch job recovery failed.');
+  }
+
   transitionJob(jobId, nextState, details = {}) {
     requireId(jobId, 'jobId');
     if (!BATCH_JOB_STATES.includes(nextState)) {
@@ -922,6 +1088,13 @@ class BatchDomain {
           to: nextState,
         });
       }
+      if (nextState === 'running' && current.attempt >= current.maxAttempts) {
+        throw createAppError('CONFLICT', `Batch job "${jobId}" has exhausted its attempts.`, {
+          jobId,
+          attempt: current.attempt,
+          maxAttempts: current.maxAttempts,
+        });
+      }
       if (nextState === 'failed' && (typeof details.error !== 'string' || details.error.length === 0)) {
         throw createAppError('VALIDATION_FAILED', 'A failed job requires a non-empty error.');
       }
@@ -940,7 +1113,9 @@ class BatchDomain {
           ? details.error
           : nextState === 'running' || nextState === 'done' || nextState === 'cancelled'
             ? null
-            : current.lastError,
+            : details.error === undefined
+              ? current.lastError
+              : details.error,
         attempt: nextState === 'running' ? current.attempt + 1 : current.attempt,
         startedAt: nextState === 'running' ? updatedAt : current.startedAt,
         completedAt: ['done', 'failed', 'cancelled'].includes(nextState) ? updatedAt : null,
