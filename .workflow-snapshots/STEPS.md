@@ -78,17 +78,17 @@
 - [x] [P3A.D5] Editorial editor core: ProseMirror schema/transactions/undo
 - [x] [P3A.D6] Multi-language/review: language tabs/status/approval
 - [x] [P3A.D7] Selection/find/replace/proofread: atomic edits/revision guards
-- [ ] [P3A.D8] Document exports: DOCX/TXT/MD/PDF
+- [x] [P3A.D8] Document exports: DOCX/TXT/MD/PDF
 
 ### Objective gates
-- [ ] [P3A.O1] Golden import/export fixtures pass for DOCX/PDF/RTF/TXT/MD
-- [ ] [P3A.O2] Persistence/restart and language isolation tests pass
-- [ ] [P3A.O3] Editor mutation, undo, and stale-response tests pass
+- [x] [P3A.O1] Golden import/export fixtures pass for DOCX/PDF/RTF/TXT/MD
+- [x] [P3A.O2] Persistence/restart and language isolation tests pass
+- [x] [P3A.O3] Editor mutation, undo, and stale-response tests pass
 
 ### Judgment gates
-- [ ] [P3A.J1] Source documents remain immutable; normalized state is derived
-- [ ] [P3A.J2] Persistence contract matches accepted v3 archive architecture
-- [ ] [P3A.J3] Malformed/hostile inputs fail safe without hangs or data loss
+- [x] [P3A.J1] Source documents remain immutable; normalized state is derived
+- [x] [P3A.J2] Persistence contract matches accepted v3 archive architecture
+- [x] [P3A.J3] Malformed/hostile inputs fail safe without hangs or data loss
 
 ## P3B — Batch lane
 

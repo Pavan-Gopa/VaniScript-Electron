@@ -25,6 +25,11 @@ import {
   type CapabilitiesGetResult,
 } from '../../shared/contracts/ipc.ts';
 import {
+  DOCUMENT_EXPORT_COMMAND,
+  type DocumentExportRequest,
+  type DocumentExportResult,
+} from '../../shared/contracts/documents.ts';
+import {
   createAppError,
   isAppError,
   type AppError,
@@ -68,6 +73,17 @@ const METHOD_REGISTRY: Record<string, MethodSpec> = {
     },
   },
   'capabilities:get': { validateArgs: (a) => a === undefined || a === null },
+  [DOCUMENT_EXPORT_COMMAND]: {
+    validateArgs: (a) => {
+      if (a === null || typeof a !== 'object' || Array.isArray(a)) return false;
+      const request = a as Partial<DocumentExportRequest>;
+      if (typeof request.projectId !== 'string' || request.projectId.trim() === '') return false;
+      if (!['docx', 'txt', 'md', 'pdf'].includes(request.format as string)) return false;
+      if (request.language !== undefined && request.language !== null && typeof request.language !== 'string') return false;
+      if (request.outputPath !== undefined && request.outputPath !== null && typeof request.outputPath !== 'string') return false;
+      return request.overwrite === undefined || typeof request.overwrite === 'boolean';
+    },
+  },
   // provider:invoke is a raw ipcMain.handle in main.js (PRV-01), not routed via
   // the typed ipc:dispatch facade; it still gets a local shape guard here.
   [PROVIDER_INVOKE_COMMAND]: {
@@ -101,6 +117,7 @@ export interface ElectronApi {
   getSettings(): Promise<SettingsGetResult>;
   getCapabilities(): Promise<CapabilitiesGetResult>;
   updateSettings(args: SettingsUpdateRequest): Promise<SettingsUpdateResult>;
+  exportDocument(args: DocumentExportRequest): Promise<DocumentExportResult>;
   invokeProvider(args: ProviderInvokeRequest): Promise<ProviderInvokeResult>;
 }
 
@@ -190,6 +207,8 @@ export function createTypedIpcBridge(
     getCapabilities: () => invoke<CapabilitiesGetResult>(CAPABILITIES_GET_COMMAND),
     updateSettings: (args: SettingsUpdateRequest) =>
       invoke<SettingsUpdateResult>(SETTINGS_UPDATE_COMMAND, args),
+    exportDocument: (args: DocumentExportRequest) =>
+      invoke<DocumentExportResult>(DOCUMENT_EXPORT_COMMAND, args),
     invokeProvider: (args: ProviderInvokeRequest) => {
       // Routed directly to the raw `provider:invoke` channel in main.js (PRV-01),
       // not through the typed ipc:dispatch facade. Main proxies the cloud call

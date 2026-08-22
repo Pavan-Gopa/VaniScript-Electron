@@ -39,6 +39,12 @@ import {
   type HostSummary,
 } from '../../../shared/contracts/capabilities.ts';
 import type { CapabilitiesGetResult } from '../../../shared/contracts/ipc.ts';
+import {
+  DOCUMENT_EXPORT_COMMAND,
+  type DocumentExportRequest,
+  type DocumentExportResult,
+} from '../../../shared/contracts/documents.ts';
+import { createDocumentExportService } from '../documents/export.js';
 
 /** Wire channel every typed request travels on. */
 export const IPC_DISPATCH_CHANNEL = 'ipc:dispatch' as const;
@@ -261,9 +267,41 @@ export const settingsHandlers = createSettingsHandlers();
 
 export function createCapabilityHandlers(
   env?: import('../../../shared/contracts/capabilities.ts').HostEnvironment,
+
 ): IpcHandlerMap {
   const handlers = capabilityRegistry.createCapabilityHandlers(env);
   return handlers as IpcHandlerMap;
 }
 
 export const capabilityHandlers = createCapabilityHandlers();
+// ─── Derived document export (DOC-08) ──────────────────────────────────────
+
+/** Narrow service seam used by the typed handler and its headless tests. */
+export interface DocumentExportServiceAdapter {
+  exportDocument(
+    request: DocumentExportRequest,
+  ): DocumentExportResult | Promise<DocumentExportResult>;
+}
+
+/**
+ * Build the document export handler from a service (or an injected
+ * DocumentProjectStore). The default service reads the Main-process project
+ * store and never accepts raw source bytes from Renderer.
+ */
+export function createDocumentExportHandlers(
+  serviceOrStore: DocumentExportServiceAdapter | { loadDocumentProject: Function } = createDocumentExportService(),
+): IpcHandlerMap {
+  const service =
+    serviceOrStore && typeof serviceOrStore.exportDocument === 'function'
+      ? serviceOrStore as DocumentExportServiceAdapter
+      : createDocumentExportService({ store: serviceOrStore });
+  return {
+    [DOCUMENT_EXPORT_COMMAND]: (args) => {
+      const { projectId, format, language, outputPath, overwrite } =
+        (args ?? {}) as DocumentExportRequest;
+      return service.exportDocument({ projectId, format, language, outputPath, overwrite });
+    },
+  };
+}
+
+export const documentExportHandlers = createDocumentExportHandlers();

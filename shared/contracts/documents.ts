@@ -1727,3 +1727,58 @@ export interface LanguageRemovalConfirmation {
   meta: LanguageVariantMeta;
   blockCount: number;
 }
+// ============================================================================
+// DOC-08 — Derived document exports (plan §10.10)
+// ============================================================================
+
+/** Output formats supported by the document export lane. */
+export type DocumentExportFormat = 'docx' | 'txt' | 'md' | 'pdf';
+
+export const DOCUMENT_EXPORT_FORMATS: readonly DocumentExportFormat[] = [
+  'docx',
+  'txt',
+  'md',
+  'pdf',
+] as const;
+
+/** Typed IPC method used by the Main/Renderer document export bridge. */
+export const DOCUMENT_EXPORT_COMMAND = 'documents:export' as const;
+
+/**
+ * Request a derived export from the current document project state.
+ *
+ * `language: null` selects the immutable source projection. When omitted, Main
+ * may use the project's active review language; Renderer callers that need an
+ * unambiguous source export should pass `null` explicitly.
+ */
+export interface DocumentExportRequest {
+  projectId: string;
+  format: DocumentExportFormat;
+  language?: string | null;
+  /** Absolute destination chosen by the user; omitted returns bytes in-memory. */
+  outputPath?: string | null;
+  /** Existing destinations are replaced atomically unless set to false. */
+  overwrite?: boolean;
+}
+
+/** Non-fatal export warning (stale or needs-review translations). */
+export interface DocumentExportWarning {
+  code: 'STALE_TRANSLATION' | 'NEEDS_REVIEW';
+  message: string;
+  severity: 'warning';
+  blockId?: string;
+}
+
+/** Result of a deterministic derived document export. */
+export interface DocumentExportResult {
+  projectId: string | null;
+  format: DocumentExportFormat;
+  language: string | null;
+  fileName: string;
+  outputPath: string | null;
+  bytes: number;
+  /** Uint8Array keeps the result structured-clone safe across Electron IPC. */
+  buffer: Uint8Array;
+  warnings: DocumentExportWarning[];
+  revision: string | null;
+}

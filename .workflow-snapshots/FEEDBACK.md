@@ -477,3 +477,38 @@
 - **Full cycle**: 3 coder attempts, 3 reviewer rounds; findings converged 7 → 3 → 0; final approved zero-findings. Suite grew 395 → 410 across the item.
 - **Closure transaction**: STEPS `[x] P3A.D7`; backup push #7 (product diff + snapshot mirror refresh).
 - **PIPELINE PAUSED** per Human directive (~18:20Z): D8..P5 deferred until explicit Human command.
+
+## P3A.D8 — Attempt 1
+- **Attempt 1 (workflow-coder `P3AD8Coder1`, 19m)**: NEW export.js (872 ln) — self-contained DOC-08 exporter over derived DocumentArchive + optional TranslationArchive (source asset untouched): deterministic TXT/MD projections, standards-shaped stored-ZIP OOXML DOCX (headings/lists/tables/textboxes/styles/header/footer/notes), readable text-layer PDF; atomic `wx`+`rename` output writes, component-walk symlink deny (only `/var`,`/tmp` OS aliases resolved), `..`-segment traversal rejection, ZIP entry-name guard (dup/`..`), XML unpaired-surrogate/control/reserved codepoint rejection, dynamic Markdown fences, stale/NEEDS_REVIEW export warnings; safeFileName sanitization. documents.ts +55 (DOCUMENT_EXPORT_FORMATS, request/result contracts); ipc/index.mts +34 typed handler factory/default route; preload/index.mts +19 typed exportDocument bridge. 11 tests (+244 ln documentExport.test.js): canonical TXT/MD bytes + round-trips through the D1 import parser (TXT/MD/DOCX/PDF), language isolation + NEEDS_REVIEW, traversal/symlink denial, IPC route. No new deps. Known limitations (declared): DOCX rebuilt from normalized derived blocks (archive carries no raw OOXML package); non-WinAnsi chars normalize deterministically to '?'.
+- **Main verification (final source, post-hardening)**: npm test **421/421** (baseline 410 +11), focused documentExport 11/11, `tsc --noEmit` exit 0; git scope exactly 5 files (+108 tracked insertions, 2 new files); J1 immutability and J3 fail-safe guards confirmed in source (:169-181 XML rejection, :672-714 path walk, :732-748 atomic write, :418-420 zip guard).
+- **Next Step**: `P3AD8Reviewer1` full review (Judgment Gates J2/J3 focus).
+
+## P3A.D8 — Review 1
+- **Review (`P3AD8Reviewer1`, 4m9s)**: **approved** — zero CRITICAL/MAJOR; 3 MINOR hardening notes. All 5 changed files read end-to-end; suite reproduced independently (421/421, focused 11/11, tsc exit 0).
+  - J2 PASS: export consumes DocumentArchive/TranslationArchive strictly via D2 store contracts (loadDocumentProject/getTranslationArchive + validators); direct document/archive injection is an in-memory test seam only; no parallel persisted state.
+  - J3 PASS within declared scope: traversal/symlink component-walk deny (/var,/tmp alias exception), ZIP entry guard, XML surrogate/control rejection, dynamic fences, atomic wx+rename with cleanup — present and tested.
+  - O1-export PASS: deterministic TXT/MD bytes, stored-ZIP OOXML, text-layer PDF (?-fallback), round-trips through D1 importer; language isolation + warning propagation verified. Declared limitations accepted for DOC-08.
+  Findings (all MINOR):
+  1. ipc/index.mts :296-299 — handler forwards raw args cast to DocumentExportRequest; renderer generic invoke('documents:export', {...document}) passes registry validation (projectId/format only) and would bypass the store path, creating renderer-reachable parallel in-memory state. Fix: whitelist {projectId, format, language, outputPath, overwrite}.
+  2. export.js assertSafeOutputPath :670-695 — fs.mkdirSync(recursive) precedes lstat walk; pre-planted parent symlink causes observable FS side-effect before PERMISSION_DENIED. Fix: string-validate -> lstat walk existing prefix -> mkdir -> re-walk (mirror D2 staged-path confinement).
+  3. export.js makeZip :405-420 — entry-name guard rejects `..`/duplicates but not absolute or backslash names (internally generated today; future-proofing). Fix: extend name check.
+- **Main routing**: findings 1-2 sit on the new IPC trust boundary (J2/J3) — one bounded fix round `P3AD8CoderFix1` before Tester; then Reviewer delta confirm; then Tester QA.
+
+## P3A.D8 — Attempt 2 (fix round)
+- **Fix round (`P3AD8CoderFix1`, 6m15s)**: closed all three Reviewer1 minors, scoped to export.js / ipc/index.mts / documentExport.test.js.
+  - F1: IPC handler now whitelists {projectId, format, language, outputPath, overwrite} into a fresh request (index.mts:299-303); regression test:278-311 proves injected document/archive/translation are ignored and store projection/revision is used.
+  - F2: assertSafeOutputPath reordered to staged confinement (export.js:674-740): string validation (NUL/absolute/'..') -> lstat walk of existing prefix -> mkdir -> re-walk full parent -> target symlink/regular-file check (/var,/tmp alias exception preserved); regression test:237-257 denies pre-planted parent symlink with zero outside side-effect.
+  - F3: makeZip entry guard extended (':422-426'): '..', leading '/', leading '\\', embedded '\\', path.isAbsolute; regression test:137-144.
+- **Main verification**: npm test **424/424** (+3), focused **14/14**, `tsc --noEmit` exit 0; git scope exactly 3 files (ipc/index.mts +4 net); fix sites confirmed in source at the cited lines.
+- **Next Step**: `P3AD8Reviewer2` delta confirm of F1-F3, then Tester QA.
+
+## P3A.D8 — Review 2 (delta)
+- **Review (`P3AD8Reviewer2`, 1m34s)**: **approved**, zero findings. F1 (IPC whitelist) / F2 (staged output confinement) / F3 (zip entry guard) all verified CLOSED in real source; fix round introduced no new issues. Focused 14/14 + full 424/424 + tsc 0 reproduced.
+- **Next Step**: `P3AD8Tester1` QA confirmation -> close D8 -> backup push #8.
+
+## P3A.D8 — CLOSED
+- **Confirmation (`P3AD8Tester1`)**: PASS — npm test **424/424** fail 0; focused documentExport **14/14**; `tsc --noEmit` exit 0; named spots confirmed with file:line: (a) IPC whitelist index.mts:299-303 + injected-fields regression test:278-307; (b) staged confinement export.js:674-740 + zero-outside-side-effect test:237-252; (c) deterministic second-export bytes test:78-90, TXT/MD equivalence :93-116, DOCX main/header structure :118-135, PDF %PDF/%%EOF + re-import equivalence :146-158; (d) selected-archive projection + German-only output + NEEDS_REVIEW test:160-198; (e) atomic wx/fsync/rename + finally-cleanup export.js:742-775. Scope exactly the five authorized files.
+- **Full cycle**: 1 coder attempt (19m) + 1 bounded fix round (6m); findings 3 MINOR -> 0; Reviewer approved twice (full 4m9s + delta 1m34s). Suite grew 410 -> 424 across the item; tsc clean throughout.
+- **Gate closure evidence**: O1 — golden import fixtures D1 (DOCX/PDF/RTF/TXT/MD) + golden export round-trips D8 (TXT/MD byte-determinism, DOCX structure re-import, PDF header/parser equivalence; RTF export out of §20 DOC-08 scope by plan); O2 — D2 persistence/restart/corruption suite + D8 language-isolation regressions; O3 — D5 mutation/undo suites + D7 stale-response guards; J1/J2/J3 — reviewer-verified source immutability, v3 archive alignment (store contracts only, no parallel persisted state; IPC seam closed), hostile-input fail-safe (traversal/symlink/ZIP/XML guards + staged confinement).
+- **Closure transaction**: STEPS `[x] P3A.D8` + gates O1-O3/J1-J3 -> card **P3A CLOSED** (D1-D8); backup push #8 executes now (product diff + .workflow-snapshots mirror refresh).
+- **Next Step**: pipeline awaits explicit Human decision for **P3B.D1** (Batch lane).
