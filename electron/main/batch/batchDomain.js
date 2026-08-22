@@ -16,6 +16,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const { AppError, createAppError } = require('../../../shared/contracts/errors.ts');
+const { assertSafePathSyntax } = require('./folderAccess.js');
 const {
   BATCH_DB_SCHEMA_VERSION,
   BATCH_JOB_PHASES,
@@ -601,7 +602,7 @@ class BatchDomain {
       schemaVersion: BATCH_SCHEMA_VERSION,
       profileId,
       name: validated.name,
-      sourcePath: validated.sourcePath,
+      sourcePath: assertSafePathSyntax(validated.sourcePath, 'profile.sourcePath'),
       accessRef: validated.accessRef === undefined ? null : validated.accessRef,
       enabled: validated.enabled === undefined ? true : validated.enabled,
       recursive: validated.recursive === undefined ? true : validated.recursive,
@@ -710,10 +711,14 @@ class BatchDomain {
       const existing = this._db.prepare('SELECT * FROM folder_profiles WHERE profile_id = ?').get(profileId);
       if (!existing) throw createAppError('NOT_FOUND', `Batch profile "${profileId}" not found.`, { profileId });
       const current = profileFromRow(existing);
+      const sourcePath = assertSafePathSyntax(
+        patch.sourcePath === undefined ? current.sourcePath : patch.sourcePath,
+        'profile.sourcePath',
+      );
       const candidate = validateOrThrow(validateBatchProfile({
         ...current,
         name: patch.name === undefined ? current.name : patch.name,
-        sourcePath: patch.sourcePath === undefined ? current.sourcePath : patch.sourcePath,
+        sourcePath,
         accessRef: patch.accessRef === undefined ? current.accessRef : patch.accessRef,
         enabled: patch.enabled === undefined ? current.enabled : patch.enabled,
         recursive: patch.recursive === undefined ? current.recursive : patch.recursive,
@@ -757,14 +762,18 @@ class BatchDomain {
 
   _prepareJob(input) {
     const validated = validateOrThrow(validateBatchJobInput(input));
+    const sourcePath = assertSafePathSyntax(validated.sourcePath, 'job.sourcePath');
+    const outputPath = validated.outputPath === undefined || validated.outputPath === null
+      ? null
+      : assertSafePathSyntax(validated.outputPath, 'job.outputPath');
     const jobId = validated.jobId || newId();
     const createdAt = nowIso();
     return validateOrThrow(validateBatchJob({
       schemaVersion: BATCH_SCHEMA_VERSION,
       jobId,
       profileId: validated.profileId,
-      sourcePath: validated.sourcePath,
-      outputPath: validated.outputPath === undefined ? null : validated.outputPath,
+      sourcePath,
+      outputPath,
       state: 'pending',
       phase: 'planning',
       attempt: 0,
@@ -825,8 +834,10 @@ class BatchDomain {
 
   /**
    * Insert a source job only when this profile has not seen the same complete
-   * source fingerprint.  The lookup and insert share one transaction so two
-   * watcher/reconciliation passes cannot race into duplicate jobs.
+   * source fingerprint. Same-content files in one profile intentionally share
+   * one job (the D2 adjudication); each candidate still keeps its canonical
+   * sourcePath and watcher relativePath until this dedupe decision, while
+   * identical content across profiles remains independent.
    */
   enqueueJobIfFingerprintMissing(input) {
     const job = this._prepareJob(input);

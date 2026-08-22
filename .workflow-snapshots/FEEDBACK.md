@@ -546,3 +546,21 @@
 - **Full cycle**: 1 coder attempt (~25m); Reviewer approved zero-blocking. Suite grew 434 -> 441 across the item.
 - **Closure transaction**: STEPS `[x] P3B.D2`; backup push #10 (product diff + snapshot mirror refresh).
 - **Next Step**: `P3B.D3` Stability/path safety — continuous pipeline.
+
+## P3B.D3 — Attempt 1
+- **Attempt 1 (workflow-coder `P3BD3Coder1`)**: batchDomain.js (+23/-6), batchWatcher.js (+218/-47), folderAccess.js (+194/-12), NEW test/batchSafety.test.js (277 ln, 8 tests). folderAccess: assertSafePathSyntax (NUL/control reject :32-33, POSIX backslash reject :35-36, traversal both separators :41-42), case-insensitive confinement NFC+toLocaleLowerCase for darwin/win32 (:47-66), component lstat walk w/ allowMissingLeaf + realpath root/candidate + escape PERMISSION_DENIED (:70-190); resolvePathWithinRoot returns canonical+relative (NFC) paths. batchWatcher: symlink refusal at fingerprint/walks (:64-67/:142-145/:183-186), O_NOFOLLOW|O_RDONLY hash fd (:205-208), SOURCE_CHANGED/source-unavailable issue types, observer isolation (:343-348). Fuzz: seeded 0xD3A55EED LCG, 96 adversarial entries (symlinks outside root, case variants, NFC/NFD, controls/newlines, depth 24) — invariant every enqueued job realpath inside canonical root, path-violations surfaced. Mutation: rename/delete-during-probe/hash/permission-flip fail safe. Dedupe decision (binding, preserves D2): identical complete fingerprint within one profile shares ONE job (test sets equal mtimes, asserts scanned 2/enqueued 1/duplicate 1); cross-profile independent. Darwin stays opaque canonical path (no bookmarks): main process unsandboxed, dialog-granted folders only — rationale documented, injectable factory retained.
+- **Main verification**: npm test **449/449** (+8), focused batchSafety **8/8**, `tsc --noEmit` exit 0; git scope exactly the four claimed files; all mechanisms confirmed at cited lines.
+- **Next Step**: `P3BD3Reviewer1` full review — focus: confinement completeness vs TOCTOU, fuzz determinism/infectiousness, dedupe decision soundness.
+
+## P3B.D3 — Review 1
+- **Review (`P3BD3Reviewer1`, 2m47s)**: **approved**, zero blocking findings; metrics reproduced independently. Confinement complete within declared single-process boundary: syntax filter, NFC case-fold, lstat-per-component + realpath deny, symlink refusal everywhere, O_NOFOLLOW fd + verified double-snapshot mitigates final-component TOCTOU; fs-event filenames validated before scheduling (:498-513); fuzz deterministic/non-flaky; dedupe binding defensible; no scope leakage.
+  Informational MINORs (both self-assessed "no blocking change", transferred to P4 hardening backlog):
+  1. Fuzz case-variant signal weak on Linux CI (case-sensitive FS does not exercise isWithinRoot fold) -> P4 may add explicit isWithinRoot('darwin') unit tests independent of filesystem.
+  2. Intermediate-directory symlink TOCTOU not fully closed by O_NOFOLLOW (final-component only); current discard-on-verified-mismatch keeps it fail-safe; fd-anchored verification optional future hardening.
+- **Next Step**: `P3BD3Tester1` QA confirmation -> close D3 -> backup push #11.
+
+## P3B.D3 — CLOSED
+- **Confirmation (`P3BD3Tester1`)**: PASS — npm test **449/449** fail 0; combined batch suites **25/25**; `tsc --noEmit` exit 0; fuzz run twice with identical 8-name pass set (determinism proven). Spots confirmed with citations: syntax filter codes (:28-44), fuzz escape invariant (:120-167), symlink refusals + O_NOFOLLOW fd (:60-67/:135-151/:176-196/:202-218), dedupe scanned 2/enqueued 1/duplicates 1 (:169-185), rename fail-safe -> 0 jobs + source issue (:187-207), fs-event validation + observer isolation runtime-verified ({handled:true, observerErrorContained:true}) (:495-513/:343-356). Scope exact. Read-only honored.
+- **Full cycle**: 1 coder attempt (18m); Reviewer approved zero-blocking (2 informational MINORs -> P4 backlog). Suite grew 441 -> 449 across the item.
+- **Closure transaction**: STEPS `[x] P3B.D3`; backup push #11.
+- **Next Step**: `P3B.D4` Scheduler/recovery — continuous pipeline.

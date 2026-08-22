@@ -3,11 +3,13 @@
 /**
  * BAT-02 folder access boundary.
  *
- * Main owns this adapter; renderer paths are inputs only. Every path is
- * resolved through realpath, checked as a directory, and permission-probed
- * before it is returned for persistence or watching. macOS bookmark creation
- * is intentionally a thin, null-returning seam for parity; security-scoped
- * bookmark hardening belongs to the platform hardening pass.
+ * Every path is resolved through realpath, checked as a directory, and
+ * permission-probed before it is returned for persistence or watching. macOS
+ * does not require a security-scoped bookmark in this app: the main process
+ * is unsandboxed (`sandbox: false` for the main process) and directory paths
+ * come from the Electron open-directory dialog. The adapter remains
+ * injectable so a future sandboxed build can add bookmark start/stop without
+ * changing watcher/domain contracts.
  */
 
 const crypto = require('node:crypto');
@@ -23,13 +25,177 @@ function errorDetails(error) {
   };
 }
 
-function assertFolderInput(folderPath) {
+function assertSafePathSyntax(folderPath, label = 'Path') {
   if (typeof folderPath !== 'string' || folderPath.length === 0) {
-    throw createAppError('VALIDATION_FAILED', 'Folder path must be a non-empty string.');
+    throw createAppError('VALIDATION_FAILED', `${label} must be a non-empty string.`);
   }
-  if (folderPath.includes('\0')) {
-    throw createAppError('VALIDATION_FAILED', 'Folder path must not contain NUL bytes.');
+  if (/[\u0000-\u001f\u007f]/u.test(folderPath)) {
+    throw createAppError('VALIDATION_FAILED', `${label} must not contain NUL or control characters.`);
   }
+  if (path.sep === '/' && folderPath.includes('\\')) {
+    throw createAppError('PERMISSION_DENIED', `${label} must not contain backslash path separators on POSIX.`);
+  }
+  if (path.sep !== '\\' && /^[A-Za-z]:[\\/]/.test(folderPath)) {
+    throw createAppError('PERMISSION_DENIED', `${label} must not contain a Windows absolute path.`);
+  }
+  if (folderPath.replace(/\\/g, '/').split('/').some((component) => component === '..')) {
+    throw createAppError('PERMISSION_DENIED', `${label} must not contain path traversal segments.`);
+  }
+  return folderPath;
+}
+
+function isCaseInsensitivePlatform(platform = process.platform) {
+  return platform === 'darwin' || platform === 'win32';
+}
+
+function isRelativePath(relative) {
+  return relative === ''
+    || (relative !== '..'
+      && !relative.startsWith(`..${path.sep}`)
+      && !path.isAbsolute(relative));
+}
+
+function isWithinRoot(rootPath, targetPath, platform = process.platform) {
+  const root = path.resolve(rootPath);
+  const target = path.resolve(targetPath);
+  const relative = path.relative(root, target);
+  if (isRelativePath(relative)) return true;
+  if (!isCaseInsensitivePlatform(platform)) return false;
+  const foldedRoot = root.normalize('NFC').toLocaleLowerCase('en-US');
+  const foldedTarget = target.normalize('NFC').toLocaleLowerCase('en-US');
+  return isRelativePath(path.relative(foldedRoot, foldedTarget));
+}
+
+
+function canonicalRootForConfinement(rootPath) {
+  assertSafePathSyntax(rootPath, 'Profile root');
+  const absoluteRoot = path.resolve(rootPath);
+  let rootStat;
+  try {
+    rootStat = fs.lstatSync(absoluteRoot);
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+    throw createAppError(code === 'ENOENT' ? 'NOT_FOUND' : 'PERMISSION_DENIED', `Profile root could not be inspected: ${absoluteRoot}`, errorDetails(error));
+  }
+  if (rootStat.isSymbolicLink()) {
+    throw createAppError('PERMISSION_DENIED', `Profile root must not be replaced by a symlink: ${absoluteRoot}`);
+  }
+  if (!rootStat.isDirectory()) {
+    throw createAppError('VALIDATION_FAILED', `Profile root is not a directory: ${absoluteRoot}`);
+  }
+  try {
+    return fs.realpathSync.native(absoluteRoot);
+  } catch (error) {
+    throw createAppError('PERMISSION_DENIED', `Profile root could not be resolved: ${absoluteRoot}`, errorDetails(error));
+  }
+}
+
+function assertNoSymlinkComponents(rootPath, targetPath, allowMissingLeaf = false) {
+  const relative = path.relative(rootPath, targetPath);
+  if (!isRelativePath(relative)) {
+    throw createAppError('PERMISSION_DENIED', `Path escapes profile root: ${targetPath}`);
+  }
+  const components = relative ? relative.split(path.sep).filter(Boolean) : [];
+  let current = rootPath;
+  for (let index = 0; index < components.length; index += 1) {
+    current = path.join(current, components[index]);
+    let stat;
+    try {
+      stat = fs.lstatSync(current);
+    } catch (error) {
+      if (allowMissingLeaf && error && error.code === 'ENOENT' && index === components.length - 1) return;
+      throw createAppError('PERMISSION_DENIED', `Cannot inspect profile path component "${current}".`, errorDetails(error));
+    }
+    if (stat.isSymbolicLink()) {
+      throw createAppError('PERMISSION_DENIED', `Refusing symlink path component "${current}".`);
+    }
+    if (index < components.length - 1 && !stat.isDirectory()) {
+      throw createAppError('PERMISSION_DENIED', `Profile path component is not a directory: "${current}".`);
+    }
+  }
+}
+
+function resolvePathWithinRoot(rootPath, candidatePath, options = {}) {
+  const root = canonicalRootForConfinement(rootPath);
+  assertSafePathSyntax(candidatePath, 'Candidate path');
+  if (options.relativeOnly && path.isAbsolute(candidatePath)) {
+    throw createAppError('PERMISSION_DENIED', 'Candidate path must be relative to the profile root.');
+  }
+  const absolutePath = path.isAbsolute(candidatePath)
+    ? path.normalize(candidatePath)
+    : path.resolve(root, candidatePath);
+
+  let probe = absolutePath;
+  const missing = [];
+  let existing = null;
+  while (true) {
+    try {
+      existing = fs.lstatSync(probe);
+      break;
+    } catch (error) {
+      if (error && error.code === 'ENOENT' && path.dirname(probe) !== probe) {
+        missing.unshift(path.basename(probe));
+        probe = path.dirname(probe);
+        continue;
+      }
+      if (options.allowMissing && error && error.code === 'ENOENT') break;
+      throw createAppError('PERMISSION_DENIED', `Cannot inspect candidate path "${probe}".`, errorDetails(error));
+    }
+  }
+
+  if (missing.length > 0) {
+    const canonicalParent = fs.realpathSync.native(probe);
+    if (!isWithinRoot(root, canonicalParent)) {
+      throw createAppError('PERMISSION_DENIED', `Candidate path escapes profile root: ${candidatePath}`);
+    }
+    if (!options.allowMissing) {
+      throw createAppError('NOT_FOUND', `Candidate path does not exist: ${absolutePath}`);
+    }
+    const lexicalParentRelative = path.relative(root, probe);
+    if (isRelativePath(lexicalParentRelative) && lexicalParentRelative !== '') {
+      assertNoSymlinkComponents(root, probe);
+    }
+    const canonicalPath = path.join(canonicalParent, ...missing);
+    return {
+      rootPath: root,
+      absolutePath,
+      canonicalPath,
+      relativePath: path.relative(root, canonicalPath).split(path.sep).join('/').normalize('NFC'),
+      exists: false,
+    };
+  }
+
+  if (existing.isSymbolicLink()) {
+    throw createAppError('PERMISSION_DENIED', `Refusing symlink candidate path "${absolutePath}".`);
+  }
+  const lexicalTargetRelative = path.relative(root, absolutePath);
+  if (isRelativePath(lexicalTargetRelative) && lexicalTargetRelative !== '') {
+    assertNoSymlinkComponents(root, absolutePath);
+  }
+  let canonicalPath;
+  try {
+    canonicalPath = fs.realpathSync.native(absolutePath);
+  } catch (error) {
+    throw createAppError('PERMISSION_DENIED', `Cannot resolve candidate path "${absolutePath}".`, errorDetails(error));
+  }
+  if (!isWithinRoot(root, canonicalPath)) {
+    throw createAppError('PERMISSION_DENIED', `Candidate path resolves outside profile root: ${candidatePath}`);
+  }
+  return {
+    rootPath: root,
+    absolutePath,
+    canonicalPath,
+    relativePath: path.relative(root, canonicalPath).split(path.sep).join('/').normalize('NFC'),
+    exists: true,
+  };
+}
+
+function assertPathWithinRoot(rootPath, candidatePath, options = {}) {
+  return resolvePathWithinRoot(rootPath, candidatePath, options);
+}
+
+function assertFolderInput(folderPath) {
+  assertSafePathSyntax(folderPath, 'Folder path');
 }
 
 function probeFolderPermission(canonicalPath) {
@@ -115,9 +281,10 @@ class MacOSFolderAccessAdapter extends FolderAccessAdapter {
   }
 
   createAccessReference(canonicalPath) {
-    // Security-scoped bookmark persistence is intentionally a stub seam for
-    // parity. D3 hardening can inject a real bookmark factory without changing
-    // watcher/domain contracts.
+    // The packaged app's main process is unsandboxed and receives paths from
+    // Electron's open-directory dialog, so a canonical path is sufficient.
+    // Keep the factory seam for a future sandboxed build that needs a
+    // security-scoped bookmark.
     return super.createAccessReference(canonicalPath);
   }
 }
@@ -164,6 +331,9 @@ module.exports = {
   MacOSFolderAccessAdapter,
   WindowsFolderAccessAdapter,
   canonicalFolderPath,
+  assertPathWithinRoot,
+  assertSafePathSyntax,
+  resolvePathWithinRoot,
   createFolderAccessAdapter,
   isPermissionError,
   probeFolderPermission,

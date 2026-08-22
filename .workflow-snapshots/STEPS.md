@@ -99,7 +99,7 @@
 **Do:**
 - [x] [P3B.D1] Batch domain/SQLite: profiles/jobs/checkpoints/events
 - [x] [P3B.D2] Folder access/watchers: adapters/reconciliation
-- [ ] [P3B.D3] Stability/path safety: fingerprint/confinement
+- [x] [P3B.D3] Stability/path safety: fingerprint/confinement
 - [ ] [P3B.D4] Scheduler/recovery: claim/run/checkpoint/retry
 - [ ] [P3B.D5] Atomic companion writer: safe `.txt` output/receipts
 - [ ] [P3B.D6] Separate Batch workspace: button/queue/details/controls

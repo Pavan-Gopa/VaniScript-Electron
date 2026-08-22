@@ -15,6 +15,8 @@ const path = require('node:path');
 
 const { createAppError } = require('../../../shared/contracts/errors.ts');
 const {
+  assertPathWithinRoot,
+  assertSafePathSyntax,
   createFolderAccessAdapter,
   isPermissionError,
 } = require('./folderAccess.js');
@@ -55,25 +57,42 @@ function isSameSnapshot(left, right) {
   return Boolean(left && right && left.sizeBytes === right.sizeBytes && left.mtimeMs === right.mtimeMs);
 }
 
-function snapshotFile(filePath) {
-  const stats = fs.statSync(filePath);
+function snapshotFile(filePath, options = {}) {
+  const confinedPath = options.root
+    ? assertPathWithinRoot(options.root, filePath).canonicalPath
+    : filePath;
+  const stats = fs.lstatSync(confinedPath);
+  if (stats.isSymbolicLink()) {
+    throw createAppError('PERMISSION_DENIED', `Refusing to fingerprint symlink "${confinedPath}".`);
+  }
   if (!stats.isFile()) return null;
   return { sizeBytes: stats.size, mtimeMs: stats.mtimeMs };
 }
 
-function issueType(error) {
+function issueType(error, context = 'folder') {
   if (isPermissionError(error)) return 'permission-lost';
   const code = error && typeof error === 'object' ? error.code : undefined;
-  return code === 'ENOENT' ? 'folder-unavailable' : 'watcher-error';
+  if (code === 'SOURCE_CHANGED') return 'source-changed';
+  if (code === 'ENOENT' || code === 'NOT_FOUND') {
+    return context === 'file' ? 'source-unavailable' : 'folder-unavailable';
+  }
+  if (code === 'PERMISSION_DENIED') return 'path-violation';
+  return 'watcher-error';
 }
 
 function issueFromError(type, profile, error, generation, extra = {}) {
+  const errorCode = error && typeof error === 'object' ? error.code : undefined;
+  const code = ['PERMISSION_DENIED', 'NOT_FOUND', 'SOURCE_CHANGED', 'CORRUPT_DATA', 'VALIDATION_FAILED'].includes(errorCode)
+    ? errorCode
+    : isPermissionError(error)
+      ? 'PERMISSION_DENIED'
+      : 'INTERNAL';
   return {
     type,
-    code: isPermissionError(error) ? 'PERMISSION_DENIED' : 'INTERNAL',
-    profileId: profile.profileId,
+    code,
+    profileId: profile && profile.profileId,
     generation,
-    path: profile.sourcePath,
+    path: (profile && profile.sourcePath) || extra.file || extra.directory,
     message: error instanceof Error ? error.message : String(error),
     ...extra,
   };
@@ -85,11 +104,6 @@ function profileExtensions(profile, override) {
   return normalizeExtensions(configured);
 }
 
-function relativeSourcePath(root, sourcePath) {
-  const relative = path.relative(root, sourcePath);
-  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
-  return relative.split(path.sep).join('/');
-}
 
 function companionPath(sourcePath) {
   const extension = path.extname(sourcePath);
@@ -97,31 +111,18 @@ function companionPath(sourcePath) {
   return `${stem}.txt`;
 }
 
-function collectDirectories(root, recursive) {
-  const directories = [root];
-  if (!recursive) return directories;
-  const pending = [root];
-  while (pending.length > 0) {
-    const current = pending.pop();
-    let entries;
-    try {
-      entries = fs.readdirSync(current, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (isHiddenOrTemporaryName(entry.name) || entry.isSymbolicLink() || !entry.isDirectory()) continue;
-      const child = path.join(current, entry.name);
-      directories.push(child);
-      pending.push(child);
-    }
+function collectDirectories(root, recursive, onIssue = () => {}, profile, generation) {
+  let confinedRoot;
+  try {
+    confinedRoot = assertPathWithinRoot(root, root);
+  } catch (error) {
+    onIssue(issueFromError(issueType(error), profile, error, generation, { directory: root }));
+    return [];
   }
-  return directories;
-}
-
-function collectCandidates(root, recursive, extensions, onIssue, profile, generation) {
-  const candidates = [];
-  const pending = [root];
+  const canonicalRoot = confinedRoot.canonicalPath;
+  const directories = [canonicalRoot];
+  if (!recursive) return directories;
+  const pending = [canonicalRoot];
   while (pending.length > 0) {
     const current = pending.pop();
     let entries;
@@ -133,13 +134,66 @@ function collectCandidates(root, recursive, extensions, onIssue, profile, genera
     }
     for (const entry of entries) {
       if (isHiddenOrTemporaryName(entry.name)) continue;
-      const child = path.join(current, entry.name);
-      if (entry.isSymbolicLink()) continue;
-      if (entry.isDirectory()) {
-        if (recursive) pending.push(child);
-        continue;
+      let child;
+      try {
+        assertSafePathSyntax(entry.name, 'Folder entry name');
+        child = path.join(current, entry.name);
+        const confined = assertPathWithinRoot(canonicalRoot, child);
+        const stat = fs.lstatSync(confined.absolutePath);
+        if (stat.isSymbolicLink()) {
+          throw createAppError('PERMISSION_DENIED', `Refusing symlink directory entry "${child}".`);
+        }
+        if (!stat.isDirectory()) continue;
+        directories.push(confined.canonicalPath);
+        pending.push(confined.canonicalPath);
+      } catch (error) {
+        onIssue(issueFromError('path-violation', profile, error, generation, { directory: child || current, file: child }));
       }
-      if (entry.isFile() && isSupportedSource(child, extensions)) candidates.push(child);
+    }
+  }
+  return directories;
+}
+
+function collectCandidates(root, recursive, extensions, onIssue, profile, generation) {
+  const candidates = [];
+  let confinedRoot;
+  try {
+    confinedRoot = assertPathWithinRoot(root, root);
+  } catch (error) {
+    onIssue(issueFromError(issueType(error), profile, error, generation, { directory: root }));
+    return candidates;
+  }
+  const pending = [confinedRoot.canonicalPath];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch (error) {
+      onIssue(issueFromError(issueType(error), profile, error, generation, { directory: current }));
+      continue;
+    }
+    for (const entry of entries) {
+      if (isHiddenOrTemporaryName(entry.name)) continue;
+      let child;
+      try {
+        assertSafePathSyntax(entry.name, 'Source entry name');
+        child = path.join(current, entry.name);
+        const confined = assertPathWithinRoot(confinedRoot.canonicalPath, child);
+        const stat = fs.lstatSync(confined.absolutePath);
+        if (stat.isSymbolicLink()) {
+          throw createAppError('PERMISSION_DENIED', `Refusing symlink source entry "${child}".`);
+        }
+        if (stat.isDirectory()) {
+          if (recursive) pending.push(confined.canonicalPath);
+          continue;
+        }
+        if (stat.isFile() && isSupportedSource(confined.canonicalPath, extensions)) {
+          candidates.push(confined.canonicalPath);
+        }
+      } catch (error) {
+        onIssue(issueFromError('path-violation', profile, error, generation, { file: child || current }));
+      }
     }
   }
   return candidates.sort();
@@ -147,11 +201,31 @@ function collectCandidates(root, recursive, extensions, onIssue, profile, genera
 
 function hashFile(filePath) {
   return new Promise((resolve, reject) => {
-    const hash = crypto.createHash('sha256');
-    const stream = fs.createReadStream(filePath);
-    stream.on('data', (chunk) => hash.update(chunk));
-    stream.once('error', reject);
-    stream.once('end', () => resolve(hash.digest('hex')));
+    let fd = null;
+    try {
+      const noFollow = fs.constants.O_NOFOLLOW || 0;
+      fd = fs.openSync(filePath, fs.constants.O_RDONLY | noFollow);
+      const stats = fs.fstatSync(fd);
+      if (!stats.isFile()) {
+        fs.closeSync(fd);
+        reject(createAppError('PERMISSION_DENIED', `Fingerprint target is not a regular file: ${filePath}`));
+        return;
+      }
+      const hash = crypto.createHash('sha256');
+      const stream = fs.createReadStream(null, { fd, autoClose: true });
+      stream.on('data', (chunk) => hash.update(chunk));
+      stream.once('error', reject);
+      stream.once('end', () => resolve(hash.digest('hex')));
+    } catch (error) {
+      if (fd !== null) {
+        try {
+          fs.closeSync(fd);
+        } catch {
+          // The stream owns a successfully opened descriptor.
+        }
+      }
+      reject(error);
+    }
   });
 }
 
@@ -160,27 +234,38 @@ async function stableSnapshot(filePath, options = {}) {
   const intervalMs = Math.max(0, Number.isFinite(options.intervalMs) ? options.intervalMs : DEFAULT_STABILITY_INTERVAL_MS);
   const attempts = Math.max(samples, Number.isInteger(options.attempts) ? options.attempts : DEFAULT_STABILITY_ATTEMPTS);
   const wait = typeof options.sleep === 'function' ? options.sleep : sleep;
+  const reportError = (error) => {
+    if (typeof options.onError === 'function') options.onError(error);
+  };
   let previous = null;
   let unchanged = 0;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     let current;
     try {
-      current = snapshotFile(filePath);
+      current = snapshotFile(filePath, options);
     } catch (error) {
-      if (typeof options.onError === 'function') options.onError(error);
+      reportError(error);
       return null;
     }
-    if (!current) return null;
+    if (!current) {
+      reportError(createAppError('SOURCE_CHANGED', `Source file is unavailable or not regular: ${filePath}`));
+      return null;
+    }
     unchanged = isSameSnapshot(previous, current) ? unchanged + 1 : 1;
     if (unchanged >= samples) return current;
     previous = current;
     if (intervalMs > 0) await wait(intervalMs);
   }
+  reportError(createAppError('SOURCE_CHANGED', `Source file changed while waiting for stability: ${filePath}`));
   return null;
 }
 
 async function fingerprintFile(filePath, options = {}) {
   const retries = Math.max(1, Number.isInteger(options.retries) ? options.retries : 2);
+  const reportError = (error) => {
+    if (typeof options.onError === 'function') options.onError(error);
+  };
+  let changedDuringHash = false;
   for (let attempt = 0; attempt < retries; attempt += 1) {
     const stable = await stableSnapshot(filePath, options);
     if (!stable) return null;
@@ -188,19 +273,27 @@ async function fingerprintFile(filePath, options = {}) {
     try {
       sha256 = await (typeof options.hash === 'function' ? options.hash(filePath) : hashFile(filePath));
     } catch (error) {
-      if (typeof options.onError === 'function') options.onError(error);
+      reportError(error);
+      return null;
+    }
+    if (typeof sha256 !== 'string' || !/^[0-9a-f]{64}$/i.test(sha256)) {
+      reportError(createAppError('CORRUPT_DATA', `SHA-256 fingerprint is invalid for ${filePath}`));
       return null;
     }
     let verified;
     try {
-      verified = snapshotFile(filePath);
+      verified = snapshotFile(filePath, options);
     } catch (error) {
-      if (typeof options.onError === 'function') options.onError(error);
+      reportError(error);
       return null;
     }
     if (isSameSnapshot(stable, verified)) {
-      return { sizeBytes: stable.sizeBytes, mtimeMs: stable.mtimeMs, sha256 };
+      return { sizeBytes: stable.sizeBytes, mtimeMs: stable.mtimeMs, sha256: sha256.toLowerCase() };
     }
+    changedDuringHash = true;
+  }
+  if (changedDuringHash) {
+    reportError(createAppError('SOURCE_CHANGED', `Source file changed during hashing: ${filePath}`));
   }
   return null;
 }
@@ -285,7 +378,13 @@ class BatchWatcher {
 
   _openProfileWatchers(entry, generation) {
     const { profile } = entry;
-    const directories = collectDirectories(profile.sourcePath, profile.recursive);
+    const directories = collectDirectories(
+      profile.sourcePath,
+      profile.recursive,
+      (issue) => this._emitIssue(issue),
+      profile,
+      generation,
+    );
     const handles = [];
     for (const directory of directories) {
       try {
@@ -399,7 +498,17 @@ class BatchWatcher {
     let candidate = null;
     if (filename) {
       const name = Buffer.isBuffer(filename) ? filename.toString('utf8') : String(filename);
-      candidate = path.isAbsolute(name) ? name : path.resolve(entry.profile.sourcePath, name);
+      try {
+        assertSafePathSyntax(name, 'Watcher event filename');
+        const candidateInput = path.isAbsolute(name)
+          ? name
+          : path.resolve(entry.profile.sourcePath, name);
+        const confined = assertPathWithinRoot(entry.profile.sourcePath, candidateInput, { allowMissing: true });
+        candidate = confined.exists ? confined.canonicalPath : confined.absolutePath;
+      } catch (error) {
+        this._emitIssue(issueFromError('path-violation', entry.profile, error, generation, { file: name }));
+        return true;
+      }
     }
     this._schedule(profileId, generation, candidate, eventType);
     return true;
@@ -471,16 +580,31 @@ class BatchWatcher {
     const enqueued = [];
     let duplicateCount = 0;
     let unstableCount = 0;
-    for (const sourcePath of candidates) {
+    for (const candidatePath of candidates) {
       if (!this._isGenerationActive(generation)) return { ignored: true, generation, reason: 'stale-generation' };
-      const relativePath = relativeSourcePath(profile.sourcePath, sourcePath);
-      if (!relativePath) continue;
+      let confined;
+      try {
+        confined = assertPathWithinRoot(profile.sourcePath, candidatePath);
+      } catch (error) {
+        unstableCount += 1;
+        this._emitIssue(issueFromError('path-violation', profile, error, generation, { file: candidatePath }));
+        continue;
+      }
+      const sourcePath = confined.canonicalPath;
+      const relativePath = confined.relativePath;
+      if (!relativePath) {
+        unstableCount += 1;
+        this._emitIssue(issueFromError('path-violation', profile, createAppError('PERMISSION_DENIED', `Candidate path is not relative to profile root: ${sourcePath}`), generation, { file: sourcePath }));
+        continue;
+      }
       const sourceFingerprint = await fingerprintFile(sourcePath, {
         ...this.stability,
+        root: profile.sourcePath,
         onError: (error) => {
-          if (isPermissionError(error)) {
-            this._emitIssue(issueFromError('permission-lost', profile, error, generation, { file: sourcePath }));
-          }
+          const type = error && error.code === 'SOURCE_CHANGED'
+            ? 'source-changed'
+            : issueType(error, 'file');
+          this._emitIssue(issueFromError(type, profile, error, generation, { file: sourcePath }));
         },
       });
       if (!sourceFingerprint) {
