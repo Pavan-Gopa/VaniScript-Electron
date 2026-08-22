@@ -261,3 +261,101 @@
 - **Full cycle**: 3 coder attempts, 3 reviewer rounds; findings converged 9 → 3 → 0; final verdict approved with zero issues; determinism/stability and §10.6 fit explicitly confirmed.
 - **Closure transaction**: STEPS `[x] P3A.D3`; backup push #3 (product diff + snapshot mirror refresh).
 - **Next Step**: P3A.D4 Translation coordinator (pause/repair/commit) — continuous pipeline, no pause.
+
+## P3A.D4 — Attempts 1-4
+- **Attempts 1-3 (provider deaths)**: Coder1 died pre-write (15m); Coder2 wrote the coordinator (924 ln) + contract (+142), self-fixed a partial-block commit defect, died repairing its own edit damage (29m); Coder3 audited the full draft against §10.6 and applied fixes (943 ln, +144), died writing tests (21m). Zero product progress lost; runtime failures only.
+- **Attempt 4 (`P3AD4Coder4`, 22m, single-purpose test session)**: NEW test/translationCoordinator.test.js — 14 tests covering §10.6: tiling-strict validateChunkResponse units; suspicion/approval classification; automatic batch with per-chunk commits + token reconciliation + D2 freshness integration; pause/resume without retranslation; cancel; repair flow with corrective context; provider-error isolation; repair exhaustion; targeted-failure previous-variant preservation; whole-block coverage guard (fragment cannot clobber block); stale SOURCE_CHANGED CAS; external-writer CONFLICT CAS; listener observability + ended-run guard. ZERO product-code changes needed — the audited coordinator passed every scenario as-is.
+  - INTERPRETATION FLAG for review: assignment suggested '>2 repairs → needs-review terminal'; the audited contract makes exhaustion FAILED(PROVIDER_ERROR), reserving needs-review for suspicious-but-valid commits in automatic mode. Tested as implemented; reviewer to adjudicate against §10.6 wording.
+  - Main verified independently: **350/350**, tsc exit 0, diff = coordinator + contracts + new test file.
+- **Next Step**: P3AD4Reviewer1 full review.
+
+## P3A.D4 — Review 1
+- **Review (`P3AD4Reviewer1`, 21m31s)**: **changes_requested** — 6 findings (5 major + 1 minor/TSDoc). Most §10.6 mechanics present; exhaustion adjudicated CONFORMING as FAILED(PROVIDER_ERROR) (exhausted response never valid → not a Needs Review candidate; D6 can surface retryable failure); CAS interpretation conforming to D2 architecture (global ProjectV3 revision guards target+source mutations; no separate target-archive revision exists). Prior scope clean.
+  1. **[major]** validateChunkResponse not tiling-strict for REPEATED same-block slices (:140-174/:538-547): provider reverses segments omitting optional offsets → accepted {ok:true}; _recordPiece assigns by array position → wrong whole-block translation committed approved with fresh sourceHash. Required: unambiguous per-slice identity for repeated blockIds (require echoed charStart/charEnd or segment ordinal); contract TSDoc + same-block reversal regression.
+  2. **[major]** Cancellation not authoritative across failure/retry boundaries (:375-386/:499-535/:698-704): rejection after cancel → _failChunk without checking _cancelRequested (cancelled run ends with failed chunk); cancel during repairing dispatches another repair request; unknown rejection (null) crashes err.message deref leaving run promise unresolved. Required: centralized in-flight cancellation checked in provider catch and at top of every repair iteration; normalize unknown throws preserving AppError codes; rejection-after-cancel / cancel-during-repair / unknown-rejection tests.
+  3. **[major]** Non-stale commit/storage errors treated as ordinary per-chunk failures (:595-610/:654-661): D2 post-lease FS throw leaves WAL intent → next chunk's load recovers it while coordinator holds stale _revision → failed→stale cascade with durable archive entry from the failed chunk. Required: commit/storage failures TERMINAL (stop pending work, surface typed error) or explicit intent recovery + revision reconciliation; post-lease _applyContentPlan failure regression asserting no later dispatch + correct accounting.
+  4. **[major/semantic gap]** startManualChunk selects one plan chunk (:570-679/:892-900): for a D3-split long block that chunk is partial → _coversWholeBlock rejects → 'committed' chunk with 'uncommitted' block, archive unchanged. Required: choose and document a safe policy (expand manual run to all slices of touched blocks, OR define manual partial chunks as explicitly non-durable) + split-block integration test.
+  5. **[major/test coverage]** Missing coverage: startManualChunk never tested; repeated same-block slices; split-block buffering/revision counts; protected block/span policies; suspicious automatic output landing needs-review; per-successful-chunk revision assertion. Required per list.
+  6. **[minor/TSDoc]** TranslationProgressSnapshot documents tokensTotal as processed-chunk sum; implementation sums ALL chunks (tokensDone = successful sum). Required: align TSDoc to full-plan total (or change impl) + partial/failed progress assertion.
+- **Next Step**: Coder Fix1 (attempt 5) — all six; keep 350 green.
+
+## P3A.D4 — Attempt 5
+- **Attempt 5 (workflow-coder `P3AD4CoderFix1`, 28m)**: closed all six Reviewer1 findings.
+  - F1: validateChunkResponse REQUIRES exact charStart/charEnd echoes for every repeated-block segment (omission/mismatch → repairable failure); reviewer's reversal probe fails validation, never commits.
+  - F2: `_settleCancelledInFlight` is the authoritative check — top of every repair iteration, provider catch (cancel wins over failure), commit catch; `normalizeThrown`/`describeThrownValue` normalize any thrown value without deref (AppError codes preserved); run promise always resolves.
+  - F3: POLICY — commit/storage failures TERMINAL (`_abortOnStorageFailure`): failing chunk failed, pending swept failed, typed error surfaced; documented in header + _commitPhase TSDoc. Stale SOURCE_CHANGED/CONFLICT and exhaustion semantics untouched (adjudicated conforming).
+  - F4: POLICY — manual-chunk EXPANDS to every plan chunk carrying a slice of a touched block; merged drafts commit via normal path; documented in prepare/startManualChunk TSDoc + header.
+  - F5: coverage added per list (manual expansion end-to-end, repeated-slice full commit path, needs-review landing, protected policies, revision chain +1 per chunk).
+  - F6: tokensTotal TSDoc corrected (full plan estimate; tokensDone = committed+needs-review+skipped); partial/failed snapshot assertions added.
+  - Discrimination: /tmp reverted-tree mutation runs per finding (noF1 → exactly 2 F1 tests fail; noF2 → all 3 fail incl. hang on extra dispatch; noF3 → storage-terminal test fails; noF4 → manual test fails).
+  - Main verified independently: **361/361** (350+11), tsc exit 0, diff confined to the three allowed files.
+- **Next Step**: P3AD4Reviewer2 delta re-review.
+
+## P3A.D4 — Review 2 (delta)
+- **Review (`P3AD4Reviewer2`, 16m30s)**: **changes_requested** — F1/F3/F4/F5/F6 CLOSED (with file:line verification); F2 PARTIAL + two new findings. §10.6 not yet complete; prior scope clean.
+  1. **[F2 residual, major]** `_settleCancelledInFlight` runs after the provider await but NOT after the validating transition / before accepting a valid response → sync listener can cancel during 'validating'/'committing' updates and the response still commits (:610-621/:698-713). Also commit-catch classifies SOURCE_CHANGED/CONFLICT stale BEFORE the cancellation check → cancel+stale ends failed instead of authoritative cancelled. Required: one cancellation precedence — settle after validating transition and before commit; cancellation checked before stale classification; regressions for cancel-from-validating/committing updates and cancel-plus-stale.
+  2. **[major, new contract finding]** `TranslationBlockStatus` union (:1473-1484) omits runtime-emitted `approved`/`draft` (statusForBlock :233-235, _commitChunk :773-774) while including unused `committed` — typed progress contract cannot represent asserted runtime snapshots. Required: align union with emitted values (or map output), plus a JS-output-vs-TS-shape drift assertion.
+  3. **[minor, new edge]** fail-then-cancel leaves non-null `error` in a state=cancelled snapshot, contradicting TSDoc 'null unless run failed' (:494-502/:827-833). Required: clear fatal error on cancelled terminal (or revise TSDoc to preserve prior failures) + fail-then-cancel regression.
+- **Next Step**: Coder Fix2 (attempt 6) — three residuals; keep 361 green.
+
+## P3A.D4 — Attempt 6
+- **Attempt 6 (workflow-coder `P3AD4CoderFix2`, 16m)**: closed all three Reviewer2 residuals.
+  - R1: cancellation precedence enforced at FOUR points — after 'validating' transition, at _commitPhase entry, immediately after 'committing' transition (before _commitChunk dispatch), and FIRST in the commit catch before stale classification (cancel beats stale). Regressions: cancel-from-validating discards response; cancel-from-committing lets no write land; cancel+SOURCE_CHANGED ends cancelled with error null.
+  - R2: TranslationBlockStatus realigned to emitted universe ('approved'|'buffered'|'draft'|'failed'|'needs-review'|'protected'|'uncommitted', dead 'committed' removed); drift assertion parses the union from documents.ts source and set-equality-checks it against all seven end-to-end emitters.
+  - R3: _finish clears this.error on 'cancelled' terminal; fail-then-cancel regression asserts error null with no second dispatch.
+  - Discrimination: four coordinator fixes temporarily reverted → the 4 behavior regressions fail 0/4; restored → all 30 coordinator tests pass.
+  - Main verified independently: **366/366** (361+5), tsc exit 0 incl. contracts coverage, diff confined to the three allowed files.
+- **Next Step**: P3AD4Reviewer3 delta re-review of R1-R3.
+
+## P3A.D4 — Review 3 (delta)
+- **Review (`P3AD4Reviewer3`, 7m26s)**: **changes_requested** on ONE item — R1 CLOSED (four-point cancellation precedence verified :628-635/:723-750; _commitChunk sync after final gate, no listener window), R3 CLOSED (error cleared :504-515), runtime §10.6 conforming; prior scope clean.
+  - D1 [major/test-only]: the R2 drift guard is not exhaustive — `observed` collects only 7 hand-picked final snapshots vs a hard-coded universe; cancellation/stale/storage-failure paths (:485-499/:739-741) and intermediate update snapshots are never driven/observed, so a new status added only on an omitted path passes silently. Required: guard enumerates EVERY runtime producer — collect every update+terminal snapshot, add cancel/stale/storage-failure fixtures (or source-derived enumeration); keep exact declared-union equality so missing AND dead members fail.
+- **Next Step**: Coder Fix3 (attempt 7, test-only) — exhaustive drift guard; keep 366 green.
+
+## P3A.D4 — Attempt 7
+- **Attempt 7 (workflow-coder `P3AD4CoderFix3`, 14m, test-only)**: drift guard made exhaustive.
+  - Observed universe accumulated from EVERY update snapshot (listener attached at every start* handle) AND every terminal snapshot; nine fixtures drive all producer paths — approved, needs-review, manual-expanded buffered rows + merged draft, targeted draft written/uncommitted reporting, protected block+span rows, failed rows, cancel discard+sweep rows, stale sweep rows, post-lease storage failure rows. Each fixture carries sanity asserts so a broken fixture fails loudly instead of silently narrowing the universe.
+  - Exact two-direction equality: runtime⊆contract loop names undeclared emissions; deepEqual(sorted declared, sorted observed) replaces the hand-written mirror list — dead members fail against real observation.
+  - Discrimination: product mutations [A1] fake status on the previously-unobserved cancel/stale path → guard FAILS naming it; [A2] swept-row status mutation → FAILS; [B] union member removal → FAILS. Files restored byte-exact (sha256 verified).
+  - Main verified independently: **366/366** (count unchanged — one test replaced), tsc exit 0, diff test-file only.
+- **Next Step**: P3AD4Reviewer4 delta re-review of D1; on approved -> QA -> close D4 -> backup push.
+
+## P3A.D4 — Review 4 (delta)
+- **Review (`P3AD4Reviewer4`, 9m59s)**: **changes_requested** — D1 PARTIAL: runtime parsing/listener timing/terminal collection/two-direction equality confirmed; focused drift test passes; 366/366 consistent. BUT per-fixture sanity assertions are missing or too weak where producers overlap: approved/needs-review fixtures have no output assertion; targeted-partial asserts only state; provider-failure asserts only state=failed (not _failChunk's failed rows). Since approved/failed/uncommitted are emitted by MULTIPLE fixtures, a path-specific mutation can leave the global observed set exactly equal — the guard does not independently establish every producer path. Also the pause-cancel call site (:436-448) is not directly driven.
+  Required: exact block-row sanity assertions per overlapping producer (at minimum approved, needs-review, manual buffered+merged draft, targeted full draft + partial uncommitted, provider-throw failed rows); a paused-cancel fixture (or source-derived enumeration of status-producing call sites) so a status emitted only by the paused/preparing sweep path cannot pass silently.
+- **Next Step**: Coder Fix4 (attempt 8, test-only) — per-path sanity + paused-cancel coverage.
+
+## P3A.D4 — Attempt 8
+- **Attempt 8 (workflow-coder `P3AD4CoderFix4`, 7m, test-only)**: closed the Reviewer4 finding.
+  - Per-path pins added for ALL overlapping producers: drift-approved pins [{blockId,'approved'}]; drift-needs-review pins needs-review; drift-manual-split pins buffered rows on EVERY intermediate expansion chunk AND draft on the last-touching chunk (buffering vs merged write asserted separately); drift-targeted asserts full-fragment draft and partial-fragment uncommitted as separate assertions; drift-failed pins _failChunk's failed rows specifically (distinguished from _abortOnStorageFailure's). Existing exact pins untouched; both global equality directions intact.
+  - PAUSED-CANCEL fixture drives cancel() from state 'paused' directly (:436-448 sweep site): parked after chunk1 commit (calls===1 asserted), final cancelled/error-null, statuses [committed,cancelled,cancelled], per-blockId swept uncommitted rows join observed.
+  - Discrimination: two product mutations — A (_failChunk failed→uncommitted) fails exactly 'provider throw marks rows failed'; B (_commitChunk buffered ternary→uncommitted) fails exactly 'intermediate expansion chunks report buffered rows'. Coordinator md5 byte-identical after restores.
+  - Main verified independently: **366/366** (unchanged), tsc exit 0, diff test-file only.
+- **Next Step**: P3AD4Reviewer5 delta re-review of the per-path pins + paused-cancel coverage.
+
+## P3A.D4 — Review 5 (delta)
+- **Review (`P3AD4Reviewer5`, 8m10s)**: **changes_requested** — two precise uncovered rows remain (attempt-8 scope test-only confirmed; 366/366 unchanged).
+  1. drift-cancel fixture pins only pending sweep rows (final.chunks[2]); the IN-FLIGHT cancelled chunk (final.chunks[1], two blocks) has no exact assertion → isolated mutation of _settleCancelledInFlight row assignment (:486 → failed) passes. Required: exact per-block uncommitted pins for final.chunks[1].blocks.
+  2. drift-stale fixture pins only pending sweep rows (final.chunks[1]); the stale in-flight chunk's rows (final.chunks[0], two blocks, _uncommittedRows at :740) unasserted → isolated mutation :740 → failed passes. Required: exact per-block uncommitted pins for final.chunks[0].blocks.
+- **Next Step**: Coder Fix5 (attempt 9, test-only) — four exact pins per the reviewer's line recipe.
+
+## P3A.D4 — Attempt 9
+- **Attempt 9 (workflow-coder `P3AD4CoderFix5`, 8m, test-only)**: closed both Reviewer5 findings with the exact recipe.
+  - drift-cancel: exact deepEqual pin on final.chunks[1].blocks (two uncommitted discard rows from _settleCancelledInFlight), distinct from chunks[2] pending-sweep assertion.
+  - drift-stale: exact deepEqual pin on final.chunks[0].blocks (two uncommitted discard rows from commit-catch _uncommittedRows), in addition to chunks[1] sweep assertion.
+  - Discrimination: isolated mutation :486→failed fails ONLY the cancel pin (stale pin not entered — no cancel in that fixture); isolated :740→failed fails ONLY the stale pin. Coordinator md5 byte-exact after restores.
+  - Main verified independently: **366/366** (unchanged), tsc exit 0, diff test-file only.
+- **Next Step**: P3AD4Reviewer6 delta re-review of the two pins; on approved -> QA -> close D4 -> backup push.
+
+## P3A.D4 — Review 6 (delta)
+- **Review (`P3AD4Reviewer6`, 4m42s)**: **approved**, zero findings.
+  - drift-cancel pin verified at test :1491-1497 (exact blocks[2]/blocks[3] uncommitted rows, names _settleCancelledInFlight); drift-stale pin at :1596-1602 (names commit-catch _uncommittedRows).
+  - Mental mutation replay: :486 → failed fails only the cancel pin; :740 → failed fails only the stale pin (other fixture never enters that path; global set already contains failed).
+  - Attempt-9 scope test-file-only vs attempt 8; 366/366 and tsc unchanged; prior path pins and exhaustive equality intact. Graphify stale — live source used.
+- **Next Step**: QA confirmation -> close D4 -> backup push -> P3A.D5.
+
+## P3A.D4 — CLOSED
+- **Confirmation (`P3AD4Tester1`, 3m57s)**: qa_green — npm test 366/366, tsc clean.
+- **Full cycle**: 9 coder attempts (incl. 2 pre-write provider deaths + 1 audit session + 2 test-only micro-fixes), 6 reviewer rounds; findings converged 6 → 3 → 1 → 1 → 2 → 0; final approved zero-findings; exhaustion/CAS interpretations adjudicated conforming.
+- **Closure transaction**: STEPS `[x] P3A.D4`; backup push #4 (product diff + snapshot mirror refresh).
+- **Next Step**: P3A.D5 Editorial editor core (ProseMirror schema/transactions/undo) — continuous pipeline, no pause.

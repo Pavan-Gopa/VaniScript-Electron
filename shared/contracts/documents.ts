@@ -1423,3 +1423,165 @@ export function validateChunkPlanAgainstSource(
 export function isChunkPlanForSource(rawPlan: unknown, rawDocument: unknown): boolean {
   return validateChunkPlanAgainstSource(rawPlan, rawDocument).ok;
 }
+
+// ============================================================================
+// DOC-04 — Translation coordination (plan §10.6)
+// ============================================================================
+//
+// Types for the translation coordinator's observable surface. These describe
+// wire-shaped data only (progress snapshots, translate requests/responses);
+// the state machine itself lives in electron/main/documents/
+// translationCoordinator.js and is dependency-injected with a translate
+// function, so no runtime behavior ships in this section.
+
+/** Run-level state machine states (plan §10.6), in canonical order. */
+export type TranslationRunState =
+  | 'idle'
+  | 'preparing'
+  | 'translating'
+  | 'validating'
+  | 'repairing'
+  | 'committing'
+  | 'paused'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+/** The three §10.6 intents. */
+export type TranslationIntentKind = 'automatic' | 'manual-chunk' | 'targeted';
+
+/**
+ * Per-chunk processing status. `needs-review` means committed WITH flagged
+ * (suspicious) blocks; `stale` means the response was discarded because the
+ * captured source/target revisions no longer match; `skipped` means nothing
+ * was sendable (fully protected chunk) and nothing was written.
+ */
+export type TranslationChunkStatus =
+  | 'pending'
+  | 'translating'
+  | 'validating'
+  | 'repairing'
+  | 'committing'
+  | 'committed'
+  | 'needs-review'
+  | 'failed'
+  | 'stale'
+  | 'cancelled'
+  | 'skipped';
+
+/**
+ * Per-block outcome inside one processed chunk — exactly the values the
+ * coordinator emits (guarded against drift by
+ * test/translationCoordinator.test.js). Committed blocks carry the §10.6
+ * status-policy verdict: `approved` for clean automatic results,
+ * `needs-review` when suspicious pieces were flagged, `draft` for
+ * manual/targeted runs. `buffered` marks slices awaiting sibling chunks;
+ * `uncommitted` marks resolved-but-not-written blocks (targeted fragments,
+ * discarded/cancelled/stale responses); `protected` blocks were never
+ * sent; `failed` marks the blocks of a failed chunk.
+ */
+export type TranslationBlockStatus =
+  | 'approved'
+  | 'buffered'
+  | 'draft'
+  | 'failed'
+  | 'needs-review'
+  | 'protected'
+  | 'uncommitted';
+
+/** One block outcome row inside a chunk progress entry. */
+export interface TranslationBlockProgress {
+  blockId: string;
+  status: TranslationBlockStatus;
+}
+
+/** One chunk's row in a progress snapshot. */
+export interface TranslationChunkProgress {
+  chunkId: string;
+  status: TranslationChunkStatus;
+  tokenEstimate: number;
+  /** Repair attempts used (0 = first response was valid). */
+  repairAttempts: number;
+  /** Outcome per block this chunk contributed slices to. */
+  blocks: TranslationBlockProgress[];
+}
+
+/**
+ * Observable progress snapshot for a translation run (plan §10.6 "progress
+ * по chunks/blocks/tokens"). Plain JSON — safe to ship over the typed IPC
+ * bridge. Token totals reconcile against the ChunkPlan estimates over the
+ * WHOLE run, whatever its outcome: `tokensTotal` is the full plan/run
+ * estimate — the sum over EVERY chunk of the run (pending, in-flight,
+ * failed, and cancelled chunks included) — while `tokensDone` accumulates
+ * a chunk's `tokenEstimate` only when it finishes successfully
+ * (`committed`, `needs-review`, or `skipped`). Partial and failed runs
+ * therefore always show `tokensDone < tokensTotal`. Block totals count only
+ * the blocks the run can ever write (unprotected and fully tiled by its
+ * slices), so a completed run ends with `blocksDone === blocksTotal`.
+ */
+export interface TranslationProgressSnapshot {
+  runId: string;
+  projectId: string;
+  /** Canonical (normalized) BCP-47 tag of the target language archive. */
+  language: string;
+  intent: TranslationIntentKind;
+  state: TranslationRunState;
+  chunks: TranslationChunkProgress[];
+  chunksDone: number;
+  chunksTotal: number;
+  blocksDone: number;
+  blocksTotal: number;
+  tokensDone: number;
+  tokensTotal: number;
+  /** First fatal error ({code, message}); null unless the run failed. */
+  error: { code: ErrorCode; message: string } | null;
+}
+
+/**
+ * One source segment handed to the translate function: a slice reference
+ * plus its text read from the run's captured document snapshot. Only
+ * non-empty, unprotected segments are sent.
+ */
+export interface TranslateSegment {
+  blockId: string;
+  charStart: number;
+  charEnd: number;
+  text: string;
+}
+
+/** Request contract for the injected translate function (one chunk). */
+export interface TranslateChunkRequest {
+  runId: string;
+  chunkId: string;
+  /** Canonical BCP-47 tag of the target language. */
+  targetLanguage: string;
+  /** Rolling context from the D3 plan (§10.4/§10.6); '' at document edges. */
+  contextBefore: string;
+  contextAfter: string;
+  segments: TranslateSegment[];
+  /**
+   * Present only on a bounded repair retry (attempt 1..MAX_REPAIR_ATTEMPTS)
+   * with the structural issues of the rejected response.
+   */
+  repair?: { attempt: number; issues: string[] };
+}
+
+/**
+ * One translated segment. The `blockId` echo is ALWAYS required; the
+ * offset echoes are optional ONLY for a block that appears once in the
+ * chunk (validated when present). A block appearing MORE than once has no
+ * other per-slice identity, so every one of its segments MUST echo its
+ * exact `charStart`/`charEnd` — omitting or mismatching them there is a
+ * structural validation failure (repairable), never an accepted tiling.
+ */
+export interface TranslatedSegment {
+  blockId: string;
+  charStart?: number;
+  charEnd?: number;
+  text: string;
+}
+
+/** Response contract for the injected translate function (one chunk). */
+export interface TranslateChunkResponse {
+  segments: TranslatedSegment[];
+}
