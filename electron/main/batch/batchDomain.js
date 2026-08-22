@@ -106,6 +106,11 @@ const MIGRATIONS = Object.freeze({
 
     CREATE INDEX IF NOT EXISTS idx_batch_jobs_state_updated
       ON batch_jobs(state, updated_at, job_id);
+    CREATE TABLE IF NOT EXISTS watcher_generations (
+      profile_id TEXT PRIMARY KEY NOT NULL REFERENCES folder_profiles(profile_id) ON DELETE CASCADE,
+      generation INTEGER NOT NULL CHECK (generation > 0),
+      updated_at TEXT NOT NULL
+    );
     CREATE TRIGGER IF NOT EXISTS job_events_append_only_update
       BEFORE UPDATE ON job_events
       BEGIN
@@ -401,6 +406,16 @@ function applyMigrations(adapter) {
       adapter.prepare('INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)').run(version, nowIso());
     });
   }
+  // D1 databases may already be marked v2 before BAT-02 added this table.
+  // Keep that upgrade path idempotent without changing the serialized schema
+  // version consumed by the existing D1 contract.
+  adapter.exec(`
+    CREATE TABLE IF NOT EXISTS watcher_generations (
+      profile_id TEXT PRIMARY KEY NOT NULL REFERENCES folder_profiles(profile_id) ON DELETE CASCADE,
+      generation INTEGER NOT NULL CHECK (generation > 0),
+      updated_at TEXT NOT NULL
+    );
+  `);
 }
 
 function validateOrThrow(result) {
@@ -644,6 +659,44 @@ class BatchDomain {
       .all(...values);
     return rows.map(profileFromRow);
   }
+  recordWatcherGeneration(profileId, generation) {
+    requireId(profileId, 'profileId');
+    if (!Number.isSafeInteger(generation) || generation < 1) {
+      throw createAppError('VALIDATION_FAILED', 'watcher generation must be a positive safe integer.');
+    }
+    return this._runMutation(() => {
+      const profile = this._db.prepare('SELECT profile_id FROM folder_profiles WHERE profile_id = ?').get(profileId);
+      if (!profile) throw createAppError('NOT_FOUND', `Batch profile "${profileId}" not found.`, { profileId });
+      const updatedAt = nowIso();
+      this._db.prepare(`
+        INSERT INTO watcher_generations(profile_id, generation, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(profile_id) DO UPDATE SET generation = excluded.generation, updated_at = excluded.updated_at
+      `).run(profileId, generation, updatedAt);
+      return { profileId, generation, updatedAt };
+    }, 'Watcher generation update failed.');
+  }
+
+  getWatcherGeneration(profileId) {
+    requireId(profileId, 'profileId');
+    this._assertOpen();
+    const row = this._db.prepare(`
+      SELECT profile_id, generation, updated_at
+      FROM watcher_generations
+      WHERE profile_id = ?
+    `).get(profileId);
+    if (!row) return null;
+    return { profileId: row.profile_id, generation: rowsNumber(row.generation), updatedAt: row.updated_at };
+  }
+
+  listWatcherGenerations() {
+    this._assertOpen();
+    return this._db
+      .prepare('SELECT profile_id, generation, updated_at FROM watcher_generations ORDER BY profile_id ASC')
+      .all()
+      .map((row) => ({ profileId: row.profile_id, generation: rowsNumber(row.generation), updatedAt: row.updated_at }));
+  }
+
 
   updateProfile(profileId, patch) {
     requireId(profileId, 'profileId');
@@ -702,11 +755,11 @@ class BatchDomain {
     }, 'Batch profile deletion failed.');
   }
 
-  enqueueJob(input) {
+  _prepareJob(input) {
     const validated = validateOrThrow(validateBatchJobInput(input));
     const jobId = validated.jobId || newId();
     const createdAt = nowIso();
-    const job = validateOrThrow(validateBatchJob({
+    return validateOrThrow(validateBatchJob({
       schemaVersion: BATCH_SCHEMA_VERSION,
       jobId,
       profileId: validated.profileId,
@@ -726,43 +779,70 @@ class BatchDomain {
       startedAt: null,
       completedAt: null,
     }));
+  }
 
+  _insertJob(job) {
+    const profile = this._db.prepare('SELECT profile_id FROM folder_profiles WHERE profile_id = ?').get(job.profileId);
+    if (!profile) throw createAppError('NOT_FOUND', `Batch profile "${job.profileId}" not found.`, { profileId: job.profileId });
+    try {
+      this._db.prepare(`
+        INSERT INTO batch_jobs(
+          job_id, profile_id, source_path, output_path, state, phase, attempt,
+          max_attempts, progress, config_snapshot_json, source_fingerprint_json,
+          output_fingerprint, last_error, started_at, completed_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        job.jobId,
+        job.profileId,
+        job.sourcePath,
+        job.outputPath,
+        job.state,
+        job.phase,
+        job.attempt,
+        job.maxAttempts,
+        job.progress,
+        json(job.configSnapshot, 'job.configSnapshot'),
+        job.sourceFingerprint === null ? null : json(job.sourceFingerprint, 'job.sourceFingerprint'),
+        job.outputFingerprint,
+        job.lastError,
+        job.startedAt,
+        job.completedAt,
+        job.createdAt,
+        job.updatedAt,
+      );
+    } catch (error) {
+      throw normalizeSqlError(error, `Batch job "${job.jobId}" already exists.`);
+    }
+    this._inject('job:after-insert', job);
+    this._insertEvent(job.jobId, 'job.enqueued', { state: job.state }, job.createdAt);
+    return jobFromRow(this._db.prepare('SELECT * FROM batch_jobs WHERE job_id = ?').get(job.jobId));
+  }
+
+  enqueueJob(input) {
+    const job = this._prepareJob(input);
+    return this._runMutation(() => this._insertJob(job), 'Batch job enqueue failed.');
+  }
+
+  /**
+   * Insert a source job only when this profile has not seen the same complete
+   * source fingerprint.  The lookup and insert share one transaction so two
+   * watcher/reconciliation passes cannot race into duplicate jobs.
+   */
+  enqueueJobIfFingerprintMissing(input) {
+    const job = this._prepareJob(input);
     return this._runMutation(() => {
-      const profile = this._db.prepare('SELECT profile_id FROM folder_profiles WHERE profile_id = ?').get(job.profileId);
-      if (!profile) throw createAppError('NOT_FOUND', `Batch profile "${job.profileId}" not found.`, { profileId: job.profileId });
-      try {
-        this._db.prepare(`
-          INSERT INTO batch_jobs(
-            job_id, profile_id, source_path, output_path, state, phase, attempt,
-            max_attempts, progress, config_snapshot_json, source_fingerprint_json,
-            output_fingerprint, last_error, started_at, completed_at, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          job.jobId,
-          job.profileId,
-          job.sourcePath,
-          job.outputPath,
-          job.state,
-          job.phase,
-          job.attempt,
-          job.maxAttempts,
-          job.progress,
-          json(job.configSnapshot, 'job.configSnapshot'),
-          job.sourceFingerprint === null ? null : json(job.sourceFingerprint, 'job.sourceFingerprint'),
-          job.outputFingerprint,
-          job.lastError,
-          job.startedAt,
-          job.completedAt,
-          job.createdAt,
-          job.updatedAt,
-        );
-      } catch (error) {
-        throw normalizeSqlError(error, `Batch job "${job.jobId}" already exists.`);
+      if (job.sourceFingerprint !== null) {
+        const fingerprintJson = json(job.sourceFingerprint, 'job.sourceFingerprint');
+        const existing = this._db.prepare(`
+          SELECT * FROM batch_jobs
+          WHERE profile_id = ? AND source_fingerprint_json = ?
+          ORDER BY created_at ASC, job_id ASC
+          LIMIT 1
+        `).get(job.profileId, fingerprintJson);
+        if (existing) return { inserted: false, job: jobFromRow(existing) };
       }
-      this._inject('job:after-insert', job);
-      this._insertEvent(job.jobId, 'job.enqueued', { state: job.state }, job.createdAt);
-      return jobFromRow(this._db.prepare('SELECT * FROM batch_jobs WHERE job_id = ?').get(job.jobId));
-    }, 'Batch job enqueue failed.');
+      return { inserted: true, job: this._insertJob(job) };
+    }, 'Batch deduplicated job enqueue failed.');
   }
 
   getJob(jobId) {

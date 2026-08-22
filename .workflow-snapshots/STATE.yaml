@@ -5,14 +5,13 @@ onboarding:
   model_pairs_confirmed: true
   completed_at: 2026-08-21T00:00:00Z
 current_step: P3B
-current_work_item_id: P3B.D2
+current_work_item_id: P3B.D3
 current_work_item: >-
-  Folder access/watchers — adapters/reconciliation. IN PROGRESS under the
+  Stability/path safety — fingerprint/confinement. IN PROGRESS under the
   standing continuous-pipeline order.
 step_description: >-
-  P3B Batch lane; D1 CLOSED (suite 424 -> 434). Continuous pipeline per Human
-  standing order — currently entering D2. O1 gate fully closes with D4
-  (crash/restart recovery loop).
+  P3B Batch lane; D1-D2 CLOSED (suite 424 -> 441). Continuous pipeline per
+  Human standing order — currently entering D3.
 completed_steps:
   - P0
   - P1
@@ -24,16 +23,16 @@ implementation:
   status: in_progress
   attempts: 0
   note: >-
-    Fresh cycle for P3B.D2 (BAT-02): folder access adapters + watchers +
-    reconciliation; acceptance = event-duplication tests per §20/§11.5.
+    Fresh cycle for P3B.D3 (BAT-03): stability/path safety — source fingerprint
+    hardening and path confinement; acceptance = symlink/case fuzz suite per §20.
 retry_guard:
   max_attempts_without_progress: 3
   last_failure_signature: "Reviewer attempt-3 residuals: collectPages deep-chain RangeError, literal trailing-escape TypeError, ZIP offset/compSize trust, unclosed XML canImport, nested textbox part routing, sourceHash-per-part"
   repeated_failure_count: 0
   blocker: null # cleared 2026-08-21 ~14:41Z — Human authorized one more same-model Tester attempt
 omp:
-  last_result_artifact: history://P3BD1Tester1
-  active_agent: P3BD2Coder1 (workflow-coder)
+  last_result_artifact: history://P3BD2Tester1
+  active_agent: P3BD3Coder1 (workflow-coder)
   active_role: coder
   status: dispatched
   role: coder
@@ -69,27 +68,23 @@ review:
   last_feedback_file: AI_Workflow_Kit/docs/AI/FEEDBACK.md
   verdict: null
   note: >-
-    D1 closed approved zero-findings (record retained). D2 review queued after
-    its coder attempt.
+    D2 closed approved zero-blocking (record retained). D3 review queued after
+    its coder attempt. Binding lane adjudications from D1 retained.
 qa:
   status: passed
-  suite: batchDomain + full Electron suite
+  suite: batchWatchers + batchDomain + full Electron suite
   bugs_open: 0
-  note: D1 confirmation PASS 434/434 fail 0, focused 10/10, tsc 0 (record retained); D2 QA queued after review.
+  note: D2 confirmation PASS 441/441 fail 0, batch suites 17/17, tsc 0 (retained); D3 QA queued after review.
 next_actor: coder
-omp_status_note: running_p3b_d2_coder_dispatched
+omp_status_note: running_p3b_d3_coder_dispatched
 checkpoint:
   last_pre_tag: null
   last_post_tag: null
-  last_commit: 8b88b0c
+  last_commit: 797fa62
   note: >-
-    P3A.D1-D6 pushed (079a512, a2a997a, 364e147, 6ddfeb6, 2a8fb49, e901608).
-    P3A.D7 closed, push #7 = 990af61. Human resumed 2026-08-22: D8 cycle
-    Coder1 -> Reviewer1 approved (3 MINOR) -> CoderFix1 -> Reviewer2 delta
-    approved -> Tester1 PASS 424/424; gates O1-O3/J1-J3 closed; card P3A
-    COMPLETE. Backup push #8 = 8b88b0c (product diff + snapshot mirror),
-    990af61..8b88b0c on codex/v2-swift-import-compat, synced with origin.
-    Awaiting Human decision for P3B.D1.
+    Push #9 = 797fa62 (P3B.D1). P3B.D2 closed approved zero-blocking, Tester
+    PASS 441/441; backup push #10 executes now (watcher/folderAccess diff +
+    snapshot mirror). Continuous pipeline — P3B.D3 coder dispatched.
 notes: |
   2026-08-21 canonical state repair: STEPS.md rewritten as Step Cards (P0..P5) with
   stable IDs <step>.D/O/J; current_step restored; completed_steps limited to
@@ -122,3 +117,6 @@ notes: |
   breaks any array-containing-hex form. Fix routed to Coder Fix5 together with
   balanced escape-aware literal scanning (nested parens per PDF spec ≤32) for
   both dict path and content-stream tokenizer.
+  2026-08-22 process record: Tester mandate violation during P3B.D2 QA (test-file
+  edit attempt) reverted under direct Main order; verified restored. TEAM_CONTRACT
+  compliance note only, zero product impact.
