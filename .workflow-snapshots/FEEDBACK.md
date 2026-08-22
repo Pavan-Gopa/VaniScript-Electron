@@ -202,3 +202,62 @@
 - **Full cycle**: 7 coder attempts, 6 reviewer rounds; findings converged 10 → 3 → 3 → 3 → 3 → 1; final verdict path: B2/B3 closed, J2 MET under the Human-approved threat-model boundary, single mechanical C1 fixed + Main-verified. Suite grew 234 → 297 across the item.
 - **P4 backlog transfers**: recovery-side re-gating granularity nuance; literal version:2 intent pin in tests; the multi-process adversarial FS-mutator class (per Human boundary decision → P3B.J1 / P4 hardening).
 - **Next Step**: P3A.D3 Semantic chunk planner — continuous pipeline, no pause.
+
+## P3A.D3 — Attempt 1
+- **Attempt 1 (workflow-coder `P3AD3Coder1`, 31m)**: NEW chunkPlanner.js (491 ln), documents.ts contract +217 (ChunkPlan v1), NEW test/documentChunkPlanner.test.js (668 ln, 23 tests). Main verified: **320/320**, tsc clean, diff scoped to the 3 files. Structured report requested via DM (initial yield lacked it).
+- **Design**: pure function of document.blocks + options (no timestamps/randomness/order-dependence); 8 documented grouping rules — tables+rows atomic, headings bind forward (never end a chunk), prose-only sentence splitting with exact-concatenation guarantee, budget exception for unsplittable atomic units, part changes close chunks, zero-block/zero-token edge rules; token estimate = ceil(chars/4) documented; chunkId = "c-" + first 16 hex of SHA-256 over "schema|blockId:start:end,..." — membership+range-derived, ordinal-independent; rolling context bounded by chars, crossing chunk borders; options defaults 800/400 with TypeError validation.
+- **Next Step**: P3AD3Reviewer1 full review.
+
+## P3A.D3 — Review 1
+- **Review (`P3AD3Reviewer1`, 15m39s)**: **changes_requested** — 9 findings (4 major / 5 minor). Determinism real for validated inputs; 64-bit id truncation risk negligible (~2.7e-12 @10k chunks); P3A.J2 untouched; D1/D2 unregressed.
+  1. **[major]** Heading at full budget flushed as heading-only chunk instead of binding forward (:30-33/:421-436) — repro: heading `abcd` + `a. b.` at budget 1 → `[heading]`,`[slice]`. Required: heading binding precedence over flush + exact-budget/over-budget tests.
+  2. **[major]** chunkId seed serialization not injective — unescaped `,`/`:` in legal blockIds collide deterministically (`A:0:1,B` full-slice ≡ two slices). TSDoc overstates wording-edit stability (length edits change ranges → new ids). Required: unambiguous canonical encoding or enforced delimiter-free blockId grammar; align TSDoc; collision regression.
+  3. **[major]** Duplicate blockIds accepted — buildUnits tolerates, Map last-write-wins resolves wrong text with plausible ranges/tokens. Required: reject duplicates before planning (+ grouped-row identity), fail-closed test.
+  4. **[minor]** Table grouping ignores `part` (main-table + footer-row folded) vs rule 7. Required: same-part folding or explicit precedence + fixture.
+  5. **[minor]** All-empty rule violated across parts (two zero-token chunks vs documented one) — rules 7/8 precedence conflict. Required: explicit exception or documented precedence + test.
+  6. **[minor]** Context partial-cut can split surrogate pairs (`\uDE00` alone). Required: code-point-safe cuts or documented provider contract + emoji boundary test.
+  7. **[major]** `validateChunkPlan` shape-only — accepts arbitrary chunkId and out-of-document slices; TSDoc overstates strictness; no downstream source-aware callsite. Required: source-aware validation path or explicit DOC-04 rederivation contract, minimum id-shape enforcement, negative tests.
+  8. **[minor]** DEFAULT_CHUNK_PLANNER_OPTIONS mutable at runtime by JS callers. Required: runtime freeze + mutation test.
+  9. **[minor]** Abbreviation dots (`Dr.`, `U.S.`) split as boundaries; Unicode closers untested. Required: deterministic abbreviation rules or narrowed docs + focused tests.
+- **Next Step**: Coder Fix1 (attempt 2) — all nine; keep 320 green.
+
+## P3A.D3 — Attempt 2
+- **Attempt 2 (workflow-coder `P3AD3CoderFix1`, 28m)**: closed all nine Reviewer1 findings.
+  - F1: `cur.contentTokens` tracking — prose-split flushes only when real content exists; heading-only chunks impossible; exact-budget/over-budget/reviewer-repro tests.
+  - F2: `canonicalChunkSeed` (length-prefixed fields → injective) + `deriveChunkPlanId` exported from documents.ts; local hashing deleted (clean cutover); TSDoc rewritten to range-based stability; reviewer's exact collision pair now yields disjoint id sets.
+  - F3: duplicate blockIds → fail-closed TypeError before planning (rows included, identity-validated); 3 dup fixtures.
+  - F4: same-part table folding; cross-part fixture. F5: rule 8 documented per-part precedence; spanning-parts test. F6: code-point-safe `cutHead`/`cutTail` (whole code point omitted at budget edge); emoji tests + no-unpaired-surrogate invariants.
+  - F7: `validateChunkPlanAgainstSource` (+ `isChunkPlanForSource`) — id shape AND re-derivation, block existence, UTF-16 bounds, ordered gapless full coverage, recomputed estimates; mismatches → CORRUPT_DATA; `validateChunkPlan` TSDoc narrowed to structural-only; 9 negative tests incl. compensated-estimate tamper and post-planning source mutation.
+  - F8: defaults Object.freeze + strict/sloppy mutation tests. F9: deterministic abbreviation list (single-letter initials + {mr,mrs,ms,dr,prof,sr,jr,st}), documented trade-off; `Dr. Smith`/`U.S. Army`/Unicode-closer fixtures.
+  - Main verified independently: **333/333** (320+13), tsc exit 0 incl. contracts coverage, diff confined to the three allowed files.
+  - Discrimination: pre-fix probes reproduced all nine repros; post-fix mutation checks (contentTokens guard revert → 3 FAIL; freeze removal → FAIL); files restored md5-identical.
+- **Next Step**: P3AD3Reviewer2 delta re-review.
+
+## P3A.D3 — Review 2 (delta)
+- **Review (`P3AD2Reviewer2`-style delta `P3AD3Reviewer2`, 13m48s)**: **changes_requested** — F2-F6, F8, F9 CLOSED; F1/F7 partial. Determinism + range-stability sound; §10.6 fit confirmed; no D1/D2 regression; scope clean.
+  1. **[minor]** Heading handler still tests `cur.tokens > 0` (:447-478): nonempty heading + zero-token separator + next heading → contentless non-final chunk `[h,e]`, contradicting rule 2 (empties stay in pending prefix). Required: content-vs-prefix state (or defer separator draining) + h1/empty/h2/prose regression.
+  2. **[major]** `validateChunkPlanAgainstSource` indexes blocks in a plain Record (:1305-1324): legal blockIds `__proto__`/`constructor`/`toString` collide with inherited properties → valid planner output rejected as false duplicate. Required: `Map<string, number>` or `Object.create(null)` + prototype-property acceptance tests, retaining true-duplicate rejection.
+  3. **[major]** Coverage check accepts degenerate zero-length slices on nonempty blocks (:1340-1386): standalone `[0,0]` chunk + `[0,len]` returns ok (expectedStart never advances on zero-length). Required: reject zero-length slices on nonempty blocks and >1 zero-length slice on empty blocks (planner's legitimate empty slice stays legal); re-derived duplicate-prefix/suffix + valid split coverage tests.
+- **Next Step**: Coder Fix2 (attempt 3) — three residuals; keep 333 green.
+
+## P3A.D3 — Attempt 3
+- **Attempt 3 (workflow-coder `P3AD3CoderFix2`, 17m)**: closed all three Reviewer2 residuals.
+  - R1: heading handler closes only on `cur.contentTokens > 0`; prefix+separator-only chunks fold back into the pending prefix — h1/empty/h2/prose stays pending until section content. Regression: budget 2 → [['h0','e0','h1','p0'(0,4)],['p0'(4,7)]].
+  - R2: indexById → `Map<string, number>`; prototype-property blockIds (`__proto__`/`constructor`/`toString`/`hasOwnProperty`/`valueOf`) validate end-to-end; true `__proto__` duplicates still rejected.
+  - R3: zero-length slices on nonempty blocks rejected; >1 zero-length slice on empty blocks rejected (legitimate single empty slice legal); four-facet regression incl. suffix duplicate and valid split coverage.
+  - Main verified independently: **336/336** (333+3), tsc exit 0 incl. contracts coverage; mutation run against all-three pre-fix replicas → exactly the 3 new tests fail; files restored md5-identical.
+- **Next Step**: P3AD3Reviewer3 delta re-review of R1-R3.
+
+## P3A.D3 — Review 3 (delta)
+- **Review (`P3AD3Reviewer3`, 7m28s)**: **approved**, zero findings.
+  - R1 closed: contentTokens tracking + prefix fold (:426-462/:472-534); h1/empty/h2/prose regression passes; exhaustive same-part sweeps found no orphan headings or nondeterminism; trailing heading-only document emits a valid final chunk.
+  - R2 closed: Map index with index-0-safe `!== undefined` dup check (:1311-1329); planner-side lookups also Maps; all five prototype-property ids validated end-to-end; true `__proto__` duplicate still rejected.
+  - R3 closed: cross-chunk slice flattening, per-block zero-length counter reset, nonempty-block and second-empty-slice rejection (:1346-1399); four-facet regression passes; direct boundary probes pass.
+  - Focused planner suite 39/39; determinism + range-based id stability intact; §10.6-compatible boundary; D1/D2 and settled F-findings untouched; scope confined.
+- **Next Step**: QA confirmation -> close D3 -> backup push -> P3A.D4.
+
+## P3A.D3 — CLOSED
+- **Confirmation (`P3AD3Tester1`, 1m27s)**: qa_green — npm test 336/336, tsc clean.
+- **Full cycle**: 3 coder attempts, 3 reviewer rounds; findings converged 9 → 3 → 0; final verdict approved with zero issues; determinism/stability and §10.6 fit explicitly confirmed.
+- **Closure transaction**: STEPS `[x] P3A.D3`; backup push #3 (product diff + snapshot mirror refresh).
+- **Next Step**: P3A.D4 Translation coordinator (pause/repair/commit) — continuous pipeline, no pause.

@@ -25,6 +25,7 @@
  * and Main agree on the exact shape.
  */
 
+import { createHash } from 'node:crypto';
 import { AppError, createAppError, type ErrorCode } from './errors.ts';
 
 /** Current normalized document schema version. Bump on shape change. */
@@ -1003,4 +1004,422 @@ export function validateTranslationArchive(raw: unknown): TranslationValidationR
 /** Type guard: true iff `raw` is a structurally valid translation archive. */
 export function isTranslationArchive(raw: unknown): raw is TranslationArchive {
   return validateTranslationArchive(raw).ok;
+}
+
+// ============================================================================
+// DOC-03 — Semantic chunk planning (plan §10.4, §10.6, §20)
+// ============================================================================
+
+/** Current chunk-plan schema version. Bump on shape change. */
+export const CHUNK_PLAN_SCHEMA_VERSION = 1 as const;
+export type ChunkPlanSchemaVersion = typeof CHUNK_PLAN_SCHEMA_VERSION;
+
+/**
+ * Planner options (plan §10.4). Both fields are optional; omitted fields
+ * take `DEFAULT_CHUNK_PLANNER_OPTIONS`. Options are deterministic inputs:
+ * the same document plus the same options MUST always produce the identical
+ * chunk plan (§20 acceptance: stable plans, deterministic fixtures).
+ */
+export interface ChunkPlannerOptions {
+  /**
+   * Target maximum tokens per chunk. A chunk MAY exceed this only in the
+   * documented overflow cases: it contains an unsplittable atomic unit (a
+   * table group, a verse/list/code block, or one sentence longer than the
+   * budget) — possibly together with its bound leading heading(s) — or the
+   * chunk opens with a bound heading that has exhausted the budget, so the
+   * section's FIRST prose piece glues onto it anyway (a heading is never
+   * left alone in a non-final chunk).
+   */
+  maxTokensPerChunk?: number;
+  /** Maximum characters of rolling context captured before/after a chunk. */
+  contextChars?: number;
+}
+
+/** Planner options after defaults have been applied and validated. */
+export interface ResolvedChunkPlannerOptions {
+  maxTokensPerChunk: number;
+  contextChars: number;
+}
+
+/**
+ * Documented planner defaults. `maxTokensPerChunk: 800` targets typical
+ * translation-provider request budgets (~4 chars/token heuristic below);
+ * `contextChars: 400` bounds the rolling context window to roughly one
+ * paragraph on each side. Frozen at runtime so a stray write cannot corrupt
+ * shared defaults — strict-mode callers (ES modules, `'use strict'`) throw
+ * `TypeError` on assignment instead of silently mutating every future plan.
+ */
+export const DEFAULT_CHUNK_PLANNER_OPTIONS: Readonly<ResolvedChunkPlannerOptions> = Object.freeze({
+  maxTokensPerChunk: 800,
+  contextChars: 400,
+});
+
+/**
+ * One ordered reference into a block (plan §10.4 "block slices"). Slices are
+ * references into the normalized document, never text copies: consumers read
+ * text via `block.text.slice(charStart, charEnd)` over UTF-16 code units.
+ * A block that was split across chunks contributes several slices whose
+ * ranges partition `[0, block.text.length)` in order.
+ */
+export interface BlockSlice {
+  blockId: string;
+  /** Inclusive start offset within the owning block's text. */
+  charStart: number;
+  /** Exclusive end offset within the owning block's text. */
+  charEnd: number;
+  /**
+   * Deterministic token estimate for this slice's text:
+   * `text.length === 0 ? 0 : Math.ceil(text.length / 4)`.
+   */
+  tokenEstimate: number;
+}
+
+/**
+ * Canonical, injective serialization of a chunk's member slices for chunkId
+ * derivation (DOC-03). Each slice encodes as
+ * `${blockId.length}:${blockId}:${charStart}:${charEnd}` and the slices join
+ * with `,`, prefixed by the schema version. Length-prefixing `blockId` makes
+ * the encoding unambiguous for ANY legal blockId: `,` and `:` inside an id
+ * cannot alias one slice onto two (the earlier naive `id:start:end` join was
+ * not injective — `"A:0:1,B:0:4"` parsed as either one slice of block
+ * `"A:0:1,B"` or two slices of `"A"`/`"B"`).
+ */
+export function canonicalChunkSeed(
+  slices: ReadonlyArray<Pick<BlockSlice, 'blockId' | 'charStart' | 'charEnd'>>,
+): string {
+  return `${CHUNK_PLAN_SCHEMA_VERSION}|${slices
+    .map((s) => `${s.blockId.length}:${s.blockId}:${s.charStart}:${s.charEnd}`)
+    .join(',')}`;
+}
+
+/**
+ * Derive a `PlanChunk.chunkId` from its slices: `"c-"` + the first 16
+ * lowercase hex digits of SHA-256 over `canonicalChunkSeed(slices)`. Single
+ * source of truth for the derivation — the planner (DOC-03) and
+ * `validateChunkPlanAgainstSource` both call this. Node-crypto based;
+ * main/worker-side only (renderer consumers use the types, not this).
+ */
+export function deriveChunkPlanId(
+  slices: ReadonlyArray<Pick<BlockSlice, 'blockId' | 'charStart' | 'charEnd'>>,
+): string {
+  return `c-${createHash('sha256').update(canonicalChunkSeed(slices)).digest('hex').slice(0, 16)}`;
+}
+
+/**
+ * One translatable unit (plan §10.4 "semantic chunk plans with context
+ * before/after, token estimate and block slices"; consumed by the DOC-04
+ * translation coordinator, which commits per chunk and reports progress
+ * over chunks/blocks/tokens, plan §10.6).
+ */
+export interface PlanChunk {
+  /**
+   * Stable, content-derived id: `"c-"` + the first 16 lowercase hex digits
+   * of SHA-256 over `canonicalChunkSeed(slices)` — the injective
+   * length-prefixed encoding
+   * `"${CHUNK_PLAN_SCHEMA_VERSION}|${slices.map((s) =>
+   * `${s.blockId.length}:${s.blockId}:${s.charStart}:${s.charEnd}`).join(',')}"`.
+   *
+   * The id depends ONLY on member slice ids/ranges — never on array
+   * position, document length, wording, or timestamps. Re-deriving a plan
+   * for the same document version therefore reproduces ids byte-identically,
+   * and chunks whose membership+ranges survive a nearby edit keep their id
+   * even when their ordinal shifts. Stability is RANGE-based, not
+   * content-based: an edit that changes a block's text LENGTH shifts some
+   * slice's charStart/charEnd (and every later offset in that block) and
+   * therefore re-derives the affected ids, while a same-length wording edit
+   * inside an unchanged range keeps every id. Content staleness itself is
+   * tracked per block via source hashes (DOC-02 freshness), not via chunk
+   * ids. Plans are derived state, never persisted truth.
+   */
+  chunkId: string;
+  /** Ordered block slices covering this chunk's source text. */
+  slices: BlockSlice[];
+  /** Exactly the sum of the member slices' `tokenEstimate`s. */
+  tokenEstimate: number;
+  /**
+   * Rolling context from neighboring blocks before this chunk ('' at the
+   * document start), at most `options.contextChars` characters, taken from
+   * the nearest preceding slices (whole segments first, then a partial cut).
+   */
+  contextBefore: string;
+  /** Rolling context after this chunk ('' at the document end). */
+  contextAfter: string;
+}
+
+/**
+ * A semantic chunk plan for one normalized document (DOC-03 output, plan
+ * §10.4). Plans are pure derived state: recomputable at any time from the
+ * normalized blocks plus options, so they are never persisted inside the
+ * document archive (`NormalizedDocument.chunkPlans` stays reserved).
+ */
+export interface ChunkPlan {
+  schemaVersion: ChunkPlanSchemaVersion;
+  /** Resolved options this plan was produced with (echoed for consumers). */
+  options: ResolvedChunkPlannerOptions;
+  chunks: PlanChunk[];
+}
+
+export type ChunkPlanValidationResult = ValidationOk<ChunkPlan> | ValidationErr;
+
+function validateBlockSlice(v: unknown): ValidationOk<BlockSlice> | ValidationErr {
+  if (!isPlainObject(v)) return fail('VALIDATION_FAILED', 'BlockSlice must be an object.');
+  const blockId = str(v.blockId);
+  if (!blockId) return fail('VALIDATION_FAILED', 'slice.blockId is required.');
+  const charStart = num(v.charStart);
+  const charEnd = num(v.charEnd);
+  if (
+    charStart === undefined ||
+    charEnd === undefined ||
+    !Number.isInteger(charStart) ||
+    !Number.isInteger(charEnd)
+  ) {
+    return fail('VALIDATION_FAILED', 'slice.charStart/charEnd must be integers.');
+  }
+  if (charStart < 0 || charEnd < charStart) {
+    return fail('VALIDATION_FAILED', 'slice range must satisfy 0 <= charStart <= charEnd.');
+  }
+  const tokenEstimate = num(v.tokenEstimate);
+  if (tokenEstimate === undefined || !Number.isInteger(tokenEstimate) || tokenEstimate < 0) {
+    return fail('VALIDATION_FAILED', 'slice.tokenEstimate must be a non-negative integer.');
+  }
+  return { ok: true, value: { blockId, charStart, charEnd, tokenEstimate } };
+}
+
+function validateResolvedPlannerOptions(v: unknown): ValidationOk<ResolvedChunkPlannerOptions> | ValidationErr {
+  if (!isPlainObject(v)) return fail('VALIDATION_FAILED', 'chunk plan.options must be an object.');
+  const maxTokensPerChunk = num(v.maxTokensPerChunk);
+  if (maxTokensPerChunk === undefined || !Number.isInteger(maxTokensPerChunk) || maxTokensPerChunk < 1) {
+    return fail('VALIDATION_FAILED', 'options.maxTokensPerChunk must be an integer >= 1.');
+  }
+  const contextChars = num(v.contextChars);
+  if (contextChars === undefined || !Number.isInteger(contextChars) || contextChars < 0) {
+    return fail('VALIDATION_FAILED', 'options.contextChars must be an integer >= 0.');
+  }
+  return { ok: true, value: { maxTokensPerChunk, contextChars } };
+}
+
+/**
+ * Validate (and structurally normalize) an unknown value as a strict
+ * `ChunkPlan`: unique chunkIds, per-chunk token sums reconciled with their
+ * slices, and contexts bounded by the echoed `options.contextChars`.
+ *
+ * STRUCTURAL ONLY: this proves the plan is internally well-formed. It does
+ * NOT tie the slices to any source document — an arbitrary or wrongly
+ * derived chunkId, or a slice pointing at a block that does not exist,
+ * passes here. At the DOC-04 boundary, pair it with
+ * `validateChunkPlanAgainstSource(plan, document)`, which proves the plan
+ * was actually derived from its normalized source.
+ */
+export function validateChunkPlan(raw: unknown): ChunkPlanValidationResult {
+  if (!isPlainObject(raw)) {
+    return fail('VALIDATION_FAILED', 'ChunkPlan must be an object.');
+  }
+  const declared = num(raw.schemaVersion);
+  if (declared !== CHUNK_PLAN_SCHEMA_VERSION) {
+    return fail(
+      'VALIDATION_FAILED',
+      `chunk plan.schemaVersion ${declared} !== ${CHUNK_PLAN_SCHEMA_VERSION}.`,
+    );
+  }
+  const options = validateResolvedPlannerOptions(raw.options);
+  if (!options.ok) return options;
+  if (!Array.isArray(raw.chunks)) return fail('VALIDATION_FAILED', 'chunk plan.chunks must be an array.');
+  const seenIds = new Set<string>();
+  const chunks: PlanChunk[] = [];
+  for (const c of raw.chunks) {
+    if (!isPlainObject(c)) return fail('VALIDATION_FAILED', 'PlanChunk must be an object.');
+    const chunkId = str(c.chunkId);
+    if (!chunkId) return fail('VALIDATION_FAILED', 'chunk.chunkId is required.');
+    if (seenIds.has(chunkId)) {
+      return fail('VALIDATION_FAILED', `duplicate chunkId "${chunkId}".`);
+    }
+    seenIds.add(chunkId);
+    if (!Array.isArray(c.slices)) return fail('VALIDATION_FAILED', 'chunk.slices must be an array.');
+    if (c.slices.length === 0) return fail('VALIDATION_FAILED', 'chunk.slices must not be empty.');
+    const slices: BlockSlice[] = [];
+    let tokenSum = 0;
+    for (const s of c.slices) {
+      const r = validateBlockSlice(s);
+      if (!r.ok) return r;
+      tokenSum += r.value.tokenEstimate;
+      slices.push(r.value);
+    }
+    const tokenEstimate = num(c.tokenEstimate);
+    if (tokenEstimate === undefined || !Number.isInteger(tokenEstimate) || tokenEstimate < 0) {
+      return fail('VALIDATION_FAILED', 'chunk.tokenEstimate must be a non-negative integer.');
+    }
+    if (tokenEstimate !== tokenSum) {
+      return fail('VALIDATION_FAILED', `chunk "${chunkId}".tokenEstimate does not equal its slice sum.`);
+    }
+    const contextBefore = str(c.contextBefore);
+    const contextAfter = str(c.contextAfter);
+    if (contextBefore === undefined || contextAfter === undefined) {
+      return fail('VALIDATION_FAILED', 'chunk.contextBefore/contextAfter must be strings.');
+    }
+    if (contextBefore.length > options.value.contextChars || contextAfter.length > options.value.contextChars) {
+      return fail('VALIDATION_FAILED', `chunk "${chunkId}" context exceeds options.contextChars.`);
+    }
+    chunks.push({ chunkId, slices, tokenEstimate, contextBefore, contextAfter });
+  }
+  return { ok: true, value: { schemaVersion: CHUNK_PLAN_SCHEMA_VERSION, options: options.value, chunks } };
+}
+
+/** Type guard: true iff `raw` is a structurally valid chunk plan. */
+export function isChunkPlan(raw: unknown): raw is ChunkPlan {
+  return validateChunkPlan(raw).ok;
+}
+
+/**
+ * Source-aware chunk-plan validation (DOC-03 → DOC-04 boundary). Proves a
+ * plan is not merely well-formed (that is `validateChunkPlan`) but actually
+ * DERIVED FROM `document`:
+ *
+ *  - every chunkId matches `/^c-[0-9a-f]{16}$/` AND re-derives from its own
+ *    slices via `deriveChunkPlanId` (SHA-256 over the canonical seed),
+ *  - every slice references a block that exists in `document.blocks` and
+ *    stays inside that block's UTF-16 text bounds,
+ *  - slices cover every document block exactly once, in document order,
+ *    each block's ranges forming a gapless, non-overlapping partition of
+ *    `[0, block.text.length)` — a zero-length slice is legal ONLY as the
+ *    sole slice of an empty source block,
+ *  - every slice token estimate matches the documented `ceil(chars / 4)`
+ *    recomputation over the actual covered text (chunk sums are already
+ *    reconciled by `validateChunkPlan`).
+ *
+ * Structural failures surface the underlying `validateChunkPlan` error
+ * (VALIDATION_FAILED). Any mismatch against the source document — unknown
+ * block, out-of-bounds range, gap/overlap, missing coverage, stale
+ * estimate, wrong id derivation — surfaces CORRUPT_DATA: the plan is stale
+ * or fabricated relative to its input. Both parameters are `unknown` so
+ * Main-process callers can validate untrusted payloads directly.
+ */
+export function validateChunkPlanAgainstSource(
+  rawPlan: unknown,
+  rawDocument: unknown,
+): ChunkPlanValidationResult {
+  const structural = validateChunkPlan(rawPlan);
+  if (!structural.ok) return structural;
+
+  if (!isPlainObject(rawDocument) || !Array.isArray(rawDocument.blocks)) {
+    return fail('CORRUPT_DATA', 'source document must be an object with a blocks array.');
+  }
+  const blocks: Array<{ blockId: string; text: string }> = [];
+  // Prototype-safe id index: a plain Record would collide legal blockIds
+  // like "__proto__", "constructor", or "toString" with inherited
+  // properties — reading them yields inherited values (false duplicates)
+  // and writing "__proto__" never creates an own key.
+  const indexById = new Map<string, number>();
+  for (let i = 0; i < rawDocument.blocks.length; i++) {
+    const b = rawDocument.blocks[i];
+    if (!isPlainObject(b)) {
+      return fail('CORRUPT_DATA', `source document.blocks[${i}] must be an object.`);
+    }
+    const blockId = str(b.blockId);
+    if (!blockId) {
+      return fail('CORRUPT_DATA', `source document.blocks[${i}].blockId must be a non-empty string.`);
+    }
+    if (indexById.get(blockId) !== undefined) {
+      return fail('CORRUPT_DATA', `source document has duplicate blockId "${blockId}".`);
+    }
+    const text = str(b.text);
+    if (text === undefined) {
+      return fail('CORRUPT_DATA', `source document.blocks[${i}].text must be a string.`);
+    }
+    indexById.set(blockId, i);
+    blocks.push({ blockId, text });
+  }
+
+  // chunkId shape + derivation, checked per chunk before coverage.
+  for (const chunk of structural.value.chunks) {
+    if (!/^c-[0-9a-f]{16}$/.test(chunk.chunkId)) {
+      return fail('CORRUPT_DATA', `chunk id "${chunk.chunkId}" is not a "c-<16 lowercase hex>" id.`);
+    }
+    if (deriveChunkPlanId(chunk.slices) !== chunk.chunkId) {
+      return fail('CORRUPT_DATA', `chunk id "${chunk.chunkId}" does not re-derive from its slices.`);
+    }
+  }
+
+  // Ordered, gapless, full coverage of the document's blocks.
+  const flat = structural.value.chunks.flatMap((c) => c.slices);
+  let ptr = 0; // next document block the plan must cover
+  let covering = -1; // index of the block currently being covered
+  let expectedStart = 0;
+  let zeroLengthSlices = 0; // zero-length slices seen on the covered block
+  for (const slice of flat) {
+    const idx = indexById.get(slice.blockId);
+    if (idx === undefined) {
+      return fail('CORRUPT_DATA', `slice references block "${slice.blockId}" absent from the source document.`);
+    }
+    if (idx !== covering) {
+      if (covering >= 0 && expectedStart !== blocks[covering].text.length) {
+        return fail(
+          'CORRUPT_DATA',
+          `block "${blocks[covering].blockId}" is not fully covered by the plan.`,
+        );
+      }
+      if (idx !== ptr) {
+        return fail(
+          'CORRUPT_DATA',
+          `plan covers blocks out of document order (expected block index ${ptr}, got ${idx}).`,
+        );
+      }
+      covering = idx;
+      ptr = idx + 1;
+      expectedStart = 0;
+      zeroLengthSlices = 0;
+    }
+    if (slice.charEnd > blocks[idx].text.length) {
+      return fail(
+        'CORRUPT_DATA',
+        `slice on block "${slice.blockId}" ends at ${slice.charEnd}, beyond its text length ${blocks[idx].text.length}.`,
+      );
+    }
+    if (slice.charStart !== expectedStart) {
+      return fail(
+        'CORRUPT_DATA',
+        `slice on block "${slice.blockId}" starts at ${slice.charStart}, expected ${expectedStart} (gap or overlap).`,
+      );
+    }
+    // Exactly-once partition: a zero-length slice is legitimate ONLY as the
+    // single full-range slice of an EMPTY block — anywhere else it claims
+    // characters some other slice also covers.
+    if (slice.charStart === slice.charEnd) {
+      if (blocks[idx].text.length > 0) {
+        return fail(
+          'CORRUPT_DATA',
+          `slice on block "${slice.blockId}" is zero-length (${slice.charStart}, ${slice.charEnd}) but the block is not empty.`,
+        );
+      }
+      zeroLengthSlices += 1;
+      if (zeroLengthSlices > 1) {
+        return fail(
+          'CORRUPT_DATA',
+          `empty block "${slice.blockId}" is covered by ${zeroLengthSlices} zero-length slices.`,
+        );
+      }
+    }
+    expectedStart = slice.charEnd;
+    // Recompute the slice's token estimate with the documented formula the
+    // contract specifies on `BlockSlice.tokenEstimate` (`ceil(chars / 4)`).
+    const covered = blocks[idx].text.slice(slice.charStart, slice.charEnd);
+    const actual = covered.length === 0 ? 0 : Math.ceil(covered.length / 4);
+    if (actual !== slice.tokenEstimate) {
+      return fail(
+        'CORRUPT_DATA',
+        `slice tokenEstimate ${slice.tokenEstimate} on block "${slice.blockId}" does not match the recomputed ${actual}.`,
+      );
+    }
+  }
+  if (covering >= 0 && expectedStart !== blocks[covering].text.length) {
+    return fail('CORRUPT_DATA', `block "${blocks[covering].blockId}" is not fully covered by the plan.`);
+  }
+  if (ptr !== blocks.length) {
+    return fail('CORRUPT_DATA', `plan does not cover ${blocks.length - ptr} document block(s) starting at index ${ptr}.`);
+  }
+  return structural;
+}
+
+/** Type guard: true iff `raw` is a structurally valid plan FOR `document`. */
+export function isChunkPlanForSource(rawPlan: unknown, rawDocument: unknown): boolean {
+  return validateChunkPlanAgainstSource(rawPlan, rawDocument).ok;
 }
