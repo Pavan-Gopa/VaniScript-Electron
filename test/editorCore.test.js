@@ -891,13 +891,23 @@ test('selectionGuard denies in contract precedence and fails closed', async () =
     kind: SELECTION_SNAPSHOT_KIND,
     operationId: 'op-1',
     language: 'de',
+    chunkId: null,
     blockId: 'b0',
     textHash: selectionTextHash('Intro Heading'),
     textLength: 13,
+    blockFragments: [{
+      blockId: 'b0',
+      charStart: 0,
+      charEnd: 13,
+      text: 'Intro Heading',
+      textHash: selectionTextHash('Intro Heading'),
+    }],
+    sourceHashes: { b0: selectionTextHash('Intro Heading') },
+    charStart: 0,
+    charEnd: 13,
     sourceRevision: revision,
     targetRevision: 'trg-1',
     createdAt: '2026-08-22T00:00:00.000Z',
-    chunkId: null,
   };
   assert.deepEqual(binding.selectionGuard(snapshot, snapshot.textHash, 'trg-1'), { ok: true });
 

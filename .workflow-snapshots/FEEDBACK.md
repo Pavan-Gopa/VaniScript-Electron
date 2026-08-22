@@ -415,3 +415,65 @@
 - **Full cycle**: 1 coder attempt, 1 review round — **approved zero blockers** on first pass; advisories (JSDoc orthogonality, planTokenProgress invariant, additive test gaps) transferred to P4/D6-hardening backlog. Suite grew 389 → 395.
 - **Closure transaction**: STEPS `[x] P3A.D6`; backup push #6 (product diff + snapshot mirror refresh).
 - **Next Step**: P3A.D7 Selection/find/replace/proofread — continuous pipeline, no pause.
+
+## P3A.D6 — CLOSED
+- **Confirmation (`P3AD6Tester1`, 2m11s)**: PASS — npm test 395/395; focused reviewService suite 6/6; named spot gate 5/5 (lifecycle CAS, filters, byte-wise isolation, removal confirmation/backup, progress reconciliation).
+- **Full cycle**: 1 coder attempt, 1 review round — approved zero blockers first pass. Suite grew 389 → 395.
+- **Closure transaction**: STEPS `[x] P3A.D6`; backup push #6.
+- **Next Step**: P3A.D7 Selection/find/replace/proofread.
+
+## P3A.D7 — Attempt 1
+- **Attempt 1 (workflow-coder `P3AD7Coder1`, 18m)**: NEW selectionOps.js (345 ln: captureSelectionSnapshot/createSelectionSnapshot, guardSelection, applySelectionResponse via D5 applyProgrammaticReplace), findReplace.js (263 ln: scanMatches/previewReplaceAll pure scan + protected-span exclusion, replaceAll as ONE applyUserTransaction transaction), proofread.js (327 ln: D3/D6 alignment, sentence/counterpart highlights, sourceRefreshMergeReport); documents.ts SelectionBlockFragment + expanded SelectionSnapshot; test/documentD7.test.js 9 tests incl. real createEditorBinding+DocumentProjectStore integration and undo. Main verified: **404/404**, tsc clean, diff scoped to 5 files.
+- **Next Step**: P3AD7Reviewer1 full review.
+
+## P3A.D7 — Review 1
+- **Review (`P3AD7Reviewer1`, 3m19s)**: **changes_requested** — 7 findings (1 CRITICAL / 2 MAJOR / 4 MINOR). §10.8 snapshot/guarded-replace largely correct (atomic D5 binding, zero-write denials, exact range, protected exclusion, one-transaction replaceAll); §10.9 alignment/freshness/refresh-report correct; real D5+D2 integration proven. Scope clean.
+  1. **[CRITICAL]** SelectionSnapshot contract omits operationId (:1618-1630) while runtime requires it (capture/validate/D5 meta) — §10.8 completeness broken, typed consumers would build invalid snapshots.
+  2. **[MAJOR]** Same root: code/contract divergence — preferred fix: restore operationId to the contract (matches D5 telemetry).
+  3. **[MAJOR]** computeHighlightRanges counterpart not proportional on split slices (:203-218): selecting 0..5 of a 0..19 slice highlights the entire 0..20 counterpart. Required: proportional sub-range within the counterpart interval; split-block test with partial selection crossing slice boundary (two tight highlight entries).
+  4. **[MINOR]** Whole-block source-hash mismatch denies as selection-changed instead of source-revision-moved (:198-220). Required: document chosen reason or remap when binding revision moved; pin with comment+test.
+  5. **[MINOR]** findReplace branch coverage gaps: caseSensitive, wholeWord, regex groups, overlapping non-overlap handling, empty replacement. Required targeted tests.
+  6. **[MINOR]** replaceAll rollback test asserts archive but not PM state (binding.state.doc) after failure. Required: assert both unchanged; optional real-binding store-proxy failure injection.
+  7. **[MINOR]** Missing-translation row (missing/null-freshness/0..0) and sentence-tail null handling unasserted in alignment/highlights. Required tests.
+- **Next Step**: Coder Fix1 (attempt 2) — all seven; keep 404 green.
+
+## P3A.D7 — Attempt 2
+- **Attempt 2 (workflow-coder `P3AD7CoderFix1`)**: closed all seven Reviewer1 findings.
+  - F1/F2: SelectionSnapshot.operationId restored to the contract + runtime docs aligned; test proves missing-opId invalid, valid passes guard+apply end-to-end.
+  - F3: proofread counterpartRangeForSelection projects proportional subranges per row; split-cross-boundary regression asserts two tight highlight entries.
+  - F4: whole-block hash mismatch documented as selection-changed (revision move remains source-revision-moved); unrelated-edit test pins the reason.
+  - F5: matcher branch tests — caseSensitive both ways, wholeWord boundaries, regex $1/$&, aaa/aaaa overlap, protected edge, empty replacement. findReplace implementation UNCHANGED (coverage was the gap).
+  - F6: fake rollback asserts PM state unchanged; real D2 store-proxy save failure asserts PM/archive/disk unchanged.
+  - F7: missing-translation row/status/freshness/0..0, empty/null counterpart, sentence-tail null tests.
+  - Main verified independently: **409/409** (+5), tsc exit 0 incl. contracts coverage; diff confined to four allowed files (findReplace untouched).
+- **Next Step**: P3AD7Reviewer2 delta re-review.
+
+## P3A.D7 — Review 2 (delta)
+- **Review (`P3AD7Reviewer2`, 4m3s)**: **changes_requested** — F3-F7 CLOSED; F1/F2 PARTIAL. §10.8 guard/apply atomic + protected-exclusion correct; §10.9 proportional projection correct; D1-D6 untouched; tests additive.
+  1. **[major]** Contract now drops `language: string` and `chunkId: string|null` that runtime still requires (selectionOps :110-114/:166/:172; editorCore :386/:401) — typed consumers omit required fields → always invalid-snapshot deny. Inverse of the original F1/F2.
+  2. **[major]** Two divergent runtime validators: editorCore.isValidSelectionSnapshot (:383-405) checks only old scalar shape (never blockFragments/sourceHashes) while selectionOps.validateSnapshot (:165-192) checks the new full shape — malformed snapshots can pass one and fail the other. Required: align editorCore with contract+selectionOps (full structural validation) OR explicitly delegate and fix its TSDoc claim.
+  3. **[major]** operationId not propagated into D5 transaction meta/audit despite TSDoc claim (:540-620 applyProgrammaticReplace stamps only origin; selectionOps :321 passes {origin, operationId}). Required: stamp operationId meta + include in commit audit, or narrow TSDoc to returned-to-caller; regression asserting propagation.
+- **Next Step**: Coder Fix2 (attempt 3) — coherent SelectionSnapshot contract/validator/meta alignment; keep 409 green.
+
+## P3A.D7 — Attempt 3
+- **Attempt 3 (workflow-coder `P3AD7CoderFix2`)**: closed all three Reviewer2 residuals with ONE coherent SelectionSnapshot alignment.
+  - R1: contract now includes/documented operationId, language, chunkId, blockId, textHash/textLength, blockFragments/sourceHashes, optional char range, source/target revisions, createdAt — exact runtime mirror.
+  - R2: editorCore.isValidSelectionSnapshot lazy-requires selectionOps.validateSelectionSnapshot (single canonical validator; divergent copy deleted).
+  - R3: applyProgrammaticReplace stamps `vaniscript/operationId`; _recommitWithResolved preserves it; _commitProjection returns audit {origin, operationId}.
+  - Tests: missing language/chunk rejected; malformed fragments/hashes rejected by BOTH paths; valid full shape accepted end-to-end; audit propagation asserted. Main-authorized exception: editorCore.test.js legacy guard fixture migrated to full shape (only extra file).
+  - Main verified independently: **410/410** (+1), tsc exit 0 incl. contracts coverage.
+- **Next Step**: P3AD7Reviewer3 delta re-review of R1-R3.
+
+## P3A.D7 — Review 3 (delta)
+- **Review (`P3AD7Reviewer3`, 2m26s)**: **approved**, zero findings.
+  - R1 closed: contract carries the exact runtime mirror (operationId/language/chunkId/blockId/textHash/textLength/blockFragments/sourceHashes/optional char range/both revisions/createdAt).
+  - R2 closed: single canonical validator in selectionOps, lazily delegated from editorCore (divergent copy deleted); both-path regressions.
+  - R3 closed: operationId stamped, preserved through canonical rewrite, observably returned in commit audit; guarded end-to-end regression.
+  - Suite 410/410 (+1) and tsc clean.
+- **Next Step**: QA confirmation -> close D7 -> backup push #7 -> PAUSE per Human directive.
+
+## P3A.D7 — CLOSED
+- **Confirmation (`P3AD7Tester1`)**: PASS — npm test 410/410; focused documentD7 suite 15/15; tsc exit 0; spot confirmations by name (operationId end-to-end guard/apply, real D5+D2 apply/audit/undo, proportional counterpart across split slices, hash-move pin, matcher branches, rollback PM+archive+disk, missing-translation alignment).
+- **Full cycle**: 3 coder attempts, 3 reviewer rounds; findings converged 7 → 3 → 0; final approved zero-findings. Suite grew 395 → 410 across the item.
+- **Closure transaction**: STEPS `[x] P3A.D7`; backup push #7 (product diff + snapshot mirror refresh).
+- **PIPELINE PAUSED** per Human directive (~18:20Z): D8..P5 deferred until explicit Human command.

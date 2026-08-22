@@ -1602,33 +1602,62 @@ export interface TranslateChunkResponse {
  */
 export type EditorOrigin = 'user' | 'ai-replace' | 'retranslate' | 'policy' | 'internal';
 
-/**
- * Immutable capture of a selection at operation-request time (plan §10.8).
- * An AI response may only be applied when BOTH the selection text hash AND
- * the observed source/target revisions still match (editor invariant #7).
- */
+/** One immutable source fragment inside a selection snapshot. */
+export interface SelectionBlockFragment {
+  /** Stable source block containing this fragment. */
+  blockId: string;
+  /** Inclusive UTF-16 offset inside the source block. */
+  charStart: number;
+  /** Exclusive UTF-16 offset inside the source block. */
+  charEnd: number;
+  /** Exact captured fragment text (kept for anchor verification). */
+  text: string;
+  /** Canonical SHA-256 of `text`. */
+  textHash: string;
+}
+
+/** Immutable capture of a selection at operation-request time (plan §10.8). */
 export interface SelectionSnapshot {
   /** Shape discriminator, bumped on incompatible change. */
   kind: 'vaniscript/selection-snapshot@1';
+  /**
+   * Stable operation identifier propagated to the D5 transaction metadata and
+   * audit record. It is required even for snapshots consumed only by guards.
+   */
   operationId: string;
+  /** Normalized BCP-47 language tag captured for the operation. */
   language: string;
+  /** Stable translation chunk containing the selection, or null when unchunked. */
   chunkId: string | null;
+  /** First fragment's block is the legacy single-range anchor. */
   blockId: string;
   /** Canonical SHA-256 hex of the captured selection text. */
   textHash: string;
   /** Captured selection length in UTF-16 code units. */
   textLength: number;
   /**
-   * UTF-16 offsets of the captured range inside `block.text`, when the
-   * capture carried range context. Optional, but strictly paired: when one
-   * is present both are, and `charEnd - charStart === textLength`.
+   * Exact source fragments covered by the operation. Fragments are ordered
+   * in document order and never overlap.
+   */
+  blockFragments: SelectionBlockFragment[];
+  /**
+   * Full source-text hashes captured for every touched block. A response is
+   * denied if any touched block moved, even when the selected substring still
+   * happens to match.
+   */
+  sourceHashes: Record<string, string>;
+  /**
+   * UTF-16 offsets of the captured range for a single-fragment selection.
+   * Multi-block selections use `blockFragments` as their structural anchor.
    */
   charStart?: number;
   /** Exclusive end offset of the captured range (paired with `charStart`). */
   charEnd?: number;
+  /** Source document revision observed at capture time. */
   sourceRevision: string;
   /** Project revision observed on the translation side at capture time. */
   targetRevision: string;
+  /** ISO timestamp at which the immutable snapshot was captured. */
   createdAt: string;
 }
 

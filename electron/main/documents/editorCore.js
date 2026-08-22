@@ -91,11 +91,19 @@ const SELECTION_SNAPSHOT_KIND = 'vaniscript/selection-snapshot@1';
 /** Origins allowed for programmatic replacements (invariant #5/#3). */
 const PROGRAMMATIC_ORIGINS = ['ai-replace', 'retranslate'];
 
-const SHA256_HEX = /^[0-9a-f]{64}$/;
+/** Public transaction meta key carrying operation identity into commit/audit. */
+const OPERATION_ID_META = 'vaniscript/operationId';
 
 /** Public meta marker mirroring the library's close-history stamp (see header). */
 const CLOSE_HISTORY_META = 'closeHistory';
 
+function commitAudit(tr) {
+  const operationId = tr.getMeta(OPERATION_ID_META);
+  return {
+    origin: tr.getMeta(EDITOR_ORIGIN_META) ?? 'user',
+    ...(operationId === undefined ? {} : { operationId }),
+  };
+}
 // --- Input preconditions (planner conventions: programmer input fails loud) --
 
 function requireObject(value, label) {
@@ -375,33 +383,14 @@ function selectionTextHash(text) {
 // --- Selection guard (§10.8, editor invariant #7) -----------------------------
 
 /**
- * Structural check of a `SelectionSnapshot` (shared/contracts/documents.ts).
- * A malformed snapshot is RUNTIME data, so it denies typed ('invalid-snapshot')
- * instead of throwing — only the caller-side expectation arguments are
- * programmer input and fail loud with TypeError.
+ * Canonical `SelectionSnapshot` structural validation lives in selectionOps.
+ * A malformed snapshot is RUNTIME data, so it denies typed
+ * ('invalid-snapshot') instead of throwing — only the caller-side expectation
+ * arguments are programmer input and fail loud with TypeError. The lazy
+ * require avoids the editorCore ↔ selectionOps initialization cycle.
  */
 function isValidSelectionSnapshot(snapshot) {
-  if (snapshot === null || typeof snapshot !== 'object' || Array.isArray(snapshot)) return false;
-  if (snapshot.kind !== SELECTION_SNAPSHOT_KIND) return false;
-  for (const key of ['operationId', 'language', 'blockId', 'textHash', 'sourceRevision', 'targetRevision', 'createdAt']) {
-    const value = snapshot[key];
-    if (typeof value !== 'string' || value.length === 0) return false;
-  }
-  if (!SHA256_HEX.test(snapshot.textHash)) return false;
-  if (!Number.isInteger(snapshot.textLength) || snapshot.textLength < 0) return false;
-  // Optional range anchor: strictly paired, integer-bounded, and exactly as
-  // long as the captured selection text.
-  const hasStart = snapshot.charStart !== undefined;
-  const hasEnd = snapshot.charEnd !== undefined;
-  if (hasStart !== hasEnd) return false;
-  if (hasStart) {
-    if (!Number.isInteger(snapshot.charStart) || !Number.isInteger(snapshot.charEnd)) return false;
-    if (snapshot.charStart < 0 || snapshot.charEnd < snapshot.charStart) return false;
-    if (snapshot.charEnd - snapshot.charStart !== snapshot.textLength) return false;
-  }
-  const { chunkId } = snapshot;
-  if (chunkId !== null && (typeof chunkId !== 'string' || chunkId.length === 0)) return false;
-  return !Number.isNaN(Date.parse(snapshot.createdAt));
+  return require('./selectionOps.js').validateSelectionSnapshot(snapshot);
 }
 
 // --- Paste boundary (invariants #3/#6) -----------------------------------------
@@ -546,8 +535,10 @@ class EditorBinding {
    *   inserts at that offset.
    * @param textByBlock Map blockId → replacement text (UTF-16, like PM);
    *   the empty string deletes.
-   * @param meta `{ origin: 'ai-replace' | 'retranslate', ... }`.
-   * @returns {{ changed: boolean, archive: object, revision: string|null }}
+   * @param meta `{ origin: 'ai-replace' | 'retranslate', operationId?: string }`.
+   *   When present, operationId is stamped into transaction metadata and the
+   *   commit audit without exposing document text.
+   * @returns {{ changed: boolean, archive: object, revision: string|null, audit: { origin: string, operationId?: string } }}
    */
   applyProgrammaticReplace(blockTargets, textByBlock, meta) {
     if (!Array.isArray(blockTargets) || blockTargets.length === 0) {
@@ -604,6 +595,10 @@ class EditorBinding {
       tr.replaceWith(loc.from, loc.to, loc.marks.length ? EDITOR_SCHEMA.text(loc.text, loc.marks) : EDITOR_SCHEMA.text(loc.text));
     }
     tr.setMeta(EDITOR_ORIGIN_META, meta.origin);
+    if (meta.operationId !== undefined) {
+      requireNonEmptyString(meta.operationId, 'meta.operationId');
+      tr.setMeta(OPERATION_ID_META, meta.operationId);
+    }
     tr.setMeta('addToHistory', true);
     // The library helper stamps the private key the plugin reads; the
     // public marker lets canonical rewrites transfer the intent.
@@ -754,9 +749,11 @@ class EditorBinding {
   /**
    * Reject stale transactions → stamp identity → derive candidate → detect
    * identity drift → fold ONE validated candidate → preflight → commit →
-   * advance. Origin metas are stamped by the callers that own their
-   * transactions; a plain user dispatch carries none (the schema contract's
-   * default).
+   * advance. Origin and operationId metas are stamped by the callers that own
+   * their transactions; a plain user dispatch carries neither. The committed
+   * audit record mirrors those public metadata values without document text.
+   *
+   * @returns {{ changed: boolean, archive: object, revision: string|null, audit: { origin: string, operationId?: string } }}
    */
   _commitProjection(inputTr) {
     if (inputTr === null || typeof inputTr !== 'object' || inputTr.doc === undefined) {
@@ -797,7 +794,7 @@ class EditorBinding {
       if (drift === null) {
         // Preflighted advance: a throwing apply leaves the binding untouched.
         this._state = this._state.apply(tr);
-        return { changed: false, archive: this._archive, revision: this._revision };
+        return { changed: false, archive: this._archive, revision: this._revision, audit: commitAudit(tr) };
       }
       if (drift.unauthorized) {
         throw createAppError('VALIDATION_FAILED', drift.message);
@@ -831,7 +828,7 @@ class EditorBinding {
     this._archive = result.archive;
     this._revision = result.revision;
     this._state = nextState;
-    return { changed: true, archive: this._archive, revision: this._revision };
+    return { changed: true, archive: this._archive, revision: this._revision, audit: commitAudit(tr) };
   }
 
   /** The single candidate archive: span-policy deltas folded in. (Fingerprints were maintained during derivation.) */
@@ -920,7 +917,7 @@ class EditorBinding {
    * metas (origin, addToHistory, closeHistory — the close re-stamped with
    * the library helper) so undo grouping and atomic-step semantics are
    * unchanged; plugin-internal metas (e.g. history's own) are deliberately
-   * not copied.
+   * not copied. Public operationId metadata is retained for the commit audit.
    */
   _recommitWithResolved(resolved, tr) {
     const committed = this._state.tr;
@@ -934,7 +931,7 @@ class EditorBinding {
         ? selection
         : selection.map(committed.doc, new Mapping()),
     );
-    for (const key of [EDITOR_ORIGIN_META, 'addToHistory', CLOSE_HISTORY_META]) {
+    for (const key of [EDITOR_ORIGIN_META, OPERATION_ID_META, 'addToHistory', CLOSE_HISTORY_META]) {
       const value = tr.getMeta(key);
       if (value !== undefined) committed.setMeta(key, value);
     }
