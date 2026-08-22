@@ -5,13 +5,14 @@ onboarding:
   model_pairs_confirmed: true
   completed_at: 2026-08-21T00:00:00Z
 current_step: P3B
-current_work_item_id: null
+current_work_item_id: P3B.D2
 current_work_item: >-
-  Card P3A COMPLETE (D1-D8 + all gates closed). Awaiting explicit Human
-  authorization to dispatch P3B.D1 Batch lane.
+  Folder access/watchers — adapters/reconciliation. IN PROGRESS under the
+  standing continuous-pipeline order.
 step_description: >-
-  P3A Document lane CLOSED across the lane (suite grew 208 -> 424; tsc clean).
-  Next card in plan is P3B Batch lane; not dispatched pending Human decision.
+  P3B Batch lane; D1 CLOSED (suite 424 -> 434). Continuous pipeline per Human
+  standing order — currently entering D2. O1 gate fully closes with D4
+  (crash/restart recovery loop).
 completed_steps:
   - P0
   - P1
@@ -20,43 +21,37 @@ completed_steps:
 skipped_steps: []
 parked_steps: []
 implementation:
-  status: approved
-  attempts: 2
+  status: in_progress
+  attempts: 0
   note: >-
-    P3A.D8 attempt 1 (P3AD8Coder1, 19m): export.js (872 ln) — self-contained
-    exporter over derived DocumentArchive+TranslationArchive; deterministic TXT/MD,
-    stored-ZIP OOXML DOCX (headings/lists/tables/textboxes/styles), text-layer PDF;
-    atomic wx+rename writes, traversal/symlink guards (only /var,/tmp aliases
-    resolved), ZIP entry-name guard, XML surrogate/control/reserved rejection,
-    dynamic MD fences; documents.ts +55 DOCUMENT_EXPORT contracts;
-    ipc/index.mts +34 handler factory; preload/index.mts +19 typed exportDocument.
-    Main verified on final source: npm test 421/421 (baseline 410), focused 11/11,
-    tsc exit 0; diff scoped to 5 files (+108 tracked lines).
+    Fresh cycle for P3B.D2 (BAT-02): folder access adapters + watchers +
+    reconciliation; acceptance = event-duplication tests per §20/§11.5.
 retry_guard:
   max_attempts_without_progress: 3
   last_failure_signature: "Reviewer attempt-3 residuals: collectPages deep-chain RangeError, literal trailing-escape TypeError, ZIP offset/compSize trust, unclosed XML canImport, nested textbox part routing, sourceHash-per-part"
   repeated_failure_count: 0
   blocker: null # cleared 2026-08-21 ~14:41Z — Human authorized one more same-model Tester attempt
 omp:
-  last_result_artifact: history://P3AD8Tester1
-  active_agent: null
-  active_role: none
-  status: idle
-  role: none
-  primary_agent: null
+  last_result_artifact: history://P3BD1Tester1
+  active_agent: P3BD2Coder1 (workflow-coder)
+  active_role: coder
+  status: dispatched
+  role: coder
+  primary_agent: workflow-coder
   evidence: null # history://P3AD1Tester2 expired (process-local); failure recorded in FEEDBACK.md
   backup_agent: null
   human_instruction: >-
-    RESUMED 2026-08-22: Human authorized P3A.D8 (Document exports) — full cycle
-    Coder -> Reviewer -> Tester per standing policy. Standing policy (2026-08-21,
-    updated ~18:20Z): после официального закрытия шага/цикла (Coder approved ->
-    Reviewer approved -> Tester verified by Main) Main коммитит и пушит
-    проверенный код в продуктовый репозиторий VaniScript-Electron вместе с
-    GitHub Actions workflows и зеркалом воркфлоу-памяти (.workflow-snapshots/)
-    как страховочный бэкап-рестор. Пауза после D7 СНЯТА этой командой; D8
-    диспетчен. Дальнейшие шаги (закрытие карточки P3A, P3B..P5) — после явной
-    команды Human. Внешний смешанный workspace целиком не пушить без отдельной
-    явной инструкции.
+    STANDING ORDER (2026-08-22, supersedes all earlier pause directives):
+    «продолжать в том же духе до победного конца — полностью все шаги».
+    Main runs the full remaining plan continuously: P3B.D1..D6, P3C.D1..D5,
+    P3D.D1..D3, P3E.D1..D5, P4.D1..D5, P5.D1..D2 — each via full Coder ->
+    Reviewer -> Tester cycle, Main verification between every role, backup
+    push after each official item closure. Standing policy (2026-08-21):
+    после официального закрытия шага/цикла Main коммитит и пушит проверенный
+    код в VaniScript-Electron вместе с GitHub Actions workflows и зеркалом
+    воркфлоу-памяти (.workflow-snapshots/). Внешний смешанный workspace
+    целиком не пушить без отдельной явной инструкции. Остановки между
+    элементами не требуется; стоп только по прямой команде Human.
   authorized_at: 2026-08-22T00:00:00Z
 interruption:
   status: none
@@ -70,29 +65,31 @@ human_acceptance:
   status: required
   evidence: Automated coder-reviewer-tester cycle authorized by Human.
 review:
-  status: approved
+  status: not_started
   last_feedback_file: AI_Workflow_Kit/docs/AI/FEEDBACK.md
-  verdict: approved
+  verdict: null
   note: >-
-    D8 FINAL: Reviewer1 approved (3 MINOR) -> CoderFix1 closed F1-F3 ->
-    Reviewer2 delta approved zero-findings.
+    D1 closed approved zero-findings (record retained). D2 review queued after
+    its coder attempt.
 qa:
   status: passed
-  suite: documentD8 export lane + full Electron suite
+  suite: batchDomain + full Electron suite
   bugs_open: 0
-  note: P3AD8Tester1 PASS — npm test 424/424 fail 0; focused 14/14; tsc exit 0; named spots a-e confirmed with file-line citations; scope exactly five authorized files.
-next_actor: human_decision
-omp_status_note: p3a_complete_awaiting_human
+  note: D1 confirmation PASS 434/434 fail 0, focused 10/10, tsc 0 (record retained); D2 QA queued after review.
+next_actor: coder
+omp_status_note: running_p3b_d2_coder_dispatched
 checkpoint:
   last_pre_tag: null
   last_post_tag: null
-  last_commit: null
+  last_commit: 8b88b0c
   note: >-
-    P3A.D1-D6 closed and pushed (079a512, a2a997a, 364e147, 6ddfeb6, 2a8fb49,
-    push #6 e901608). P3A.D7 closed (approved zero-findings, qa PASS 410/410);
-    backup push #7 = 990af61. Human resumed 2026-08-22 — D8 attempt 1 verified
-    (421), Reviewer1 approved w/ 3 minors, CoderFix1 closed them (424),
-    Reviewer2 delta approved; P3AD8Tester1 dispatched.
+    P3A.D1-D6 pushed (079a512, a2a997a, 364e147, 6ddfeb6, 2a8fb49, e901608).
+    P3A.D7 closed, push #7 = 990af61. Human resumed 2026-08-22: D8 cycle
+    Coder1 -> Reviewer1 approved (3 MINOR) -> CoderFix1 -> Reviewer2 delta
+    approved -> Tester1 PASS 424/424; gates O1-O3/J1-J3 closed; card P3A
+    COMPLETE. Backup push #8 = 8b88b0c (product diff + snapshot mirror),
+    990af61..8b88b0c on codex/v2-swift-import-compat, synced with origin.
+    Awaiting Human decision for P3B.D1.
 notes: |
   2026-08-21 canonical state repair: STEPS.md rewritten as Step Cards (P0..P5) with
   stable IDs <step>.D/O/J; current_step restored; completed_steps limited to

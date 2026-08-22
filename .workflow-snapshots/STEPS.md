@@ -97,7 +97,7 @@
 **Depends on:** P2
 
 **Do:**
-- [ ] [P3B.D1] Batch domain/SQLite: profiles/jobs/checkpoints/events
+- [x] [P3B.D1] Batch domain/SQLite: profiles/jobs/checkpoints/events
 - [ ] [P3B.D2] Folder access/watchers: adapters/reconciliation
 - [ ] [P3B.D3] Stability/path safety: fingerprint/confinement
 - [ ] [P3B.D4] Scheduler/recovery: claim/run/checkpoint/retry
