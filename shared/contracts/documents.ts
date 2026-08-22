@@ -1585,3 +1585,61 @@ export interface TranslatedSegment {
 export interface TranslateChunkResponse {
   segments: TranslatedSegment[];
 }
+
+// ============================================================================
+// DOC-05 — Editorial editor core (plan §10.7, §10.8)
+// ============================================================================
+//
+// Types for the ProseMirror binding's observable surface (electron/main/
+// documents/editorCore.js). The runtime origin constant and the guard logic
+// live in the core module; this section is wire-shaped vocabulary only.
+
+/**
+ * Origin of an editor transaction (the `vaniscript/editorOrigin` meta key).
+ * Absent meta means `user`: every PROGRAMMATIC transaction must carry one of
+ * the reserved origins so persistence/audit can tell human edits from
+ * machine-applied ones (editor invariant #5).
+ */
+export type EditorOrigin = 'user' | 'ai-replace' | 'retranslate' | 'policy' | 'internal';
+
+/**
+ * Immutable capture of a selection at operation-request time (plan §10.8).
+ * An AI response may only be applied when BOTH the selection text hash AND
+ * the observed source/target revisions still match (editor invariant #7).
+ */
+export interface SelectionSnapshot {
+  /** Shape discriminator, bumped on incompatible change. */
+  kind: 'vaniscript/selection-snapshot@1';
+  operationId: string;
+  language: string;
+  chunkId: string | null;
+  blockId: string;
+  /** Canonical SHA-256 hex of the captured selection text. */
+  textHash: string;
+  /** Captured selection length in UTF-16 code units. */
+  textLength: number;
+  /**
+   * UTF-16 offsets of the captured range inside `block.text`, when the
+   * capture carried range context. Optional, but strictly paired: when one
+   * is present both are, and `charEnd - charStart === textLength`.
+   */
+  charStart?: number;
+  /** Exclusive end offset of the captured range (paired with `charStart`). */
+  charEnd?: number;
+  sourceRevision: string;
+  /** Project revision observed on the translation side at capture time. */
+  targetRevision: string;
+  createdAt: string;
+}
+
+/** Typed denial reasons of the selection guard, in check precedence order. */
+export type SelectionGuardDenyReason =
+  | 'invalid-snapshot'
+  | 'selection-changed'
+  | 'source-revision-moved'
+  | 'target-revision-moved';
+
+/** Discriminated allow/deny result of the selection guard (§10.8). */
+export type SelectionGuardResult =
+  | { ok: true }
+  | { ok: false; reason: SelectionGuardDenyReason };

@@ -359,3 +359,43 @@
 - **Full cycle**: 9 coder attempts (incl. 2 pre-write provider deaths + 1 audit session + 2 test-only micro-fixes), 6 reviewer rounds; findings converged 6 → 3 → 1 → 1 → 2 → 0; final approved zero-findings; exhaustion/CAS interpretations adjudicated conforming.
 - **Closure transaction**: STEPS `[x] P3A.D4`; backup push #4 (product diff + snapshot mirror refresh).
 - **Next Step**: P3A.D5 Editorial editor core (ProseMirror schema/transactions/undo) — continuous pipeline, no pause.
+
+## P3A.D5 — Attempts 1-4
+- **Attempts 1-3 (provider deaths + split sessions)**: Coder1 installed prosemirror deps (model/state/transform/history), wrote editorSchema.js (458 ln) + editorClipboard.js (143 ln), died writing core; Coder2 audited clipboard, died writing core again; Coder3 wrote editorCore.js (715 ln) with death-safe incremental workflow, died before tests.
+- **Attempt 4 (`P3AD5Coder4`, 47m, test session)**: NEW test/editorCore.test.js — 15 headless tests on real importer fixtures + real DocumentProjectStore: projection fidelity across all 9 D1 kinds; TypeError batteries; tiling-exact user typing with CAS/epoch/revision chain; selection-only no-op; span-policy flip; tr.split wholesale path with id reminting; atomic multi-block ai-replace (one revision, one undo); undo bottom no-op; stale CAS conflict + reload recovery; selectionGuard precedence incl. fail-closed null-revision; paste fragment minting; freshness integration (edit flips fresh→stale, translations never deleted); log-safety static+runtime; 13-case precondition battery; fingerprint-correction save semantics.
+  - PRODUCT FIXES REQUIRED BY TESTS: (1) editorSchema.js called createAppError at 14 sites WITHOUT importing it — every typed-error path threw ReferenceError; import added. (2) editorCore.js projection divergence after minting commits (persisted b0,b1,b2 vs projected b0,b1,b1) — fixed by rewriting the committed transaction as one whole-document ReplaceStep carrying canonical content (selection remapped via Mapping, origin/history metas preserved); naive alternatives disproven by tests (raw replay diverges; addToHistory:false swamps undo inversion).
+  - Main verified independently: **381/381**, tsc exit 0, diff confined to allowed files.
+- **Next Step**: P3AD5Reviewer1 full review.
+
+## P3A.D5 — Review 1
+- **Review (`P3AD5Reviewer1`, 19m27s)**: **changes_requested** — 10 findings (2 CRITICAL / 4 HIGH / 3 MEDIUM / 1 LOW). Invariants 3/4/8 held; 1/2/5/6 violated; 7 partial. J2 untouched; D1-D4 unregressed.
+  1. **[CRITICAL]** Persistence cascade non-atomic (:675-698): updateBlockText×N + fingerprint save + setSpanPolicy×N as independent mutations — mid-failure leaves disk/binding/projection divergent; §10.8 all-or-nothing violated. Required: ONE validated candidate through one CAS/WAL mutation or real batch primitive; failure-injection tests per phase.
+  2. **[CRITICAL]** `_commitProjection` never checks tr.before == current state; writes store BEFORE _advance → retained old transaction persists stale/reverted doc then throws mismatched-transaction. Required: reject tr.before ≠ current before ANY store call; preflight state application; stale-tr zero-write test.
+  3. **[HIGH]** `setMeta('closeHistory', true)` ineffective (library reads private closeHistory$ key); adjacent typing + programmatic op group into one undo event (masked by distant-block test). Required: library closeHistory(tr) everywhere incl. rewrites; adjacent grouping test.
+  4. **[HIGH]** Empty AI text accepted but EDITOR_SCHEMA.text('') throws RangeError — deletion impossible. Required: delete/empty-fragment representation; whole-block and partial empty tests + undo/freshness.
+  5. **[HIGH]** Clipboard sanitizer has NO production callsite; foreign IDs survive stamped fast-path; raw paste bypasses sanitizer; Node-input drops text-node content. Required: mandatory sanitize/remint at paste boundary with destination context; round-trip no-private-ID tests.
+  6. **[HIGH]** blockContentEqual ignores span ids AND structural attrs → identity-only transactions advance RAW without persisting (divergence, foreign ids accepted). Required: canonicalize/reject identity+attrs changes pre-no-op; ID-only and attrs-only tests.
+  7. **[MEDIUM]** Minted spans hard-code translate policy — protected split/paste loses protection. Required: preserve effective policy on split/copy; destination policy for external paste; tests.
+  8. **[MEDIUM]** selectionGuard lacks blockId/chunkId/range anchor check — identical text elsewhere passes. Required: structural anchor in contract or documented integration-layer enforcement; moved-range tests.
+  9. **[MEDIUM/test]** Suite non-discriminating for findings 1-7 (no clipboard tests, empty replacement, mid-commit failure, stale tr.before, adjacent grouping, protected split/paste, identity-only). Required per list.
+  10. **[LOW]** loadDocumentIntoEditor accepts translation-only tblock kind. Required: BLOCK_KINDS gate + hostile-kind test.
+- **Next Step**: Coder Fix1 (attempt 5) — all ten; keep 381 green.
+
+## P3A.D5 — Attempts 5-7
+- **Attempt 5 (`P3AD5CoderFix1`, 38m, provider death)**: landed only the clipboard-module half of F5 (toFragment text-node bug fixed; module now 154 ln); died before the core rewrite.
+- **Attempt 6 (`P3AD5CoderFix2`, 60m, runtime-limit abort)**: rewrote editorCore.js (994 ln) — atomic candidate-commit via saveDocumentArchive replacing the mutation cascade; stale-tr.before rejection before any store call; library closeHistory(tr); empty replacement via delete/fragment; sanitizer wired into applyPaste with destination-policy reminting (stamped fast-path removed); identity/attrs change detection before the no-op branch; BLOCK_KINDS source gate; assumeChanged option for authorized identity retiles. Smoke-green across all ten findings; aborted while updating tests — five old tests left failing on stale cascade expectations.
+- **Attempt 7 (`P3AD5CoderFix3`, 13m, test-only)**: all five failures were stale expectations rewritten for atomic semantics (one candidate saveDocumentArchive; policy deltas folded into one save; mandatory remint). Eight new tests: save-seam failure injection (CAS/disk/validation throws) asserting disk/binding/projection/revision invariants; stale tr.before typed CONFLICT zero-interaction; adjacent same-block closeHistory undo separation; empty whole/partial replacements + undo/freshness; real applyPaste sanitizer + destination protection + bare-text preservation; identity-only canonicalized retile / attrs-only typed rejection; universal persisted==projection checks; protected split policy preservation. Anchor and tblock hostile checks folded into existing tests.
+  - Main verified independently: **389/389**, tsc exit 0 incl. contracts coverage.
+- **Next Step**: P3AD5Reviewer2 full re-review of the ten resolutions.
+
+## P3A.D5 — Review 2 (delta)
+- **Review (`P3AD5Reviewer2`, 5m30s)**: **approved**, zero findings.
+  - All ten findings verified closed on the rewritten core: atomic single-candidate CAS/WAL persistence; stale-tr rejection; library closeHistory helper; empty-delete representation; mandatory sanitizer with destination reminting; identity-drift detection; policy inheritance; structural selection guard; discriminating test pack; BLOCK_KINDS gate.
+  - Invariants 1-8 held. 389/389 + tsc consistent; scope confined to D5 files. Graphify stale (0 edges for editorCore) — real-source inspection used.
+- **Next Step**: QA confirmation -> close D5 -> backup push -> P3A.D6.
+
+## P3A.D5 — CLOSED
+- **Confirmation (`P3AD5Tester1`)**: PASS — npm test 389/389; focused editor suite 23/23; tsc exit 0; representative regressions confirmed by name (atomic save-seam injection, stale tr.before rejection, adjacent closeHistory separation, sanitizer/remint round-trip incl. destination policy, identity-only canonicalization, BLOCK_KINDS hostile gate).
+- **Full cycle**: 7 coder attempts across split sessions (survived 2 provider deaths + 1 runtime-limit abort with zero progress loss via incremental/split strategy); findings converged 10 → 0 on the rewritten atomic core; Reviewer2 approved zero-findings; invariants 1-8 held.
+- **Closure transaction**: STEPS `[x] P3A.D5`; backup push #5 (product diff + snapshot mirror refresh).
+- **Next Step**: P3A.D6 Multi-language/review — continuous pipeline, no pause.

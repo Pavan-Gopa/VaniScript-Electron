@@ -5,12 +5,12 @@ onboarding:
   model_pairs_confirmed: true
   completed_at: 2026-08-21T00:00:00Z
 current_step: P3A
-current_work_item_id: P3A.D5
+current_work_item_id: P3A.D6
 current_work_item: >-
-  Editorial editor core: ProseMirror schema/transactions/undo. Gate: P3A.O3 editor tests.
+  Multi-language/review: language tabs/status/approval. Gate: language isolation tests.
 step_description: >-
-  P3A Document lane; P3A.D4 CLOSED (9 attempts, 6 review rounds, approved
-  zero-findings, qa_green); active item P3A.D5 — continuous pipeline.
+  P3A Document lane; P3A.D5 CLOSED (7 attempts, approved zero-findings,
+  qa_green); active item P3A.D6 — continuous pipeline.
 completed_steps:
   - P0
   - P1
@@ -19,7 +19,7 @@ skipped_steps: []
 parked_steps: []
 implementation:
   status: approved
-  attempts: 9
+  attempts: 7
   note: >-
     P3A.D2 closed at 7 attempts / 297 tests (see FEEDBACK). P3A.D3 attempt 1
     (P3AD3Coder1, 31m): chunkPlanner.js (491 ln) — pure deterministic planner,
@@ -40,7 +40,6 @@ omp:
   status: dispatched
   role: coder
   primary_agent: workflow-coder
-  failed_model: "opencode-zen/muse-spark-1.2-contributor-free:xhigh (Tester; 429 FreeUsageLimitError x2 sessions after 10 retries each: 13:37:11Z, 13:56:50Z)"
   evidence: null # history://P3AD1Tester2 expired (process-local); failure recorded in FEEDBACK.md
   backup_agent: null
   human_instruction: >-
@@ -70,17 +69,18 @@ review:
   last_feedback_file: AI_Workflow_Kit/docs/AI/FEEDBACK.md
   verdict: approved
   note: >-
-    Reviewer6 (FINAL, 4m42s): both drift pins closed with live mutation
-    verification; zero findings; prior approvals unregressed.
+    Reviewer2 (FINAL, 5m30s): all ten findings closed on the rewritten core;
+    zero findings; invariants 1-8 held; scope confined. Graphify stale —
+    live source used.
 qa:
   status: passed
-  suite: translationCoordinator + full Electron suite
+  suite: editorCore + full Electron suite
   bugs_open: 0
   note: >-
-    D4 closed green: findings converged 6 -> 3 -> 1 -> 1 -> 2 -> 0 across 6
-    review rounds; confirmation qa_green 366/366, tsc clean. Suite grew 336
-    -> 366.
+    D5 closed green: findings converged 10 -> 0 on the rewritten atomic core;
+    confirmation PASS 389/389, tsc clean. Suite grew 366 -> 389.
 next_actor: coder
+plan_files:
   - Electron/docs_VANISCRIPT_APPLE_SILICON_TO_ELECTRON_MIGRATION_PLAN.md
   - AI_Workflow_Kit/docs/STEPS.md
 coder_brief: null
@@ -89,7 +89,7 @@ checkpoint:
   last_pre_tag: null
   last_post_tag: null
   last_commit: null
-  note: P3A.D1-D3 closed and pushed (079a512, a2a997a, 364e147). P3A.D4 attempt 9 (Fix5 — two drift pins) dispatched. Continuous pipeline per Human.
+  note: P3A.D1-D4 closed and pushed (079a512, a2a997a, 364e147, 6ddfeb6). P3A.D5 attempt 4 awaiting Reviewer1. Continuous pipeline per Human.
 notes: |
   2026-08-21 canonical state repair: STEPS.md rewritten as Step Cards (P0..P5) with
   stable IDs <step>.D/O/J; current_step restored; completed_steps limited to
