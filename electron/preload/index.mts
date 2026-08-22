@@ -40,6 +40,16 @@ import {
   type ProviderInvokeResult,
 } from '../../shared/contracts/providers.ts';
 import { IPC_DISPATCH_CHANNEL, type Command } from '../main/ipc/index.mts';
+import {
+  BATCH_COMMANDS,
+  type BatchJob,
+  type BatchJobsQuery,
+  type BatchProfile,
+  type BatchProfileInput,
+  type BatchJobDetails,
+  type BatchQueueSnapshot,
+  type BatchIssue,
+} from '../../shared/contracts/batch.ts';
 import type { IpcRenderer } from 'electron';
 
 /** Opt-in local validation for registered methods. */
@@ -48,12 +58,20 @@ interface MethodSpec {
   validateArgs?: (args: unknown) => boolean;
 }
 
+function hasNonEmptyStringField(value: unknown, key: string): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const field = record[key];
+  return typeof field === 'string' && field.trim().length > 0;
+}
+
 /**
  * Local guard rail: known methods get a cheap structural check so a bad call
  * fails immediately in the renderer instead of round-tripping to main.
  */
 const METHOD_REGISTRY: Record<string, MethodSpec> = {
   'dialog:openFile': { validateArgs: (a) => a === undefined || a === null },
+  'dialog:openDirectory': { validateArgs: (a) => a === undefined || a === null },
   'fs:writeFile': {
     validateArgs: (a) => {
       if (a === null || typeof a !== 'object') return false;
@@ -93,6 +111,31 @@ const METHOD_REGISTRY: Record<string, MethodSpec> = {
       !Array.isArray(a) &&
       typeof (a as ProviderInvokeRequest).providerId === 'string',
   },
+  [BATCH_COMMANDS.getState]: { validateArgs: (a) => a === undefined || a === null },
+  [BATCH_COMMANDS.listProfiles]: {
+    validateArgs: (a) => a === undefined || a === null || (typeof a === 'object' && !Array.isArray(a)),
+  },
+  [BATCH_COMMANDS.createProfile]: {
+    validateArgs: (a) => hasNonEmptyStringField(a, 'name') && hasNonEmptyStringField(a, 'sourcePath'),
+  },
+  [BATCH_COMMANDS.listJobs]: {
+    validateArgs: (a) => a === undefined || a === null || (typeof a === 'object' && !Array.isArray(a)),
+  },
+  [BATCH_COMMANDS.getJobDetails]: {
+    validateArgs: (a) => hasNonEmptyStringField(a, 'jobId'),
+  },
+  [BATCH_COMMANDS.scan]: { validateArgs: (a) => a === undefined || a === null },
+  [BATCH_COMMANDS.start]: { validateArgs: (a) => a === undefined || a === null },
+  [BATCH_COMMANDS.pauseAfterCurrent]: { validateArgs: (a) => a === undefined || a === null },
+  [BATCH_COMMANDS.resume]: { validateArgs: (a) => a === undefined || a === null },
+  [BATCH_COMMANDS.drain]: { validateArgs: (a) => a === undefined || a === null },
+  [BATCH_COMMANDS.retry]: {
+    validateArgs: (a) => hasNonEmptyStringField(a, 'jobId'),
+  },
+  [BATCH_COMMANDS.cancel]: {
+    validateArgs: (a) => hasNonEmptyStringField(a, 'jobId'),
+  },
+  [BATCH_COMMANDS.listIssues]: { validateArgs: (a) => a === undefined || a === null },
 };
 
 /** Error surfaced to renderer code when a call is rejected or fails. */
@@ -119,6 +162,19 @@ export interface ElectronApi {
   updateSettings(args: SettingsUpdateRequest): Promise<SettingsUpdateResult>;
   exportDocument(args: DocumentExportRequest): Promise<DocumentExportResult>;
   invokeProvider(args: ProviderInvokeRequest): Promise<ProviderInvokeResult>;
+  getBatchState(): Promise<BatchQueueSnapshot>;
+  listBatchProfiles(args?: { limit?: number; offset?: number; enabled?: boolean }): Promise<{ profiles: BatchProfile[] }>;
+  createBatchProfile(args: BatchProfileInput): Promise<{ profile: BatchProfile }>;
+  listBatchJobs(args?: BatchJobsQuery): Promise<{ jobs: BatchJob[]; limit: number; offset: number; hasMore: boolean; nextOffset: number | null }>;
+  getBatchJobDetails(args: { jobId: string }): Promise<BatchJobDetails>;
+  scanBatch(): Promise<unknown>;
+  startBatch(): Promise<BatchQueueSnapshot>;
+  pauseBatchAfterCurrent(): Promise<BatchQueueSnapshot>;
+  resumeBatch(): Promise<BatchQueueSnapshot>;
+  drainBatch(): Promise<{ state: BatchQueueSnapshot; result: unknown }>;
+  retryBatchJob(args: { jobId: string }): Promise<unknown>;
+  cancelBatchJob(args: { jobId: string }): Promise<unknown>;
+  listBatchIssues(): Promise<{ issues: BatchIssue[] }>;
 }
 
 function buildCommand(method: string, args: unknown): Command {
@@ -223,6 +279,26 @@ export function createTypedIpcBridge(
         return response as ProviderInvokeResult;
       });
     },
+    getBatchState: () => invoke<BatchQueueSnapshot>(BATCH_COMMANDS.getState),
+    listBatchProfiles: (args) =>
+      invoke<{ profiles: BatchProfile[] }>(BATCH_COMMANDS.listProfiles, args),
+    createBatchProfile: (args) =>
+      invoke<{ profile: BatchProfile }>(BATCH_COMMANDS.createProfile, args),
+    listBatchJobs: (args) =>
+      invoke<{ jobs: BatchJob[]; limit: number; offset: number; hasMore: boolean; nextOffset: number | null }>(
+        BATCH_COMMANDS.listJobs,
+        args,
+      ),
+    getBatchJobDetails: (args) =>
+      invoke<BatchJobDetails>(BATCH_COMMANDS.getJobDetails, args),
+    scanBatch: () => invoke<unknown>(BATCH_COMMANDS.scan),
+    startBatch: () => invoke<BatchQueueSnapshot>(BATCH_COMMANDS.start),
+    pauseBatchAfterCurrent: () => invoke<BatchQueueSnapshot>(BATCH_COMMANDS.pauseAfterCurrent),
+    resumeBatch: () => invoke<BatchQueueSnapshot>(BATCH_COMMANDS.resume),
+    drainBatch: () => invoke<{ state: BatchQueueSnapshot; result: unknown }>(BATCH_COMMANDS.drain),
+    retryBatchJob: (args) => invoke<unknown>(BATCH_COMMANDS.retry, args),
+    cancelBatchJob: (args) => invoke<unknown>(BATCH_COMMANDS.cancel, args),
+    listBatchIssues: () => invoke<{ issues: BatchIssue[] }>(BATCH_COMMANDS.listIssues),
   };
 }
 

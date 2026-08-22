@@ -617,3 +617,19 @@
 - **Gate evidence**: P3B.J2 (companion .txt collision-safe and receipted) fully covered by D5 + this QA — checked in STEPS.
 - **Closure transaction**: STEPS `[x] P3B.D5` + `[x] P3B.J2`; backup push #13.
 - **Next Step**: `P3B.D6` Separate Batch workspace — final item of card P3B.
+
+## P3B.D6 — Attempt 1
+- **Attempt 1 (workflow-coder `P3BD6Coder1`)**: 8 scoped files (+502/-7): batch contract extensions; IPC factory batch handlers over domain/scheduler/watcher APIs only; typed preload wrappers; NEW src/components/BatchWorkspace.tsx (separate workspace per §11.1 — no auto-start, no project auto-create, drag-and-drop add-folder); NEW src/stores/batchStore.ts (pure state machine: filters incl. collision<->blockedOutputCollision mapping, badge running/paused/failed w/ failed escalation, control states scan/start/pause-after/resume/drain/retry/cancel, getVirtualRows windowing); App.tsx route + badge button; tests: NEW test/batchWorkspace.test.js jsdom suite incl. 10k-row virtualization proof (18 rendered rows of 10000, bounded window) + preload-ipc.test.js extensions. Vite build clean.
+- **Main verification**: npm test **478/478** (+6), focused 15/15, `tsc --noEmit` exit 0, `npm run vite-build` success; git scope exactly the 8 files; virtualization/badge/collision-filter mechanisms confirmed at cited lines.
+- **Coder-noted limitation**: production window-manager still boots legacy preload.js/main.js (pre-existing P1 legacy-adapter condition, NOT a D6 regression); typed bridge factory tested/injected — global preload cutover is a cross-cutting candidate for P4.
+- **Next Step**: `P3BD6Reviewer1` full review — focus: §11.2 semantics compliance, IPC surface minimality, virtualization correctness at boundaries, legacy-preload deferral adjudication.
+
+## P3B.D6 — Review 1
+- **Review (`P3BD6Reviewer1`, 2m37s)**: **approved**, zero findings; 8-file surface verified end-to-end, metrics reproduced (478/478, tsc 0, vite-build clean). §11.1-11.2 separate-workspace semantics met; virtualization proof bounded and non-tautological with DOM check; IPC strictly over domain/scheduler/watcher APIs with typed bridge + local validation, no raw SQL; store pure/injectable, no localStorage/Node; controls FSM prevents impossible combinations. **Adjudication**: legacy preload cutover correctly deferred to P4 (cross-cutting, pre-existing P1 condition).
+- **Next Step**: `P3BD6Tester1` QA confirmation -> close D6 + O2 -> card P3B COMPLETE -> backup push #14.
+
+## P3B.D6 — CLOSED
+- **Confirmation (`P3BD6Tester1`, 7m38s)**: PASS — npm test **478/478** fail 0; focused **15/15**; tsc/vite-build clean. Six spots confirmed incl. non-tautological 10k virtualization proof, badge escalation FSM impossibility checks, no-auto-start path, IPC discipline (no direct Node from renderer), project-state-preserving route. Scope exact 8 files. Read-only honored.
+- **Card P3B — COMPLETE**: D1-D6 closed across 5 cycles (one changes_requested round at D4); suite grew 424 -> 478 (+54 in lane; 208 -> 478 overall). Gates: O1 (D1+D4), O2 (D6 proof), J1 (D3 fuzz), J2 (D5 receipts) — all evidence-backed. Binding adjudications recorded (states, blockedOutputCollision@BAT-05, fingerprint dedupe). Deferred to P4: legacy-preload cutover, Linux fuzz case-fold units, fd-anchored TOCTOU hardening, root-cwd harness fix.
+- **Closure transaction**: STEPS `[x] P3B.D6` + `[x] P3B.O2` -> card **P3B COMPLETE**; backup push #14.
+- **Next Step**: `P3C.D1` Loopback MCP server/auth/audit — continuous pipeline continues into card P3C.

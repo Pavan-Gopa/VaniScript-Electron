@@ -102,11 +102,11 @@
 - [x] [P3B.D3] Stability/path safety: fingerprint/confinement
 - [x] [P3B.D4] Scheduler/recovery: claim/run/checkpoint/retry
 - [x] [P3B.D5] Atomic companion writer: safe `.txt` output/receipts
-- [ ] [P3B.D6] Separate Batch workspace: button/queue/details/controls
+- [x] [P3B.D6] Separate Batch workspace: button/queue/details/controls
 
 ### Objective gates
 - [x] [P3B.O1] Migration/transaction and crash/restart recovery tests pass
-- [ ] [P3B.O2] 10k-row virtualization E2E passes
+- [x] [P3B.O2] 10k-row virtualization E2E passes
 
 ### Judgment gates
 - [x] [P3B.J1] Symlink/case fuzz cannot escape path confinement

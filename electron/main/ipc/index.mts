@@ -45,6 +45,22 @@ import {
   type DocumentExportResult,
 } from '../../../shared/contracts/documents.ts';
 import { createDocumentExportService } from '../documents/export.js';
+import {
+  BATCH_COMMANDS,
+  BATCH_JOB_STATES,
+  type BatchBadgeState,
+  type BatchIssue,
+  type BatchJob,
+  type BatchJobDetails,
+  type BatchJobsQuery,
+  type BatchProfile,
+  type BatchProfileInput,
+  type BatchQueueSnapshot,
+  type BatchSchedulerMode,
+} from '../../../shared/contracts/batch.ts';
+import { createBatchDomain } from '../batch/batchDomain.js';
+import { createBatchScheduler } from '../batch/batchScheduler.js';
+import { createBatchWatcher } from '../batch/batchWatcher.js';
 
 /** Wire channel every typed request travels on. */
 export const IPC_DISPATCH_CHANNEL = 'ipc:dispatch' as const;
@@ -289,6 +305,7 @@ export interface DocumentExportServiceAdapter {
  * store and never accepts raw source bytes from Renderer.
  */
 export function createDocumentExportHandlers(
+
   serviceOrStore: DocumentExportServiceAdapter | { loadDocumentProject: Function } = createDocumentExportService(),
 ): IpcHandlerMap {
   const service =
@@ -305,3 +322,228 @@ export function createDocumentExportHandlers(
 }
 
 export const documentExportHandlers = createDocumentExportHandlers();
+// ─── Batch workspace handlers (BAT-06) ─────────────────────────────────────
+// The factory is intentionally dependency-injected: D6 owns the renderer
+// contract and orchestration seam, while D1-D5 remain the only source of
+// persistence, scanning, and scheduler behavior. Production wiring can supply
+// the process-owned instances; tests use small fakes without opening SQLite.
+
+export interface BatchDomainAdapter {
+  listProfiles(options?: Record<string, unknown>): BatchProfile[];
+  createProfile(input: BatchProfileInput): BatchProfile;
+  listJobs(options?: BatchJobsQuery): BatchJob[];
+  getJob(jobId: string): BatchJob;
+  listCheckpoints(jobId: string): unknown[];
+  listEvents(jobId: string, options?: Record<string, unknown>): unknown[];
+  transitionJob?(jobId: string, state: string, details?: Record<string, unknown>): BatchJob;
+  cancelJob?(jobId: string): BatchJob;
+}
+
+export interface BatchSchedulerAdapter {
+  readonly mode?: BatchSchedulerMode | string;
+  readonly activeJob?: BatchJob | null;
+  start(options?: Record<string, unknown>): Promise<unknown> | unknown;
+  pauseAfterCurrent(): Promise<unknown> | unknown;
+  resume(): Promise<unknown> | unknown;
+  drain(): Promise<unknown> | unknown;
+  cancel?(jobId: string): Promise<unknown> | unknown;
+}
+
+export interface BatchWatcherAdapter {
+  start?(): Promise<unknown> | unknown;
+  reconcileProfile?(profileId: string, options?: Record<string, unknown>): Promise<unknown> | unknown;
+  readonly activeProfiles?: BatchProfile[];
+}
+
+export interface BatchHandlerOptions {
+  domain?: BatchDomainAdapter;
+  scheduler?: BatchSchedulerAdapter;
+  watcher?: BatchWatcherAdapter;
+  dbPath?: string;
+  runJob?: (job: BatchJob, context: unknown) => Promise<unknown> | unknown;
+  scan?: (args: Record<string, unknown>) => Promise<unknown> | unknown;
+  retryJob?: (jobId: string) => Promise<unknown> | unknown;
+  getIssues?: () => BatchIssue[] | Promise<BatchIssue[]>;
+}
+
+function batchRecord(value: unknown, label: string): Record<string, unknown> {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw createAppError('VALIDATION_FAILED', `${label} must be an object.`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function batchJobId(value: unknown): string {
+  const args = batchRecord(value, 'Batch job command');
+  const jobId = args.jobId;
+  if (typeof jobId !== 'string' || jobId.trim().length === 0) {
+    throw createAppError('VALIDATION_FAILED', 'jobId must be a non-empty string.');
+  }
+  return jobId;
+}
+
+function batchLimit(value: unknown, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (!Number.isSafeInteger(value) || value < 1 || value > 10000) {
+    throw createAppError('VALIDATION_FAILED', 'limit must be an integer between 1 and 10000.');
+  }
+  return value;
+}
+
+function batchOffset(value: unknown): number {
+  if (value === undefined) return 0;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw createAppError('VALIDATION_FAILED', 'offset must be a non-negative integer.');
+  }
+  return value;
+}
+
+function schedulerMode(scheduler: BatchSchedulerAdapter): BatchSchedulerMode {
+  const mode = scheduler.mode;
+  if (mode === 'running' || mode === 'paused' || mode === 'pause-after-current') return mode;
+  return 'stopped';
+}
+
+function batchStateForMode(mode: BatchSchedulerMode): BatchBadgeState {
+  if (mode === 'running') return 'running';
+  if (mode === 'paused' || mode === 'pause-after-current') return 'paused';
+  return 'idle';
+}
+
+export function createBatchHandlers(options: BatchHandlerOptions = {}): IpcHandlerMap {
+  const issueBuffer: BatchIssue[] = [];
+  const domain: BatchDomainAdapter = options.domain
+    ?? createBatchDomain({ dbPath: options.dbPath }) as unknown as BatchDomainAdapter;
+  const scheduler: BatchSchedulerAdapter = options.scheduler
+    ?? createBatchScheduler({
+      domain,
+      runJob: options.runJob ?? (async () => {
+        throw createAppError(
+          'CAPABILITY_UNAVAILABLE',
+          'Batch transcription runner is not wired; inject a runner before starting the queue.',
+        );
+      }),
+      onIssue: (issue: unknown) => {
+        if (issue && typeof issue === 'object') issueBuffer.push(issue as BatchIssue);
+      },
+    }) as unknown as BatchSchedulerAdapter;
+  const watcher: BatchWatcherAdapter | undefined = options.watcher
+    ?? (createBatchWatcher({
+      domain,
+      onIssue: (issue: unknown) => {
+        if (issue && typeof issue === 'object') issueBuffer.push(issue as BatchIssue);
+      },
+    }) as unknown as BatchWatcherAdapter);
+
+  const readIssues = async (): Promise<BatchIssue[]> => {
+    const issues = options.getIssues ? await options.getIssues() : issueBuffer;
+    return Array.isArray(issues) ? issues.slice(-100) : [];
+  };
+
+  const readState = async (): Promise<BatchQueueSnapshot> => {
+    const mode = schedulerMode(scheduler);
+    const activeJobId = scheduler.activeJob?.jobId ?? null;
+    return {
+      mode,
+      activeJobId,
+      badge: batchStateForMode(mode),
+      updatedAt: new Date().toISOString(),
+    };
+  };
+
+  return {
+    [BATCH_COMMANDS.getState]: async () => readState(),
+    [BATCH_COMMANDS.listProfiles]: (args) => {
+      const input = batchRecord(args, 'Batch profile query');
+      return {
+        profiles: domain.listProfiles({
+          ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
+          limit: batchLimit(input.limit, 1000),
+          offset: batchOffset(input.offset),
+        }),
+      };
+    },
+    [BATCH_COMMANDS.createProfile]: (args) => ({
+      profile: domain.createProfile(batchRecord(args, 'Batch profile input') as unknown as BatchProfileInput),
+    }),
+    [BATCH_COMMANDS.listJobs]: (args) => {
+      const input = batchRecord(args, 'Batch job query');
+      const limit = batchLimit(input.limit, 10000);
+      const offset = batchOffset(input.offset);
+      if (input.profileId !== undefined && typeof input.profileId !== 'string') {
+        throw createAppError('VALIDATION_FAILED', 'profileId must be a string.');
+      }
+      if (input.state !== undefined && !BATCH_JOB_STATES.includes(input.state as BatchJob['state'])) {
+        throw createAppError('VALIDATION_FAILED', 'state filter is not supported.');
+      }
+      const jobs = domain.listJobs({
+        limit,
+        offset,
+        ...(input.profileId === undefined ? {} : { profileId: input.profileId as string }),
+        ...(input.state === undefined ? {} : { state: input.state as BatchJob['state'] }),
+      });
+      return {
+        jobs,
+        limit,
+        offset,
+        hasMore: jobs.length === limit,
+        nextOffset: jobs.length === limit ? offset + jobs.length : null,
+      };
+    },
+    [BATCH_COMMANDS.getJobDetails]: (args) => {
+      const jobId = batchJobId(args);
+      const job = domain.getJob(jobId);
+      const checkpoints = domain.listCheckpoints(jobId) as BatchJobDetails['checkpoints'];
+      const events = domain.listEvents(jobId, { limit: 1000 }) as BatchJobDetails['events'];
+      return { job, checkpoints, events } satisfies BatchJobDetails;
+    },
+    [BATCH_COMMANDS.scan]: async (args) => {
+      const input = batchRecord(args, 'Batch scan command');
+      if (options.scan) return options.scan(input);
+      if (watcher?.start) return watcher.start();
+      if (watcher?.reconcileProfile && Array.isArray(watcher.activeProfiles)) {
+        const results = await Promise.all(
+          watcher.activeProfiles.map((profile) => watcher.reconcileProfile!(profile.profileId, { reason: 'manual' })),
+        );
+        return { results };
+      }
+      throw createAppError('CAPABILITY_UNAVAILABLE', 'Batch watcher scan is unavailable.');
+    },
+    [BATCH_COMMANDS.start]: async () => {
+      await scheduler.start({ recover: true });
+      return readState();
+    },
+    [BATCH_COMMANDS.pauseAfterCurrent]: async () => {
+      await scheduler.pauseAfterCurrent();
+      return readState();
+    },
+    [BATCH_COMMANDS.resume]: async () => {
+      await scheduler.resume();
+      return readState();
+    },
+    [BATCH_COMMANDS.drain]: async () => {
+      const result = await scheduler.drain();
+      return { state: await readState(), result };
+    },
+    [BATCH_COMMANDS.retry]: async (args) => {
+      const jobId = batchJobId(args);
+      if (options.retryJob) return options.retryJob(jobId);
+      const job = domain.getJob(jobId);
+      if (job.state === 'blockedOutputCollision' && domain.transitionJob) {
+        return domain.transitionJob(jobId, 'pending');
+      }
+      throw createAppError(
+        'CAPABILITY_UNAVAILABLE',
+        'Batch retry requires the scheduler/domain retry API for this job state.',
+      );
+    },
+    [BATCH_COMMANDS.cancel]: async (args) => {
+      const jobId = batchJobId(args);
+      if (scheduler.cancel) return scheduler.cancel(jobId);
+      if (domain.cancelJob) return domain.cancelJob(jobId);
+      throw createAppError('CAPABILITY_UNAVAILABLE', 'Batch cancellation is unavailable.');
+    },
+    [BATCH_COMMANDS.listIssues]: async () => ({ issues: await readIssues() }),
+  };
+}

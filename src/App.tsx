@@ -6,6 +6,7 @@ import { transcribeChunkGemini, transcribeChunkOpenAI, fileToBase64 } from './se
 import { computeCutPoints, cutPointsToSeconds } from './services/smart-slicer';
 import { SettingsModal } from './components/SettingsModal';
 import { Workspace } from './components/Workspace';
+import { BatchWorkspace } from './components/BatchWorkspace';
 import { ConfigPanel, SessionConfig } from './components/ConfigPanel';
 import { OnboardingTour } from './components/OnboardingTour';
 import { Logo } from './components/Logo';
@@ -53,6 +54,8 @@ import { currentBuildId } from './lib/build-info';
 import { markOnboardingCompletedForBuild, shouldShowOnboardingForBuild } from './lib/onboarding';
 
 import { NavigationProvider } from './stores/navigationStore';
+import { NAVIGATION_ROUTES, useNavigationStore, useNavigate } from './stores/navigationStore';
+import { batchStore, getBatchBadgeState, useBatchStore } from './stores/batchStore';
 import { useLegacySettingsMigration } from './stores/migrationStore';
 import { usePaneStore, paneStore } from './stores/paneStore';
 
@@ -446,6 +449,13 @@ export default function App() {
   const [glossaryDraft, setGlossaryDraft] = useState<GlossaryDraft | null>(null);
   const [editingProvider, setEditingProvider] = useState<string>(() => loadShortsDefaults().planningProvider || settings.translationProvider);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const navigation = useNavigationStore();
+  const navigate = useNavigate();
+  const batchSnapshot = useBatchStore();
+  const batchBadge = getBatchBadgeState(batchSnapshot.scheduler, batchSnapshot.jobs);
+  useEffect(() => {
+    void batchStore.refresh();
+  }, []);
   const [expandedProjectId, setExpandedProjectId] = useState<string | null>(null);
   const [activeMediaInfo, setActiveMediaInfo] = useState<SourceMediaInfo | null>(null);
   const pane = usePaneStore();
@@ -2652,6 +2662,17 @@ export default function App() {
       <div className="app-bg" />
       <div className="app-shell">
         <div className="drag-region" />
+        <button
+          type="button"
+          className="settings-btn"
+          aria-label="Open Batch workspace"
+          title={`Batch · ${batchBadge}`}
+          onClick={() => navigate(NAVIGATION_ROUTES.BATCH)}
+          style={{ right: 62, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 3, width: 'auto', minWidth: 32, padding: '0 7px', color: batchBadge === 'failed' ? '#ff7070' : 'inherit' }}
+        >
+          <Play size={13} />
+          <span style={{ fontSize: 8, fontWeight: 800, textTransform: 'uppercase' }}>{batchBadge}</span>
+        </button>
 
         {/* Settings button */}
         {screen !== 'review' && (
@@ -2672,13 +2693,19 @@ export default function App() {
             >
               <Sparkles size={15} style={{ color: pane.showChatSidebar ? 'var(--accent)' : 'inherit' }} />
             </button>
-            <button className="settings-btn inline" onClick={openProjectSidebar} title="Projects">
+            <button className="settings-btn inline" onClick={() => { navigate(NAVIGATION_ROUTES.PROJECT); openProjectSidebar(); }} title="Projects">
               <FolderOpen size={15} />
             </button>
             <button className="settings-btn inline" data-tour="settings-btn" onClick={() => { setShowSettings(true); setSettingsTab(0); }} title="Settings">
               <Settings size={15} />
             </button>
           </div>
+        )}
+        {navigation.route === NAVIGATION_ROUTES.BATCH && (
+          <BatchWorkspace
+            store={batchStore}
+            onBack={() => navigate(NAVIGATION_ROUTES.PROJECT)}
+          />
         )}
 
         {/* ── UPLOAD ── */}

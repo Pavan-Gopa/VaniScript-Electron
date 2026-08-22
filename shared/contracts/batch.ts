@@ -16,6 +16,57 @@ export type BatchSchemaVersion = typeof BATCH_SCHEMA_VERSION;
 /** Current SQLite migration version owned by the Batch domain. */
 export const BATCH_DB_SCHEMA_VERSION = 3 as const;
 export type BatchDbSchemaVersion = typeof BATCH_DB_SCHEMA_VERSION;
+/** Renderer-facing IPC methods for the separate Batch workspace. */
+export const BATCH_COMMANDS = Object.freeze({
+  getState: 'batch:state',
+  listProfiles: 'batch:profiles:list',
+  createProfile: 'batch:profile:create',
+  listJobs: 'batch:jobs:list',
+  getJobDetails: 'batch:job:details',
+  scan: 'batch:scan',
+  start: 'batch:start',
+  pauseAfterCurrent: 'batch:pause-after-current',
+  resume: 'batch:resume',
+  drain: 'batch:drain',
+  retry: 'batch:retry',
+  cancel: 'batch:cancel',
+  listIssues: 'batch:issues',
+} as const);
+
+export type BatchCommand = (typeof BATCH_COMMANDS)[keyof typeof BATCH_COMMANDS];
+export type BatchFilter = 'all' | 'pending' | 'running' | 'completed' | 'failed' | 'collision' | 'cancelled';
+export type BatchBadgeState = 'idle' | 'running' | 'paused' | 'failed';
+export type BatchSchedulerMode = 'stopped' | 'running' | 'paused' | 'pause-after-current';
+
+export interface BatchJobsQuery {
+  limit?: number;
+  offset?: number;
+  state?: BatchJobState;
+  profileId?: string;
+}
+
+export interface BatchJobDetails {
+  job: BatchJob;
+  checkpoints: BatchCheckpoint[];
+  events: BatchEvent[];
+}
+
+export interface BatchIssue {
+  issueId?: string;
+  type: string;
+  code?: string;
+  profileId?: string;
+  path?: string;
+  message: string;
+  createdAt?: string;
+}
+
+export interface BatchQueueSnapshot {
+  mode: BatchSchedulerMode;
+  activeJobId: string | null;
+  badge: BatchBadgeState;
+  updatedAt: string;
+}
 
 // blockedOutputCollision is terminal until the user removes/renames the
 // conflicting companion. A retry may move it back to pending.
@@ -218,7 +269,7 @@ export function validateBatchProfile(value: unknown): BatchValidationResult<Batc
   const accessRefValue = value.accessRef === null || value.accessRef === undefined
     ? null
     : stringValue(value.accessRef);
-  const accessRef: string | null = accessRefValue;
+  const accessRef: string | null = accessRefValue ?? null;
   const enabled = value.enabled;
   const recursive = value.recursive;
   const createdAt = isoTimestamp(value.createdAt);
@@ -303,7 +354,7 @@ export function validateBatchJob(value: unknown): BatchValidationResult<BatchJob
   const outputPathValue = value.outputPath === null || value.outputPath === undefined
     ? null
     : stringValue(value.outputPath);
-  const outputPath: string | null = outputPathValue;
+  const outputPath: string | null = outputPathValue ?? null;
   const state = value.state;
   const phase = value.phase;
   const attempt = integerValue(value.attempt);
@@ -312,17 +363,17 @@ export function validateBatchJob(value: unknown): BatchValidationResult<BatchJob
   const lastErrorValue = value.lastError === null || value.lastError === undefined
     ? null
     : stringValue(value.lastError);
-  const lastError: string | null = lastErrorValue;
+  const lastError: string | null = lastErrorValue ?? null;
   const createdAt = isoTimestamp(value.createdAt);
   const updatedAt = isoTimestamp(value.updatedAt);
   const startedAtValue = value.startedAt === null || value.startedAt === undefined
     ? null
     : isoTimestamp(value.startedAt);
-  const startedAt: string | null = startedAtValue;
+  const startedAt: string | null = startedAtValue ?? null;
   const completedAtValue = value.completedAt === null || value.completedAt === undefined
     ? null
     : isoTimestamp(value.completedAt);
-  const completedAt: string | null = completedAtValue;
+  const completedAt: string | null = completedAtValue ?? null;
   if (!jobId) return fail('VALIDATION_FAILED', 'job.jobId is required.');
   if (!profileId) return fail('VALIDATION_FAILED', 'job.profileId is required.');
   if (!sourcePath) return fail('VALIDATION_FAILED', 'job.sourcePath is required.');
@@ -355,7 +406,7 @@ export function validateBatchJob(value: unknown): BatchValidationResult<BatchJob
   const outputFingerprintValue = value.outputFingerprint === null || value.outputFingerprint === undefined
     ? null
     : stringValue(value.outputFingerprint);
-  const outputFingerprint: string | null = outputFingerprintValue;
+  const outputFingerprint: string | null = outputFingerprintValue ?? null;
   if (value.outputFingerprint !== null && value.outputFingerprint !== undefined && !outputFingerprintValue) {
     return fail('VALIDATION_FAILED', 'job.outputFingerprint must be a non-empty string or null.');
   }

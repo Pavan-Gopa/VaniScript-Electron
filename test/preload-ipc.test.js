@@ -206,3 +206,103 @@ test('registerIpcRouter wires ipc:dispatch to dispatch', async () => {
   assert.equal(result.ok, true);
   assert.equal(result.value, 7);
 });
+
+test('preload exposes the Batch typed bridge and rejects malformed commands locally', async () => {
+  const { createTypedIpcBridge, IpcBridgeError } = await import(PRELOAD);
+  const { createSuccess } = await import(IPC);
+  const { BATCH_COMMANDS } = await import('../shared/contracts/batch.ts');
+  const calls = [];
+  const api = createTypedIpcBridge({
+    invoke: async (channel, envelope) => {
+      calls.push({ channel, envelope });
+      return createSuccess(envelope.requestId, { mode: 'stopped', activeJobId: null, badge: 'idle', updatedAt: '' });
+    },
+    send: () => {},
+  });
+
+  await api.getBatchState();
+  assert.equal(calls.at(-1).envelope.payload.method, BATCH_COMMANDS.getState);
+  await api.listBatchJobs({ limit: 10, offset: 0 });
+  assert.equal(calls.at(-1).envelope.payload.method, BATCH_COMMANDS.listJobs);
+
+  await assert.rejects(
+    () => api.createBatchProfile({ name: 'missing path' }),
+    (error) => error instanceof IpcBridgeError && error.appError.code === 'VALIDATION_FAILED',
+  );
+  await assert.rejects(
+    () => api.getBatchJobDetails({ jobId: '' }),
+    (error) => error instanceof IpcBridgeError && error.appError.code === 'VALIDATION_FAILED',
+  );
+});
+
+test('Batch IPC handlers project D1-D5 APIs and expose deterministic queue controls', async () => {
+  const { createBatchHandlers, dispatch } = await import(ROUTER);
+  const { createRequest } = await import(IPC);
+  const { BATCH_COMMANDS } = await import('../shared/contracts/batch.ts');
+  const job = {
+    jobId: 'job-1',
+    profileId: 'profile-1',
+    sourcePath: '/audio/source.mp3',
+    outputPath: '/audio/source.txt',
+    state: 'pending',
+    phase: 'planning',
+    attempt: 0,
+    maxAttempts: 3,
+    progress: 0,
+    lastError: null,
+  };
+  const profile = {
+    profileId: 'profile-1',
+    name: 'Audio',
+    sourcePath: '/audio',
+    accessRef: null,
+    enabled: true,
+    recursive: true,
+  };
+  const calls = [];
+  const domain = {
+    listProfiles: () => [profile],
+    createProfile: (input) => ({ ...profile, ...input }),
+    listJobs: () => [job],
+    getJob: () => job,
+    listCheckpoints: () => [],
+    listEvents: () => [],
+    transitionJob: (jobId, state) => ({ ...job, jobId, state }),
+  };
+  const scheduler = {
+    mode: 'stopped',
+    activeJob: null,
+    async start() { this.mode = 'running'; },
+    async pauseAfterCurrent() { this.mode = 'pause-after-current'; },
+    async resume() { this.mode = 'running'; },
+    async drain() { this.mode = 'stopped'; return { drained: true, pending: 0 }; },
+    async cancel(jobId) { calls.push(['cancel', jobId]); return { ...job, jobId, state: 'cancelled' }; },
+  };
+  const handlers = createBatchHandlers({
+    domain,
+    scheduler,
+    watcher: { start: async () => ({ scanned: 1 }) },
+    getIssues: () => [{ type: 'watcher-error', message: 'offline' }],
+  });
+
+  const list = await dispatch(createRequest({ method: BATCH_COMMANDS.listJobs, args: { limit: 10 } }), handlers);
+  assert.equal(list.ok, true);
+  assert.equal(list.value.jobs[0].jobId, 'job-1');
+  const details = await dispatch(createRequest({ method: BATCH_COMMANDS.getJobDetails, args: { jobId: 'job-1' } }), handlers);
+  assert.equal(details.ok, true);
+  assert.deepEqual(details.value.checkpoints, []);
+  const issues = await dispatch(createRequest({ method: BATCH_COMMANDS.listIssues, args: null }), handlers);
+  assert.equal(issues.value.issues[0].type, 'watcher-error');
+
+  const started = await dispatch(createRequest({ method: BATCH_COMMANDS.start, args: null }), handlers);
+  assert.equal(started.value.badge, 'running');
+  const paused = await dispatch(createRequest({ method: BATCH_COMMANDS.pauseAfterCurrent, args: null }), handlers);
+  assert.equal(paused.value.mode, 'pause-after-current');
+  const resumed = await dispatch(createRequest({ method: BATCH_COMMANDS.resume, args: null }), handlers);
+  assert.equal(resumed.value.mode, 'running');
+  const drained = await dispatch(createRequest({ method: BATCH_COMMANDS.drain, args: null }), handlers);
+  assert.equal(drained.value.state.mode, 'stopped');
+  const cancelled = await dispatch(createRequest({ method: BATCH_COMMANDS.cancel, args: { jobId: 'job-1' } }), handlers);
+  assert.equal(cancelled.value.state, 'cancelled');
+  assert.deepEqual(calls, [['cancel', 'job-1']]);
+});
