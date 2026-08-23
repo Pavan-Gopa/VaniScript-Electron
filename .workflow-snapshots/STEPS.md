@@ -140,7 +140,7 @@
 **Depends on:** P1
 
 **Do:**
-- [ ] [P3D.D1] Update state/readiness: blockers/receipts/quit prep
+- [x] [P3D.D1] Update state/readiness: blockers/receipts/quit prep
 - [ ] [P3D.D2] Platform updater adapters: mac/win/linux behavior
 - [ ] [P3D.D3] Updates Settings/UI: check/download/install UX
 

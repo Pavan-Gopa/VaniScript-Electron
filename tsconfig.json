@@ -19,6 +19,6 @@
   // deliberately NOT included yet — they carry pre-existing type errors
   // (projects.ts: AudioMetadata coercion, ChunkData casts) that are out of
   // scope for the document lane and must be fixed separately.
-  "include": ["src", "shared/contracts/documents.ts"],
+  "include": ["src", "shared/contracts/documents.ts", "shared/contracts/updates.ts"],
   "exclude": ["node_modules", "dist", "electron"]
 }
