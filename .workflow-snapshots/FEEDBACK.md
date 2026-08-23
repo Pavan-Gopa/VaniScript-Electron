@@ -633,3 +633,34 @@
 - **Card P3B — COMPLETE**: D1-D6 closed across 5 cycles (one changes_requested round at D4); suite grew 424 -> 478 (+54 in lane; 208 -> 478 overall). Gates: O1 (D1+D4), O2 (D6 proof), J1 (D3 fuzz), J2 (D5 receipts) — all evidence-backed. Binding adjudications recorded (states, blockedOutputCollision@BAT-05, fingerprint dedupe). Deferred to P4: legacy-preload cutover, Linux fuzz case-fold units, fd-anchored TOCTOU hardening, root-cwd harness fix.
 - **Closure transaction**: STEPS `[x] P3B.D6` + `[x] P3B.O2` -> card **P3B COMPLETE**; backup push #14.
 - **Next Step**: `P3C.D1` Loopback MCP server/auth/audit — continuous pipeline continues into card P3C.
+
+## P3C.D1 — Attempt 1
+- **Attempt 1 (workflow-coder `P3CD1Coder1`)**: NEW electron/main/mcp/mcpServer.js (968 ln) per §13.1: loopback-only bind (127.0.0.1/::1 enforced, BIND_REJECTED otherwise; per-request loopback origin check), Bearer tokens = crypto.randomBytes(32) stored as vault refs + registry (SET-02), SHA-256-digest timingSafeEqual with full-registry scan (no count-dependent early return), revoked/expired/unavailable typed errors, fail-closed on locked vault, rotate/revoke w/ rollback; initialize protocol/version negotiation; request size (413)/timeout (408)/concurrency (429) limits + graceful drain stop/restart; bounded redacted audit projection (timestamp/peer/route/outcome/tokenId — no payloads) w/ once-per-request guard; response envelope carries projectId/projectRevision for D2/D3 tools. NEW shared/contracts/mcp.ts (221 ln): MCP error codes->app taxonomy/status mapping, handshake/envelope types. NEW test/mcpServer.test.js (354 ln, 13 tests): external-bind rejection, token matrix (invalid/expired/revoked/vault-fail), negotiation, size/timeout/concurrency limits, audit redaction assertions, rotation flows, drain.
+- **Main verification**: npm test **491/491** (+13), focused mcpServer **13/13**, `tsc --noEmit` exit 0; git scope exactly 3 new files; all §13.1 mechanisms confirmed at cited lines. (Coder's parent-gitignore note N/A — product repo is Electron/.)
+- **Next Step**: `P3CD1Reviewer1` full review — focus: trust-boundary completeness (origin vs proxy tricks), token lifecycle races, limit bypass vectors, audit redaction sufficiency.
+
+## P3C.D1 — Review 1
+- **Review (`P3CD1Reviewer1`, 3m9s)**: **approved**, zero findings; full read of all three files, metrics reproduced. All §13.5/§13.6 mechanisms verified in source: bind enforcement pre-listen, Origin empty->allow-native/loopback-only reflect, vault Bearer tokens with digest timingSafeEqual full-scan, typed 401/503 token errors, fail-closed, rotate/revoke rollback, version negotiation (2024-11-05/2025-03-26), 413/408/429 + global timeout + socket-set drain, bounded once-per-request redacted audit with hash(tokenId), envelope passthrough. **Adjudication**: standalone-module-without-wiring sound for D1 scope.
+- **Next Step**: `P3CD1Tester1` QA confirmation -> close D1 -> backup push #15.
+
+## P3C.D1 — QA 1
+- **QA (`P3CD1Tester1`, 6m56s)**: **FAIL** — audit redaction leak. Runtime repro: POST initialize with payload requestId='payload-manuscript-secret-72491' -> 200, then getAuditLog() contains that exact payload text. Client controls ctx.requestId via x-request-id header (mcpServer.js:718) AND payload.requestId (:802); _recordAudit persists it verbatim (:609). Sanitizer strips control chars + truncates 128 but keeps arbitrary user text — violates §13.1 "audit record без пользовательского текста по умолчанию". All other probes PASS: npm test 491/491, focused 13/13, tsc 0, scope 3 files, bind/IPv6/token matrix/full-scan/limits/counter-cleanup green. Existing audit test checked only params.secret (reviewer gap). Read-only honored.
+- **Main verification**: confirmed at cited lines; envelope echo (:639) and handler-context passthrough (:699) judged acceptable (caller's own data / D2-D3 seam).
+- **Adjudication**: replace audit field with requestIdHash = sha256(ctx.requestId) (pattern of existing tokenIdHash); extend redaction test to assert no client-controlled text (header + payload paths).
+- **Next Step**: `P3CD1CoderFix1` fix round -> Reviewer2 delta -> Tester2 re-confirm.
+
+## P3C.D1 — Fix Round
+- **Fix (`P3CD1CoderFix1`, 5m10s)**: adjudicated redaction fix applied exactly — audit record field requestId -> requestIdHash = sha256(ctx.requestId) (pattern of tokenIdHash); envelope echo + handler-context passthrough untouched; tests extended dual-path (payload-manuscript-secret-* AND header-manuscript-secret-* markers) with hash stability/difference assertions and !('requestId' in record); mcp.ts audit type+validator renamed (string|null). Diff +1/-1 server, +61/-24 tests, +6/-3 contract.
+- **Main verification**: npm test **491/491**, focused **13/13**, tsc exit 0; source confirmed at :609; scope unchanged (same 3 files).
+- **Next Step**: `P3CD1Reviewer2` delta review of the fix diff -> Tester2 re-confirm QA.
+
+## P3C.D1 — Review 2
+- **Review (`P3CD1Reviewer2`, 2m13s)**: **approved**, zero findings — delta verified in real source: leak closed via requestIdHash=sha256 at :609 with tokenIdHash parity; envelope echo (:639)/handler context (:699) preserved as transient correlation; BOTH capture sites (:718 header, :802 payload) now hashed; contract validator/type renamed; dual-path test exercises both sites with stability/difference asserts and no raw marker leak; sha256 helper reused (no new crypto); no remaining record.requestId consumer; scope confined. §13.6 diagnostics-without-leak met.
+- **Next Step**: `P3CD1Tester2` QA re-confirm -> close D1 + gate O1 -> backup push #15.
+
+## P3C.D1 — CLOSED
+- **Confirmation (`P3CD1Tester2`, 7m14s)**: PASS — npm test **491/491** fail 0; focused **13/13**; tsc exit 0. Original-defect repro clean: payload/header requestId markers absent from serialized audit (hash-only, stable/different asserts); record inventory exactly timestamp/peer/route/tool/outcome/tokenIdHash/requestIdHash; loopback 127.0.0.1 + ::1 initialize 200 with counters drained to 0; bind rejection, token matrix, 413/408/429 limits all green; activeRequests/connections 0 after stop. Scope exact 3 files. Read-only honored.
+- **Gate note**: P3C.O1 ("Network/auth and tool schema tests") — network/auth half proven here; tool schema tests land with D2, gate check deferred to D2 closure (P3B.O1 precedent).
+- **Cycle summary**: 1 coder attempt + 1 fix round (QA-caught requestId leak, adjudicated to hash-only audit) + Reviewer2 delta approve + Tester2 PASS. Suite 478 -> 491 (+13).
+- **Closure transaction**: STEPS `[x] P3C.D1`; backup push #15.
+- **Next Step**: `P3CD2Coder1` Read tool catalog (MCP-02: project/transcript/document/help reads, schema tests).

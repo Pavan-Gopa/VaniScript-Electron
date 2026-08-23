@@ -5,10 +5,10 @@ onboarding:
   model_pairs_confirmed: true
   completed_at: 2026-08-21T00:00:00Z
 current_step: P3C
-current_work_item_id: P3C.D1
+current_work_item_id: P3C.D2
 current_work_item: >-
-  Loopback MCP server/auth/audit. IN PROGRESS under the standing
-  continuous-pipeline order; card P3B COMPLETE.
+  Read tool catalog: project/transcript/document/help reads. IN PROGRESS
+  under the standing continuous-pipeline order (card P3C; D1 CLOSED).
 step_description: >-
   Card P3B COMPLETE (D1-D6, gates O1/O2/J1/J2; suite 424 -> 478). Continuous
   pipeline per Human standing order — entering card P3C MCP/Agents at D1.
@@ -24,20 +24,21 @@ implementation:
   status: in_progress
   attempts: 0
   note: >-
-    Fresh cycle for P3C.D1 (MCP-01): loopback MCP runtime with auth/audit;
-    acceptance = network/auth tests per §20. Consumes FND-02 sandbox + SET-02 vault.
+    Fresh cycle for P3C.D2 (MCP-02): read-only tool catalog
+    project/transcript/document/help over the D1 handler seam; acceptance =
+    schema tests per §20. Consumes MCP-01 + PROJ-02.
 retry_guard:
   max_attempts_without_progress: 3
   last_failure_signature: "Reviewer attempt-3 residuals: collectPages deep-chain RangeError, literal trailing-escape TypeError, ZIP offset/compSize trust, unclosed XML canImport, nested textbox part routing, sourceHash-per-part"
   repeated_failure_count: 0
   blocker: null # cleared 2026-08-21 ~14:41Z — Human authorized one more same-model Tester attempt
 omp:
-  last_result_artifact: history://P3BD6Reviewer1
-  active_agent: P3BD6Tester1 (workflow-tester)
-  active_role: tester
+  last_result_artifact: history://P3CD1Tester2
+  active_agent: P3CD2Coder1 (workflow-coder)
+  active_role: coder
   status: dispatched
-  role: tester
-  primary_agent: workflow-tester
+  role: coder
+  primary_agent: workflow-coder
   evidence: null # history://P3AD1Tester2 expired (process-local); failure recorded in FEEDBACK.md
   backup_agent: null
   human_instruction: >-
@@ -69,19 +70,19 @@ review:
   last_feedback_file: AI_Workflow_Kit/docs/AI/FEEDBACK.md
   verdict: null
   note: >-
-    Card P3B COMPLETE (records retained). D1/P3C review queued after its coder
-    attempt. Binding adjudications retained.
+    D1 records retained (approved after fix round). D2 review queued after its
+    coder attempt. Binding adjudications retained.
 qa:
   status: passed
-  suite: batchWorkspace + batch suites + full Electron suite
+  suite: mcpServer + full Electron suite
   bugs_open: 0
-  note: D6 confirmation PASS 478/478 fail 0 (retained); P3C.D1 QA queued after review.
+  note: D1 re-confirm PASS 491/491 retained; P3C.O1 network/auth half proven, full gate check at D2. D2 QA queued.
 next_actor: coder
-omp_status_note: running_p3c_d1_coder_dispatched
+omp_status_note: running_p3c_d2_coder_dispatched
 checkpoint:
   last_pre_tag: null
   last_post_tag: null
-  last_commit: 7882ed7
+  last_commit: 0ffebf1
   note: >-
     Pushes: #9 797fa62 (D1), #10 d98952f (D2), #11 19d479b (D3), synced.
     Continuous pipeline — P3B.D4 coder dispatched.

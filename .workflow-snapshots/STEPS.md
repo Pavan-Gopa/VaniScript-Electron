@@ -119,7 +119,7 @@
 **Depends on:** P2
 
 **Do:**
-- [ ] [P3C.D1] Server/auth/audit: loopback MCP runtime
+- [x] [P3C.D1] Server/auth/audit: loopback MCP runtime
 - [ ] [P3C.D2] Read tool catalog: project/transcript/document/help reads
 - [ ] [P3C.D3] Mutation/processing tools: permissions/confirmation/revision
 - [ ] [P3C.D4] Agent clients: Codex/Grok/Qwen stream/cancel
