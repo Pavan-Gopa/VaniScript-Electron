@@ -9,6 +9,7 @@ import { createGlossaryEntry } from '../lib/glossary';
 import { filterGlossaryEntries, GlossarySortMode, joinGlossaryEntries, listGlossaryCategories, sortGlossaryEntries } from '../lib/glossary-management';
 import { PROMPT_DEFINITIONS, PROMPT_SLOTS, type PromptPresetId, type PromptSlot } from '../lib/prompt-presets';
 import { reconcileLocalModelStatesWithDisk } from '../services/model-presence';
+import { UpdatesPanel } from './UpdatesPanel';
 
 const TABS = ['API Keys', 'Models', 'Appearance', 'Glossary', 'Chunking', 'Transcription', 'Prompts', 'Agents', 'Updates'];
 
@@ -1329,6 +1330,7 @@ export function SettingsModal({ settings, usage, onPersist, onClose, tabIndex, o
                   </Field>
                 </div>
               </div>
+              <UpdatesPanel />
               <div className="s-section" style={{ marginTop: 16 }}>
                 <p className="s-section-title">Cloud API Usage</p>
                 {latestUsage && (

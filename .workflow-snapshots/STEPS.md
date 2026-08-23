@@ -142,15 +142,15 @@
 **Do:**
 - [x] [P3D.D1] Update state/readiness: blockers/receipts/quit prep
 - [x] [P3D.D2] Platform updater adapters: mac/win/linux behavior
-- [ ] [P3D.D3] Updates Settings/UI: check/download/install UX
+- [x] [P3D.D3] Updates Settings/UI: check/download/install UX
 
 ### Objective gates
 - [x] [P3D.O1] State/failure and fake feed/tamper tests pass
-- [ ] [P3D.O2] Check/download/install component/E2E passes
+- [x] [P3D.O2] Check/download/install component/E2E passes
 
 ### Judgment gates
-- [ ] [P3D.J1] Updates never destroy unsaved user work (quit prep honored)
-- [ ] [P3D.J2] Tampered or unsigned feeds are rejected
+- [x] [P3D.J1] Updates never destroy unsaved user work (quit prep honored)
+- [x] [P3D.J2] Tampered or unsigned feeds are rejected
 
 ## P3E — Media extraction/parity lane
 

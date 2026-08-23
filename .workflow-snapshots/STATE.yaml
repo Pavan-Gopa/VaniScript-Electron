@@ -4,15 +4,14 @@ onboarding:
   status: complete
   model_pairs_confirmed: true
   completed_at: 2026-08-21T00:00:00Z
-current_step: P3D
-current_work_item_id: P3D.D3
+current_step: P3E
+current_work_item_id: P3E.D1
 current_work_item: >-
-  Updates Settings/UI: check/download/install UX. IN PROGRESS under the
-  standing continuous-pipeline order (card P3D final item; D1+D2 CLOSED,
-  O1 checked; O2 closes with D3).
+  Media coordinator extraction: processing state machine. P3D CLOSED after
+  Coder2/Reviewer3/Tester2; backup push pending before P3E.D1 dispatch.
 step_description: >-
-  Card P3C COMPLETE (D1-D5, gates O1/O2/J1/J2; suite 478 -> 529). Continuous
-  pipeline per Human standing order — entering card P3D Updates at D1.
+  Card P3D COMPLETE (D1-D3, gates O1/O2/J1/J2; full suite 591/591,
+  focused 11/11, compile and vite build clean). Entering P3E at D1.
 completed_steps:
   - P0
   - P1
@@ -20,29 +19,29 @@ completed_steps:
   - P3A
   - P3B
   - P3C
+  - P3D
 skipped_steps: []
 parked_steps: []
 implementation:
-  status: in_progress
+  status: not_started
   attempts: 0
   note: >-
-    Fresh cycle for P3D.D3 (UPD-03): Updates Settings/UI — check/download/
-    install UX over D1 FSM + D2 adapter capabilities; acceptance =
-    component/E2E per §20. Consumes UPD-01. Auto-install remains forbidden;
-    blockers list surfaces per §12.3.
+    P3E.D1 pending fresh Coder after the mandatory P3D closure backup push.
+    Target: extract the media processing coordinator/state machine while
+    preserving existing observable media behavior.
 retry_guard:
   max_attempts_without_progress: 3
-  last_failure_signature: "Reviewer attempt-3 residuals: collectPages deep-chain RangeError, literal trailing-escape TypeError, ZIP offset/compSize trust, unclosed XML canImport, nested textbox part routing, sourceHash-per-part"
+  last_failure_signature: "P3D.D3 rapid double install: busyAction set after await; two bridge installNow calls (2 != 1)"
   repeated_failure_count: 0
-  blocker: null # cleared 2026-08-21 ~14:41Z — Human authorized one more same-model Tester attempt
+  blocker: null
 omp:
-  last_result_artifact: history://P3DD2Tester1
-  active_agent: P3DD3Coder1 (workflow-coder)
+  last_result_artifact: history://P3DD3Tester2
+  active_agent: null
   active_role: coder
-  status: dispatched
+  status: backup_push_pending
   role: coder
   primary_agent: workflow-coder
-  evidence: null # history://P3AD1Tester2 expired (process-local); failure recorded in FEEDBACK.md
+  evidence: history://P3DD3Tester2
   backup_agent: null
   human_instruction: >-
     STANDING ORDER (2026-08-22, supersedes all earlier pause directives):
@@ -72,23 +71,28 @@ review:
   status: not_started
   last_feedback_file: AI_Workflow_Kit/docs/AI/FEEDBACK.md
   verdict: null
-  note: >-
-    D1-D3 records retained (all approved; D3 after fix round). D4 review
-    queued after its coder attempt. Binding adjudications retained.
+  note: P3D review closed APPROVED; P3E.D1 review awaits implementation.
 qa:
-  status: passed
-  suite: updatePlatformAdapters + updateService + full Electron suite
+  status: not_started
+  suite: null
   bugs_open: 0
-  note: D2 confirmation PASS 580/580 retained; O1 checked. D3 QA queued after review.
+  note: P3D Tester2 PASS_WITH_RESIDUALS retained in FEEDBACK; P3E QA not started.
+# Lean-pipeline experiment. Default standard keeps Coder -> Reviewer -> Tester.
+pipeline:
+  profile: standard
+  authorized_by: null
+  authorized_at: null
+  note: null
+
 next_actor: coder
-omp_status_note: running_p3d_d3_coder_dispatched
+omp_status_note: p3d_closed_backup_push_pending_before_p3e_d1
 checkpoint:
   last_pre_tag: null
   last_post_tag: null
-  last_commit: dd30fb7
+  last_commit: 5cb3f89
   note: >-
-    Pushes: #9 797fa62 (D1), #10 d98952f (D2), #11 19d479b (D3), synced.
-    Continuous pipeline — P3B.D4 coder dispatched.
+    P3D closure verified: focused 11/11, full 591/591, compile exit 0, vite
+    build clean. Product + workflow-snapshot backup push pending; next P3E.D1.
 notes: |
   2026-08-21 canonical state repair: STEPS.md rewritten as Step Cards (P0..P5) with
   stable IDs <step>.D/O/J; current_step restored; completed_steps limited to
@@ -127,3 +131,11 @@ notes: |
   2026-08-22 binding adjudications (P3B lane): BATCH_JOB_STATES = pending/running/
   done/failed/cancelled canonical from D1; blockedOutputCollision lands with BAT-05;
   identical complete fingerprint within one profile shares one job (D3).
+  2026-08-23 session-restart reconciliation: prior dispatch P3DD3Reviewer1 left
+  no artifact (process-local loss; hub empty). Implementation remains
+  Main-verified approved (585/585, tsc 0, vite clean). Fresh P3DD3Reviewer2
+  re-dispatched per standing continuous-pipeline order; runtime loss implies no
+  product failure.
+  2026-08-23 P3D closure: D1-D3 and O1/O2/J1/J2 verified; Tester2 final race
+  1/1 and focused 11/11, Main full 591/591, compile 0, vite build clean. Card
+  closed and state advanced transactionally to P3E.D1 before backup push.
