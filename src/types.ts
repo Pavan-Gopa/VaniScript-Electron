@@ -86,6 +86,17 @@ export interface AudioMetadata {
   participants: string;
 }
 
+export interface SessionConfig {
+  date: string;
+  location: string;
+  lecturer: string;
+  participants: string;
+  targetLang: string;
+  formats: string[];
+  transcriptionProvider: TranscriptionProvider;
+  translationProvider: TranslationProvider;
+}
+
 export interface LanguageResult {
   TXT?: string;
   SRT?: string;

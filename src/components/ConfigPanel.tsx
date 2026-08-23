@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Settings as Gear } from 'lucide-react';
 import { Logo } from './Logo';
-import { AppSettings, TranscriptionProvider, TranslationProvider } from '../types';
+import { AppSettings, SessionConfig, TranscriptionProvider, TranslationProvider } from '../types';
 import { getAvailableTranscriptionProviders, getAvailableTranslationProviders, ProviderOption } from '../lib/provider-registry';
 
 interface ConfigPanelProps {
@@ -9,17 +9,6 @@ interface ConfigPanelProps {
   settings: AppSettings;
   onStart: (cfg: SessionConfig) => void;
   onCancel: () => void;
-}
-
-export interface SessionConfig {
-  date: string;
-  location: string;
-  lecturer: string;
-  participants: string;
-  targetLang: string;
-  formats: string[];
-  transcriptionProvider: TranscriptionProvider;
-  translationProvider: TranslationProvider;
 }
 
 const LANGS = [

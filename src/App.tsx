@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Settings, Download, RefreshCw, Play, Pause, FolderOpen, Share2, Trash2, Upload, Archive, ChevronDown, ChevronRight, ArrowLeft, Search, HelpCircle, Film, FileAudio, Info, Sparkles } from 'lucide-react';
-import { AppSettings, ChunkData, GlossaryEntry, LanguageResult, ProjectSummary, SourceMediaInfo, TranscriptCue, UsageStats } from './types';
+import { AppSettings, ChunkData, GlossaryEntry, LanguageResult, ProjectSummary, SessionConfig, SourceMediaInfo, TranscriptCue, UsageStats } from './types';
 import { loadSettings, saveSettings, loadUsage, applyTheme, trackUsage } from './services/storage';
 import { transcribeChunkGemini, transcribeChunkOpenAI, fileToBase64 } from './services/transcription';
-import { computeCutPoints, cutPointsToSeconds } from './services/smart-slicer';
+import { prepareMediaSession, PreparedMediaSession } from './services/media-processing-coordinator';
 import { SettingsModal } from './components/SettingsModal';
 import { Workspace } from './components/Workspace';
 import { BatchWorkspace } from './components/BatchWorkspace';
-import { ConfigPanel, SessionConfig } from './components/ConfigPanel';
+import { ConfigPanel } from './components/ConfigPanel';
 import { OnboardingTour } from './components/OnboardingTour';
 import { Logo } from './components/Logo';
 import { buildChunkPreview, buildTranscriptExport } from './lib/review-format';
@@ -33,7 +33,6 @@ import {
 import { formatDocumentExportLocally, formatDocumentExportWithGemini, formatDocumentExportWithOpenAI } from './services/document-export';
 import { reconcileLocalModelStatesWithDisk } from './services/model-presence';
 import { ShortsReelsPanel, ShortsSettings } from './components/ShortsReelsPanel';
-import { SourceMediaKind, sourceMediaKind } from './lib/media-source';
 import { AssistantSidebar } from './components/AssistantSidebar';
 import { assistantStore } from './stores/assistantStore';
 import { resolveShortsAudioPath } from './lib/shorts-media-source';
@@ -64,26 +63,12 @@ type Screen = 'upload' | 'config' | 'processing' | 'review' | 'export';
 type ViewMode = 'source' | 'translated' | 'dual';
 type OutputFormat = 'TXT' | 'SRT' | 'VTT' | 'Markdown';
 
-function isWavPath(filePath: string): boolean {
-  return filePath.toLowerCase().endsWith('.wav');
-}
-
-interface Session {
+interface Session extends PreparedMediaSession {
   projectId?: string;
   createdAt?: string;
   updatedAt?: string;
-  sourceFile: string;
-  sourceFileName: string;
-  sourceMediaKind?: SourceMediaKind;
-  originalVideoPath?: string;
-  wavPath: string;
-  config: SessionConfig;
-  chunks: ChunkData[];
-  currentIndex: number;
-  targetLang: string;
   shortsPlans?: ShortsClipPlan[];
   selectedShortsPlanIndexes?: number[];
-  sourceMediaInfo?: SourceMediaInfo;
 }
 
 type LocalAsrSegment = { t0?: number; t1?: number; text?: string } | [number, number, string];
@@ -1453,107 +1438,27 @@ export default function App() {
     }
 
     setScreen('processing');
-    setProcProgress(5);
-    setProcMsg('Converting audio format…');
 
     try {
-      // 1. Convert to WAV 16kHz mono (with graceful fallback)
-      let wavPath = sourceFile;
-      const mediaKind = sourceMediaKind(sourceFile);
-      const originalVideoPath = mediaKind === 'video' ? sourceFile : undefined;
-      if (window.electronAPI) {
-        setProcMsg(mediaKind === 'video' ? 'Extracting audio from video…' : 'Converting audio to WAV 16kHz…');
-        const res = mediaKind === 'video' && window.electronAPI.ffmpegExtractAudioForTranscription
-          ? await window.electronAPI.ffmpegExtractAudioForTranscription({ inputPath: sourceFile })
-          : await window.electronAPI.ffmpegConvertToWav({ inputPath: sourceFile });
-        if (res.success) {
-          wavPath = res.outputPath;
-        } else {
-          // Fallback: use original file directly — Gemini accepts most formats
-          console.warn('FFmpeg conversion failed, using original file:', res.error);
-          setProcMsg('Using original audio format…');
-        }
-      }
-      setProcProgress(25);
+      // Startup media preparation (convert/extract, duration, slicing,
+      // chunks, media info) with progress/stage milestones lives in the
+      // coordinator; App stays the UI composition root.
+      const prepared = await prepareMediaSession(
+        { sourceFile, sourceFileName, config: cfg, chunking: settings },
+        {
+          bridge: window.electronAPI,
+          report: ({ stage, progress }) => {
+            if (stage !== undefined) setProcMsg(stage);
+            if (progress !== undefined) setProcProgress(progress);
+          },
+        },
+      );
 
-      // 2. Get duration
-      let durationSec = settings.chunkDurationMin * 60;
-      if (window.electronAPI) {
-        const dur = await window.electronAPI.ffmpegGetDuration({ inputPath: wavPath });
-        if (dur.success && dur.durationSec > 0) durationSec = dur.durationSec;
-      }
-      setProcProgress(40);
-
-      // 3. Compute cut points
-      setProcMsg('Analyzing audio for optimal split points…');
-      let cutSec: number[] = [];
-      const targetMs = settings.chunkDurationMin * 60 * 1000;
-
-      if (settings.sliceMode === 'silence' && window.electronAPI && isWavPath(wavPath)) {
-        try {
-          const buf = await window.electronAPI.readFileBuffer({ filePath: wavPath });
-          if (buf.success && buf.byteLength > 0) {
-            const pcm = new Int16Array(buf.data, buf.byteOffset, Math.floor(buf.byteLength / 2));
-            cutSec = cutPointsToSeconds(computeCutPoints(pcm, 16000, targetMs, settings.silenceThreshDb, settings.minSilenceMs));
-          }
-        } catch { /* fall through to fixed */ }
-      }
-
-      // Fixed interval fallback
-      if (cutSec.length === 0) {
-        for (let t = settings.chunkDurationMin * 60; t < durationSec - 30; t += settings.chunkDurationMin * 60) {
-          cutSec.push(Math.round(t));
-        }
-      }
-      setProcProgress(60);
-
-      // 4. Slice audio
-      setProcMsg(`Creating ${cutSec.length + 1} audio segment(s)…`);
-      let chunkPaths: string[] = [wavPath];
-      if (window.electronAPI && cutSec.length > 0) {
-        const sliceRes = await window.electronAPI.ffmpegSliceChunks({ inputPath: wavPath, cutPoints: cutSec });
-        if (sliceRes.success && sliceRes.chunkPaths.length > 0) chunkPaths = sliceRes.chunkPaths;
-      }
-      setProcProgress(80);
-
-      // 5. Build chunk objects
-      const bounds = [0, ...cutSec, durationSec];
-      const chunks: ChunkData[] = chunkPaths.map((fp, i) => ({
-        index: i, filePath: fp,
-        durationSec: (bounds[i + 1] ?? durationSec) - bounds[i],
-        startSec: bounds[i],
-        endSec: bounds[i + 1] ?? durationSec,
-        original: '', translated: '', status: 'pending' as const, approved: false,
-      }));
-
-      setProcMsg('Reading source media details…');
-      let sourceMediaInfo: SourceMediaInfo | undefined;
-      if (window.electronAPI?.ffmpegGetSourceMediaInfo) {
-        try {
-          const info = await window.electronAPI.ffmpegGetSourceMediaInfo({
-            inputPath: sourceFile,
-            durationSec: durationSec
-          });
-          if (info) sourceMediaInfo = info;
-        } catch (e) {
-          console.warn('Could not read source media info:', e);
-        }
-      }
-
-      setProcMsg('Uploading audio and initializing AI…');
-      setProcProgress(90);
-
-      const newSession: Session = {
-        sourceFile, sourceFileName, sourceMediaKind: mediaKind, originalVideoPath, wavPath, config: cfg, chunks,
-        currentIndex: 0, targetLang: cfg.targetLang, sourceMediaInfo,
-      };
-
-      setSession(newSession);
-      setProcProgress(100);
+      setSession(prepared);
       setScreen('review');
 
       // Start transcribing first chunk
-      doTranscribe(chunks[0].filePath, 0, cfg, transcriptionApiKey, chunks[0].startSec, chunks[0].durationSec);
+      doTranscribe(prepared.chunks[0].filePath, 0, cfg, transcriptionApiKey, prepared.chunks[0].startSec, prepared.chunks[0].durationSec);
 
     } catch (err: any) {
       console.error('Engine start failed:', err);

@@ -886,3 +886,25 @@
 - **Main final verification**: `npm test` **591/591 PASS** across 42 Electron test files; `npm run compile` exit 0; `npm run vite-build` clean (1911 modules, 1.40s). Existing Rollup chunk-size warning only. Objective Gate runner has no embedded P3D commands; manual O2 evidence above is accepted.
 - **Closure transaction**: `[x] P3D.D3`, `[x] P3D.O2`, `[x] P3D.J1`, `[x] P3D.J2`; `completed_steps += P3D`; canonical pointer advanced to `P3E.D1`.
 - **Next Step**: mirror canonical STATE/STEPS/FEEDBACK into `Electron/.workflow-snapshots/`, commit/push the nested Electron repository, then dispatch fresh P3E.D1 Coder.
+
+## P3E.D1 — Attempt 1
+- **Coder (`P3ED1Coder1`, `ponytail_mode: full`)**: extracted `App.tsx` startup media preparation into NEW `src/services/media-processing-coordinator.ts`; App retains provider-key alerts, UI screens/error timeout, session ownership, and first-transcription handoff. Moved `SessionConfig` from `ConfigPanel.tsx` into shared `types.ts` with clean caller migration. NEW `test/mediaProcessingCoordinator.test.js` adds 7 parity cases.
+- **Coordinator contract**: dependency-injected narrow Electron bridge + ordered `{stage?,progress?}` reporter + warning sink; returns a typed prepared-session core. Preserves video/audio FFmpeg selection, conversion fallback, duration fallback, silence/fixed cut points, slice fallback quirks, chunk bounds/status, best-effort media info, exact messages/milestones, and no-bridge behavior.
+- **Main verification**: scope exactly five allowed files. Real source confirms App orchestration-only cutover and removal of smart-slicer/media-source mechanics; no transcription/translation/review/shorts/export movement. Focused coordinator tests **7/7 PASS**; full suite **598/598 PASS** across 43 files; `npm run compile` exit 0; `npm run vite-build` clean (1912 modules, 1.29s). Existing Rollup chunk-size warning only.
+- **Objective Gate runner**: P3E.O1/O2 are manual gates with no embedded commands. D1 contributes coordinator parity evidence toward O1; card gates remain open for later P3E items.
+- **Review focus**: exact startup parity including progress-100 ordering, bridge optionality/types, preserved fallback quirks, clean SessionConfig cutover, no hidden App/global coupling, and adequacy of failure-path tests.
+- **Next Step**: `P3ED1Reviewer1` full review.
+
+### P3E.D1 Reviewer — Attempt 1
+- **Reviewer (`P3ED1Reviewer1`)**: **APPROVED**, no findings; scope conforms. Compared committed pre-extraction `handleStartEngine` line-for-line against coordinator + App orchestration. P3E.J1 slice PASS: FFmpeg choices, warnings/fallbacks, duration/cut/slice quirks, chunk output, media info, alerts, error timeout, and first-transcription handoff remain equivalent.
+- **Ordering adjudication**: progress-100 moving immediately before coordinator return is unobservable on the production Electron path under React 18 batching; no fix required. `byteOffset ?? 0` matches typed-array default semantics. SessionConfig relocation is clean with no remaining component import/re-export.
+- **Bounded residual**: no-bridge development path can paint a one-frame 100% processing screen because the extracted async function introduces an await boundary; production Electron always takes FFmpeg awaits. Card J1 remains open until P3E.D2-D5.
+- **Tester gaps**: duration false/non-positive fallback; video without extract method using generic converter; convert/duration/slice thrown errors propagating; source-media-info null without warning; exact conversion-failure snapshot ordering.
+- **Next Step**: `P3ED1Tester1` focused QA/gap-hunt; test-file edits only.
+
+### P3E.D1 Tester — Attempt 1 / Item Closure
+- **Tester (`P3ED1Tester1`)**: **PASS_WITH_RESIDUALS**, bugs 0. Expanded the focused file from 7 to **11 tests**, adding duration false/zero/negative fallback, video-without-extract converter selection, thrown convert/duration/slice propagation, null media-info/no-warning, and exact conversion-fallback snapshot ordering. Only `test/mediaProcessingCoordinator.test.js` changed.
+- **P3E.J1 slice**: PASS. Original seven parity cases remain green; no deterministic media-startup regression found. Bounded residual remains the non-production no-bridge React scheduling paint; no fake test added.
+- **Main final verification**: focused **11/11 PASS**; full suite **602/602 PASS** across 43 files. Product code is unchanged since Main’s compile exit 0 and clean vite build; test-only QA additions do not invalidate those gates.
+- **Closure transaction**: `[x] P3E.D1`. P3E.O1/O2/J1/J2 remain open for the rest of the media lane. Canonical pointer advanced to `P3E.D2`.
+- **Next Step**: mirror closure memory, commit/push nested Electron repo, then discover and dispatch P3E.D2.

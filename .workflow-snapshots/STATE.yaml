@@ -5,10 +5,10 @@ onboarding:
   model_pairs_confirmed: true
   completed_at: 2026-08-21T00:00:00Z
 current_step: P3E
-current_work_item_id: P3E.D1
+current_work_item_id: P3E.D2
 current_work_item: >-
-  Media coordinator extraction: processing state machine. P3D CLOSED after
-  Coder2/Reviewer3/Tester2; backup push pending before P3E.D1 dispatch.
+  Review/multi-language parity: variants/stale/reprocess. P3E.D1 verified and
+  closing through mandatory nested-repo backup before D2 discovery/dispatch.
 step_description: >-
   Card P3D COMPLETE (D1-D3, gates O1/O2/J1/J2; full suite 591/591,
   focused 11/11, compile and vite build clean). Entering P3E at D1.
@@ -26,22 +26,21 @@ implementation:
   status: not_started
   attempts: 0
   note: >-
-    P3E.D1 pending fresh Coder after the mandatory P3D closure backup push.
-    Target: extract the media processing coordinator/state machine while
-    preserving existing observable media behavior.
+    P3E.D2 pending after P3E.D1 backup push. Target: extract/preserve review and
+    multi-language variant, stale-result, retry/reprocess behavior from App.
 retry_guard:
   max_attempts_without_progress: 3
   last_failure_signature: "P3D.D3 rapid double install: busyAction set after await; two bridge installNow calls (2 != 1)"
   repeated_failure_count: 0
   blocker: null
 omp:
-  last_result_artifact: history://P3DD3Tester2
+  last_result_artifact: history://P3ED1Tester1
   active_agent: null
   active_role: coder
   status: backup_push_pending
   role: coder
   primary_agent: workflow-coder
-  evidence: history://P3DD3Tester2
+  evidence: history://P3ED1Tester1
   backup_agent: null
   human_instruction: >-
     STANDING ORDER (2026-08-22, supersedes all earlier pause directives):
@@ -71,12 +70,12 @@ review:
   status: not_started
   last_feedback_file: AI_Workflow_Kit/docs/AI/FEEDBACK.md
   verdict: null
-  note: P3D review closed APPROVED; P3E.D1 review awaits implementation.
+  note: P3E.D1 review closed APPROVED; P3E.D2 review awaits implementation.
 qa:
   status: not_started
   suite: null
   bugs_open: 0
-  note: P3D Tester2 PASS_WITH_RESIDUALS retained in FEEDBACK; P3E QA not started.
+  note: P3E.D1 Tester1 PASS_WITH_RESIDUALS retained; P3E.D2 QA not started.
 # Lean-pipeline experiment. Default standard keeps Coder -> Reviewer -> Tester.
 pipeline:
   profile: standard
@@ -85,14 +84,14 @@ pipeline:
   note: null
 
 next_actor: coder
-omp_status_note: p3d_closed_backup_push_pending_before_p3e_d1
+omp_status_note: p3e_d1_closed_backup_push_pending_before_p3e_d2
 checkpoint:
   last_pre_tag: null
   last_post_tag: null
-  last_commit: 5cb3f89
+  last_commit: bb963fb
   note: >-
-    P3D closure verified: focused 11/11, full 591/591, compile exit 0, vite
-    build clean. Product + workflow-snapshot backup push pending; next P3E.D1.
+    P3E.D1 closure verified: focused 11/11, full 602/602; prior compile 0 and
+    vite build clean remain valid (Tester changed tests only). Backup push pending.
 notes: |
   2026-08-21 canonical state repair: STEPS.md rewritten as Step Cards (P0..P5) with
   stable IDs <step>.D/O/J; current_step restored; completed_steps limited to
@@ -139,3 +138,14 @@ notes: |
   2026-08-23 P3D closure: D1-D3 and O1/O2/J1/J2 verified; Tester2 final race
   1/1 and focused 11/11, Main full 591/591, compile 0, vite build clean. Card
   closed and state advanced transactionally to P3E.D1 before backup push.
+  Product repository boundary: Electron/ nested git. P3D closure commit bb963fb
+  pushed to origin/codex/v2-swift-import-compat. Workflow root canonical files
+  remain local outside that nested repository; closure-time copies are versioned
+  in Electron/.workflow-snapshots/.
+  P3E.D1 discovery: existing Graphify graph is stale/noisy for Electron and
+  resolves App/media queries mostly to AppleSilicon. Main used it as navigation
+  evidence only, then verified the exact App.tsx:1435-1563 source boundary and
+  existing service/test conventions directly.
+  2026-08-23 P3E.D1 closure: Coder1 extracted startup media preparation;
+  Reviewer1 APPROVED with zero findings; Tester1 final focused 11/11, Main full
+  602/602. D1 checked; card O1/O2/J1/J2 remain open for D2-D5.
