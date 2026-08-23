@@ -34,7 +34,8 @@ import { formatDocumentExportLocally, formatDocumentExportWithGemini, formatDocu
 import { reconcileLocalModelStatesWithDisk } from './services/model-presence';
 import { ShortsReelsPanel, ShortsSettings } from './components/ShortsReelsPanel';
 import { SourceMediaKind, sourceMediaKind } from './lib/media-source';
-import { ChatSidebar } from './components/ChatSidebar';
+import { AssistantSidebar } from './components/AssistantSidebar';
+import { assistantStore } from './stores/assistantStore';
 import { resolveShortsAudioPath } from './lib/shorts-media-source';
 import { buildShortsCuesForClip, buildShortsTranscriptText } from './lib/shorts-transcript';
 import { appendNonOverlappingShortsPlans, buildShortsPrompt, parseShortsPlanResponse, parseTimestampToSeconds, replaceShortsPlanRange, secondsToShortsTimestamp, ShortsClipPlan, ShortsPlanLanguageMode } from './lib/shorts-reels';
@@ -3094,6 +3095,21 @@ export default function App() {
                         <h3>Document export</h3>
                         <p>Download the reviewed transcript as text, subtitles, or a formatted Markdown document.</p>
                       </div>
+                      <button
+                        type="button"
+                        className="btn-dl btn-dl-secondary"
+                        data-testid="send-to-assistant-document"
+                        onClick={() => {
+                          assistantStore.queueSelection({
+                            source: 'document',
+                            text: `${session.sourceFileName} · ${session.chunks.length} segments · ${outputFormat}`,
+                            label: 'Document export',
+                          });
+                          paneStore.setChatSidebar(true);
+                        }}
+                      >
+                        Send to Assistant
+                      </button>
                     </div>
                     <div className="export-dl-grid">
                       {(['TXT', 'SRT', 'VTT', 'Markdown'] as OutputFormat[]).map(f => (
@@ -3311,15 +3327,10 @@ export default function App() {
           />
         )}
 
-        <ChatSidebar
+        <AssistantSidebar
           isOpen={pane.showChatSidebar}
           onClose={() => paneStore.setChatSidebar(false)}
-          executeMcpTool={executeMcpTool}
-          settings={settings}
-          chatRoute={settings.chatRoute ?? 'api'}
-          chatGrokModel={settings.chatGrokModel ?? 'grok-4.5'}
-          chatQwenModel={settings.chatQwenModel ?? 'qwen3.8-max-preview'}
-          onChatConfigChange={handleChatConfigChange}
+          store={assistantStore}
         />
 
         {shortsExportProgress && (

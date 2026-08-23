@@ -14,6 +14,8 @@ import {
 import { defaultBackgroundSettings, ShortsFrameRatePreset, ShortsResolutionPreset, ShortsTextTransform, ShortsVideoFormat, ShortsVideoQuality } from '../lib/shorts-render';
 import { SubtitleAlignmentEditor } from './subtitle-alignment/SubtitleAlignmentEditor';
 import { ReplaceClipModal } from './ReplaceClipModal';
+import { assistantStore } from '../stores/assistantStore';
+import { paneStore } from '../stores/paneStore';
 
 export type ShortsExportMode = 'plan' | 'video';
 
@@ -496,6 +498,21 @@ export function ShortsReelsPanel({
                 }}
               >
                 Edit Clip
+              </button>
+              <button
+                type="button"
+                className="btn-dl btn-dl-secondary"
+                data-testid="send-to-assistant-shorts"
+                onClick={() => {
+                  assistantStore.queueSelection({
+                    source: 'shorts',
+                    text: [detailsDisplay.title, detailsDisplay.hook, detailsDisplay.summary].filter(Boolean).join('\n'),
+                    label: detailsDisplay.title || 'Shorts clip',
+                  });
+                  paneStore.setChatSidebar(true);
+                }}
+              >
+                Send to Assistant
               </button>
               <button type="button" className="btn-dl btn-dl-primary" onClick={() => setDetailsIndex(null)}>Done</button>
             </div>

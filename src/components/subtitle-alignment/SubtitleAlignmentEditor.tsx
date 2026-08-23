@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BackgroundSettings, defaultBackgroundSettings, type ShortsSubtitleStyle } from '../../lib/shorts-render';
-import { Download, Pause, Play, Save, Scissors, SplitSquareHorizontal, Trash2, Link2, Unlink2, Undo2, Redo2, Languages, Repeat, RotateCcw, CheckCheck, X, HelpCircle } from 'lucide-react';
+import { Download, Pause, Play, Save, Scissors, SplitSquareHorizontal, Trash2, Link2, Unlink2, Undo2, Redo2, Languages, Repeat, RotateCcw, CheckCheck, X, HelpCircle, Sparkles } from 'lucide-react';
 import { formatPlaybackClock } from '../../lib/karaoke';
 import {
   AlignedSubtitleSegment,
@@ -35,6 +35,8 @@ import { loadSettings, saveSettings } from '../../services/storage';
 import { OnboardingTour } from '../OnboardingTour';
 import { currentBuildId } from '../../lib/build-info';
 import { markOnboardingCompletedForBuild, shouldShowOnboardingForBuild } from '../../lib/onboarding';
+import { assistantStore } from '../../stores/assistantStore';
+import { paneStore } from '../../stores/paneStore';
 
 type AlignmentCue = { startSec: number; endSec: number; text: string };
 
@@ -1792,6 +1794,22 @@ export function SubtitleAlignmentEditor({
               title="Reset all changes to initial state"
             >
               <RotateCcw size={14} /> Reset
+            </button>
+            <button
+              type="button"
+              className="btn-dl btn-dl-secondary"
+              data-testid="send-to-assistant-editor"
+              onClick={() => {
+                const selectedText = selectedTextOverlay?.text || selected?.text || '';
+                assistantStore.queueSelection({
+                  source: 'editor',
+                  text: selectedText || `${title} ${formatPlaybackClock(clipStartSec)}-${formatPlaybackClock(clipEndSec)}`,
+                  label: title,
+                });
+                paneStore.setChatSidebar(true);
+              }}
+            >
+              <Sparkles size={14} /> Send to Assistant
             </button>
             <button
               type="button"

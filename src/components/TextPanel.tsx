@@ -5,6 +5,8 @@ import type { TranscriptCue } from '../types';
 import { Loader2, Edit3, Sparkles } from 'lucide-react';
 import { activeWordIndex as getActiveWordIndex, cuesToKaraokeLines, hasInlineTimestampMarkers, parseKaraokeLines } from '../lib/karaoke';
 import { replaceSelectedText } from '../lib/text-revision';
+import { assistantStore } from '../stores/assistantStore';
+import { paneStore } from '../stores/paneStore';
 
 interface TextPanelProps {
   content: string;
@@ -381,6 +383,22 @@ export function TextPanel({
               </button>
             </>
           )}
+          <div className="text-panel-menu-separator" />
+          <button
+            type="button"
+            data-testid="send-to-assistant-transcript"
+            onClick={() => {
+              setMenuPos(null);
+              assistantStore.queueSelection({
+                source: format === 'Markdown' ? 'document' : 'transcript',
+                text: selectedText,
+                label: lang === 'original' ? 'Source transcript' : 'Translated transcript',
+              });
+              paneStore.setChatSidebar(true);
+            }}
+          >
+            <Sparkles size={14} /> Send to Assistant
+          </button>
         </div>
       )}
 
