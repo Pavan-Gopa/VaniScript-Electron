@@ -3,15 +3,16 @@
 /**
  * MCP-01 loopback transport for the Electron Main process.
  *
- * This module deliberately owns only the transport boundary. Tool catalogues
- * are injected as handlers by later work items, keeping the trust boundary,
- * token lifecycle, limits, and audit projection testable without a Renderer.
+ * This module deliberately owns only the transport boundary. Read catalogues
+ * are registered through the handler seam, with a dependency-free default
+ * catalogue and explicit injection support for Main-process stores.
  */
 
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { URL } = require('node:url');
 const defaultVault = require('../storage/vault.js');
+const { createReadCatalog } = require('./mcpTools/readCatalog.js');
 
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 19789;
@@ -339,12 +340,33 @@ class McpServer {
     this.registryKey = typeof options.registryKey === 'string' && options.registryKey.length > 0
       ? options.registryKey
       : TOKEN_REGISTRY_KEY;
-    this.handlers = options.handlers && typeof options.handlers === 'object' ? options.handlers : {};
+    this.handlers = {};
+    this.toolDefinitions = [];
+    this.readCatalog = null;
+    const requestedCatalog = options.readCatalog ?? options.toolCatalog;
+    if (options.registerReadTools !== false && requestedCatalog !== false) {
+      const catalog = requestedCatalog && typeof requestedCatalog === 'object' && (
+        requestedCatalog.handlers || requestedCatalog.tools || requestedCatalog.definitions
+      )
+        ? requestedCatalog
+        : createReadCatalog(
+          requestedCatalog && typeof requestedCatalog === 'object'
+            ? requestedCatalog
+            : options.readCatalogOptions || options,
+        );
+      this.registerToolCatalog(catalog);
+    }
+    if (options.handlers && typeof options.handlers === 'object') {
+      Object.assign(this.handlers, options.handlers);
+    }
     this.requestHandler = typeof options.requestHandler === 'function'
       ? options.requestHandler
       : typeof options.handleRequest === 'function'
         ? options.handleRequest
         : null;
+    if (Array.isArray(options.toolDefinitions)) {
+      this.toolDefinitions = options.toolDefinitions.slice();
+    }
     this.capabilities = options.capabilities && typeof options.capabilities === 'object'
       ? options.capabilities
       : { tools: { listChanged: false } };
@@ -661,6 +683,45 @@ class McpServer {
     this._send(ctx.res, status, this._envelope(ctx, id, result));
   }
 
+  /**
+   * Register a catalogue's handlers and JSON-schema definitions at the
+   * transport seam.  Registration is intentionally additive so D3 can layer
+   * mutation handlers without replacing the read catalogue.
+   */
+  registerToolCatalog(catalog) {
+    if (!catalog || typeof catalog !== 'object') {
+      throw mcpError(MCP_ERROR_CODES.INVALID_REQUEST, 'MCP tool catalog must be an object.');
+    }
+    const handlers = catalog.handlers && typeof catalog.handlers === 'object'
+      ? catalog.handlers
+      : {};
+    Object.assign(this.handlers, handlers);
+    const definitions = Array.isArray(catalog.tools)
+      ? catalog.tools
+      : Array.isArray(catalog.definitions)
+        ? catalog.definitions
+        : [];
+    const byName = new Map(
+      this.toolDefinitions
+        .filter((definition) => definition && typeof definition.name === 'string')
+        .map((definition) => [definition.name, definition]),
+    );
+    for (const definition of definitions) {
+      if (definition && typeof definition.name === 'string') byName.set(definition.name, definition);
+    }
+    this.toolDefinitions = Array.from(byName.values());
+    this.readCatalog = catalog;
+    return this;
+  }
+
+  listToolDefinitions() {
+    return this.toolDefinitions.map((definition) => ({ ...definition }));
+  }
+
+  listTools() {
+    return this.listToolDefinitions();
+  }
+
   async _dispatch(payload, ctx) {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
       throw mcpError(MCP_ERROR_CODES.INVALID_REQUEST, 'MCP request must be a JSON object.');
@@ -690,22 +751,43 @@ class McpServer {
       return { id, result: null, status: 202 };
     }
 
-    let handler = this.handlers[method];
-    if (typeof handler !== 'function') handler = this.requestHandler;
-    if (typeof handler !== 'function') {
-      throw mcpError(MCP_ERROR_CODES.METHOD_NOT_FOUND, 'MCP method is not available.');
-    }
-    const handlerContext = {
+    const handlerContext = () => ({
       requestId: ctx.requestId,
       projectId: ctx.projectId,
       projectRevision: ctx.projectRevision,
       tokenId: ctx.tokenRecord ? ctx.tokenRecord.tokenId : null,
       route: ctx.route,
       peer: ctx.peer,
-    };
+    });
+
+    if (method === 'tools/list') {
+      return { id, result: { tools: this.listToolDefinitions() } };
+    }
+
+    if (method === 'tools/call') {
+      const toolName = safeMethod(params.name);
+      if (!toolName) throw mcpError(MCP_ERROR_CODES.INVALID_REQUEST, 'MCP tool name is required.');
+      const args = params.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments)
+        ? params.arguments
+        : {};
+      if (ctx.projectId === null) ctx.projectId = safeProjectId(args.projectId);
+      if (ctx.projectRevision === null) ctx.projectRevision = safeProjectRevision(args.projectRevision);
+      ctx.tool = toolName;
+      const toolHandler = this.handlers[toolName];
+      if (typeof toolHandler !== 'function') {
+        throw mcpError(MCP_ERROR_CODES.METHOD_NOT_FOUND, `MCP tool "${toolName}" is not available.`);
+      }
+      return { id, result: await toolHandler(args, handlerContext()) };
+    }
+
+    let handler = this.handlers[method];
+    if (typeof handler !== 'function') handler = this.requestHandler;
+    if (typeof handler !== 'function') {
+      throw mcpError(MCP_ERROR_CODES.METHOD_NOT_FOUND, 'MCP method is not available.');
+    }
     const result = this.handlers[method] === handler
-      ? await handler(params, handlerContext)
-      : await handler({ method, params, id }, handlerContext);
+      ? await handler(params, handlerContext())
+      : await handler({ method, params, id }, handlerContext());
     return { id, result };
   }
 
@@ -806,9 +888,15 @@ class McpServer {
         this._sendResult(ctx, dispatched.id, dispatched.result, dispatched.status || 200);
       } catch (error) {
         if (ctx.timedOut || ctx.responseSent) return;
+        const catalogCode = error && typeof error.mcpCode === 'string' &&
+          Object.values(MCP_ERROR_CODES).includes(error.mcpCode)
+          ? error.mcpCode
+          : null;
         const normalized = error instanceof McpServerError
           ? error
-          : mcpError(MCP_ERROR_CODES.INTERNAL, 'MCP request failed.');
+          : catalogCode
+            ? mcpError(catalogCode, error.message || 'MCP catalog request failed.', error.details)
+            : mcpError(MCP_ERROR_CODES.INTERNAL, 'MCP request failed.');
         this._sendError(ctx, normalized, id);
       }
     })();

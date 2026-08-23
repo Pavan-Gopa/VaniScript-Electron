@@ -664,3 +664,30 @@
 - **Cycle summary**: 1 coder attempt + 1 fix round (QA-caught requestId leak, adjudicated to hash-only audit) + Reviewer2 delta approve + Tester2 PASS. Suite 478 -> 491 (+13).
 - **Closure transaction**: STEPS `[x] P3C.D1`; backup push #15.
 - **Next Step**: `P3CD2Coder1` Read tool catalog (MCP-02: project/transcript/document/help reads, schema tests).
+
+## P3C.D2 — Attempt 1
+- **Attempt 1 (workflow-coder `P3CD2Coder1`)**: read tool catalog per §13.3 read families + §20 MCP-02. NEW electron/main/mcp/mcpTools/readCatalog.js — 36 read-only tool definitions (project/transcript/glossary/document/help + read-only shorts/export/settings projections), each with scope:'read'/risk:'read'/capability mcp.read/input+result JSON schemas/readOnlyHint annotations/confirmationText:null; deterministic envelope schemaVersion/tool/scope/risk/projectId/projectRevision/data; real adapters over ProjectStore (default store + baseDir injection), glossary from project/settings, bounded help catalog; unknown tool -> MCP_METHOD_NOT_FOUND. mcpServer.js: auto-registration, tools/list + tools/call over D1 seam (additive). contracts/mcp.ts: risk/schema/catalog/result-envelope types (+64). NEW test/mcpReadCatalog.test.js (+4): schemas, live loopback e2e, envelope, METHOD_NOT_FOUND, audit-without-payload, no-mutation spot.
+- **Main verification**: npm test **495/491→495** (+4), focused readCatalog+mcpServer **17/17**, tsc exit 0; git scope exactly 4 files; mechanisms confirmed at cited lines.
+- **Flagged for review adjudication**: (1) documented "harmless empty projections" for shorts/export-domain tools until P3E adapters exist — acceptable interim vs stub policy; (2) list_export_options returns txt/markdown/srt/vtt while D8 shipped docx/txt/md/pdf — factual alignment check.
+- **Next Step**: `P3CD2Reviewer1` full review.
+
+## P3C.D2 — Review 1
+- **Review (`P3CD2Reviewer1`, 7m22s)**: **approved** with 1 MINOR hardening note. Full read of all 4 files + runtime probes + metrics reproduced (495/495, tsc 0). No mutation/file/network/destructive leakage; no audit payload leak; no aliasing leak; registration seam additive/reversible over D1 auth/limits.
+- **Adjudications**: (1) empty projections for shorts/export-domain tools accepted as documented interim until P3E adapters; (2) list_export_options transcriptFormats txt/markdown/srt/vtt = canonical TRANSCRIPT export family, distinct from D8's DOCUMENT family (contracts/documents.ts:1735-1741 docx/txt/md/pdf); alignment of Electron transcript exporters lands in P3E.D3 parity item.
+- **MINOR**: safeClone (:300-315) checks secret-key regex only after !isObject early return -> leaf string secrets bypass filtering (synthetic injection verified: apiKey/token/password leak through get_safe_settings). NOT live — prod secrets are vault-isolated keyRefs, ProjectV3 carries no plaintext. Fix: move SECRET_RE guard before primitive return + regression test.
+- **Next Step**: `P3CD2CoderFix1` fix round -> Reviewer2 delta -> Tester.
+
+## P3C.D2 — Fix Round
+- **Fix (`P3CD2CoderFix1`, 3m6s)**: adjudicated MINOR applied exactly — safeClone secret-key regex guard moved to function ENTRY before array/primitive returns; filePath denylist + deep-clone isolation untouched; regression added (apiKey/token/password primitives at nested depth dropped, non-secret siblings survive).
+- **Main verification**: npm test **496/496** (+1), focused **18/18**, tsc exit 0; source confirmed at :300-315; scope confined to readCatalog.js + test file.
+- **Next Step**: `P3CD2Reviewer2` delta review -> Tester QA re-confirm.
+
+## P3C.D2 — Review 2
+- **Review (`P3CD2Reviewer2`, 3m7s)**: **approved**, zero findings — delta verified in real source: entry-position guard drops all secret-named primitives at any depth incl. arrays; denylist/deep-clone/stableClone untouched; regression discriminating (fails on pre-fix ordering). Over-redaction on substrings ('tokens'/'secretariat'/'passport') adjudicated fail-safe and acceptable — no canonical read-projection field matches per settings.ts; dropping beats leaking. Scope intact.
+- **Next Step**: `P3CD2Tester1` QA confirmation -> close D2 + gate O1 -> backup push #16.
+
+## P3C.D2 — CLOSED
+- **Confirmation (`P3CD2Tester1`, 6m)**: PASS — npm test **496/496** fail 0; focused **18/18**; tsc exit 0. Gate **P3C.O1 GREEN** (network/auth half from D1 + tool-schema half from D2).
+- **Cycle summary**: coder attempt (36-tool read catalog over D1 seam) -> Reviewer1 approved w/ 1 MINOR (safeClone leaf-secret bypass) + 2 adjudications (empty projections = documented interim until P3E; transcript vs document export format families distinct, alignment at P3E.D3) -> fix round (entry-position secret guard + discriminating regression) -> Reviewer2 delta approved zero-findings -> Tester PASS. Suite 491 -> 496 (+5).
+- **Closure transaction**: STEPS `[x] P3C.D2` + `[x] P3C.O1`; backup push #16.
+- **Next Step**: `P3CD3Coder1` Mutation/processing tools w/ permissions/confirmation/revision guards (MCP-03; gates O2/J1 close with it).

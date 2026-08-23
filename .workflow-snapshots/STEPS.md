@@ -120,13 +120,13 @@
 
 **Do:**
 - [x] [P3C.D1] Server/auth/audit: loopback MCP runtime
-- [ ] [P3C.D2] Read tool catalog: project/transcript/document/help reads
+- [x] [P3C.D2] Read tool catalog: project/transcript/document/help reads
 - [ ] [P3C.D3] Mutation/processing tools: permissions/confirmation/revision
 - [ ] [P3C.D4] Agent clients: Codex/Grok/Qwen stream/cancel
 - [ ] [P3C.D5] Assistant UI/integrations: sidebar/dictation/send selection
 
 ### Objective gates
-- [ ] [P3C.O1] Network/auth and tool schema tests pass
+- [x] [P3C.O1] Network/auth and tool schema tests pass
 - [ ] [P3C.O2] Stale/deny tests confirm mutations require confirmation and revision guards
 
 ### Judgment gates

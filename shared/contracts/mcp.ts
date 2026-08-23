@@ -133,6 +133,70 @@ export interface McpResponseEnvelope<T = unknown> {
   readonly error?: McpErrorShape;
 }
 
+/** Risk scopes exposed by MCP tools. D2 registers only the read scope. */
+export const MCP_TOOL_RISK_LEVELS = [
+  'read',
+  'mutation',
+  'processing',
+  'files',
+  'network',
+  'destructive',
+] as const;
+export type McpToolRiskLevel = (typeof MCP_TOOL_RISK_LEVELS)[number];
+export const MCP_READ_TOOL_SCOPE = 'read' as const;
+export type McpReadToolScope = typeof MCP_READ_TOOL_SCOPE;
+
+/** Dependency-free JSON Schema projection carried in tools/list. */
+export interface McpJsonSchema {
+  readonly type?: string | readonly string[];
+  readonly title?: string;
+  readonly description?: string;
+  readonly const?: unknown;
+  readonly enum?: readonly unknown[];
+  readonly required?: readonly string[];
+  readonly properties?: Readonly<Record<string, McpJsonSchema>>;
+  readonly additionalProperties?: boolean | McpJsonSchema;
+  readonly items?: McpJsonSchema;
+  readonly minimum?: number;
+  readonly maximum?: number;
+  readonly minLength?: number;
+  readonly [key: string]: unknown;
+}
+
+/** Stable metadata and schemas for one MCP tool. */
+export interface McpToolDefinition {
+  readonly name: string;
+  readonly description: string;
+  readonly inputSchema: McpJsonSchema;
+  readonly resultSchema: McpJsonSchema;
+  readonly outputSchema?: McpJsonSchema;
+  readonly risk: McpToolRiskLevel;
+  readonly riskLevel?: McpToolRiskLevel;
+  readonly scope: McpToolRiskLevel;
+  readonly capabilityRequirements: readonly string[];
+  readonly requiredCapabilities?: readonly string[];
+  readonly capabilities?: readonly string[];
+  readonly confirmationText?: string | null;
+  readonly annotations?: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Deterministic payload returned by a read handler. The transport envelope
+ * repeats projectId/projectRevision for correlation; keeping them here makes a
+ * tool result self-describing when it is forwarded or cached independently.
+ */
+export interface McpReadResultEnvelope<T = unknown> {
+  readonly schemaVersion: McpSchemaVersion;
+  readonly tool: string;
+  readonly scope: typeof MCP_READ_TOOL_SCOPE;
+  readonly risk: typeof MCP_READ_TOOL_SCOPE;
+  readonly projectId: string | null;
+  readonly projectRevision: number | string | null;
+  readonly data: T;
+}
+
+export type McpToolResultEnvelope<T = unknown> = McpReadResultEnvelope<T>;
+
 export type McpValidationResult<T> =
   | { ok: true; value: T }
   | { ok: false; error: AppError };
