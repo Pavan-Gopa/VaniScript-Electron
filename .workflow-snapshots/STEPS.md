@@ -122,7 +122,7 @@
 - [x] [P3C.D1] Server/auth/audit: loopback MCP runtime
 - [x] [P3C.D2] Read tool catalog: project/transcript/document/help reads
 - [x] [P3C.D3] Mutation/processing tools: permissions/confirmation/revision
-- [ ] [P3C.D4] Agent clients: Codex/Grok/Qwen stream/cancel
+- [x] [P3C.D4] Agent clients: Codex/Grok/Qwen stream/cancel
 - [ ] [P3C.D5] Assistant UI/integrations: sidebar/dictation/send selection
 
 ### Objective gates

@@ -5,11 +5,11 @@ onboarding:
   model_pairs_confirmed: true
   completed_at: 2026-08-21T00:00:00Z
 current_step: P3C
-current_work_item_id: P3C.D4
+current_work_item_id: P3C.D5
 current_work_item: >-
-  Agent clients: Codex/Grok/Qwen stream/cancel. IN PROGRESS under the
-  standing continuous-pipeline order (card P3C; D1-D3 CLOSED, O1/O2/J1
-  checked).
+  Assistant UI/integrations: sidebar/dictation/send selection. IN PROGRESS
+  under the standing continuous-pipeline order (card P3C final item;
+  D1-D4 CLOSED, O1/O2/J1 checked; J2 closes with D5).
 step_description: >-
   Card P3B COMPLETE (D1-D6, gates O1/O2/J1/J2; suite 424 -> 478). Continuous
   pipeline per Human standing order — entering card P3C MCP/Agents at D1.
@@ -25,21 +25,22 @@ implementation:
   status: in_progress
   attempts: 0
   note: >-
-    Fresh cycle for P3C.D4 (MCP-04): embedded agent clients Codex/Grok/Qwen
-    with stream/cancel; acceptance = mock protocol tests per §20. Consumes
-    MCP-01 + PRV-01.
+    Fresh cycle for P3C.D5 (MCP-05): assistant sidebar/integrations —
+    profiles/model selector/streaming/cancel UI, running-tool indicator,
+    copy/retry, send-to-assistant wiring, dictation via local ASR, bounded
+    conversation state; acceptance = E2E/tool confirmation. Consumes MCP-02+04.
 retry_guard:
   max_attempts_without_progress: 3
   last_failure_signature: "Reviewer attempt-3 residuals: collectPages deep-chain RangeError, literal trailing-escape TypeError, ZIP offset/compSize trust, unclosed XML canImport, nested textbox part routing, sourceHash-per-part"
   repeated_failure_count: 0
   blocker: null # cleared 2026-08-21 ~14:41Z — Human authorized one more same-model Tester attempt
 omp:
-  last_result_artifact: history://P3CD3Tester1
-  active_agent: P3CD4Coder1 (workflow-coder)
-  active_role: coder
+  last_result_artifact: history://P3CD4Reviewer2
+  active_agent: P3CD4Tester1 (workflow-tester)
+  active_role: tester
   status: dispatched
-  role: coder
-  primary_agent: workflow-coder
+  role: tester
+  primary_agent: workflow-tester
   evidence: null # history://P3AD1Tester2 expired (process-local); failure recorded in FEEDBACK.md
   backup_agent: null
   human_instruction: >-
@@ -75,15 +76,15 @@ review:
     queued after its coder attempt. Binding adjudications retained.
 qa:
   status: passed
-  suite: mcpMutationCatalog + mcp suites + full Electron suite
+  suite: agentClients + full Electron suite
   bugs_open: 0
-  note: D3 confirmation PASS 508/508 retained; O2/J1 checked. D4 QA queued after review.
+  note: D4 confirmation PASS 518/518 retained. D5 QA queued after review.
 next_actor: coder
-omp_status_note: running_p3c_d4_coder_dispatched
+omp_status_note: running_p3c_d5_coder_dispatched
 checkpoint:
   last_pre_tag: null
   last_post_tag: null
-  last_commit: 2f48c00
+  last_commit: dc8339f
   note: >-
     Pushes: #9 797fa62 (D1), #10 d98952f (D2), #11 19d479b (D3), synced.
     Continuous pipeline — P3B.D4 coder dispatched.
