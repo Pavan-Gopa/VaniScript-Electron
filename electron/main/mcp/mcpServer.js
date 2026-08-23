@@ -12,6 +12,7 @@ const http = require('node:http');
 const crypto = require('node:crypto');
 const { URL } = require('node:url');
 const defaultVault = require('../storage/vault.js');
+const { createMutationCatalog } = require('./mcpTools/mutationCatalog.js');
 const { createReadCatalog } = require('./mcpTools/readCatalog.js');
 
 const DEFAULT_HOST = '127.0.0.1';
@@ -42,6 +43,13 @@ const MCP_ERROR_CODES = Object.freeze({
   REQUEST_TIMEOUT: 'MCP_REQUEST_TIMEOUT',
   CONCURRENCY_LIMIT: 'MCP_CONCURRENCY_LIMIT',
   METHOD_NOT_FOUND: 'MCP_METHOD_NOT_FOUND',
+  PERMISSION_DENIED: 'MCP_PERMISSION_DENIED',
+  CONFIRMATION_REQUIRED: 'MCP_CONFIRMATION_REQUIRED',
+  CONFIRMATION_INVALID: 'MCP_CONFIRMATION_INVALID',
+  STALE_REVISION: 'MCP_STALE_REVISION',
+  NOT_FOUND: 'MCP_NOT_FOUND',
+  CONFLICT: 'MCP_CONFLICT',
+  CAPABILITY_UNAVAILABLE: 'MCP_CAPABILITY_UNAVAILABLE',
   INTERNAL: 'MCP_INTERNAL',
 });
 
@@ -59,6 +67,13 @@ const APP_ERROR_CODES = Object.freeze({
   [MCP_ERROR_CODES.REQUEST_TIMEOUT]: 'CANCELLED',
   [MCP_ERROR_CODES.CONCURRENCY_LIMIT]: 'CONFLICT',
   [MCP_ERROR_CODES.METHOD_NOT_FOUND]: 'CAPABILITY_UNAVAILABLE',
+  [MCP_ERROR_CODES.PERMISSION_DENIED]: 'PERMISSION_DENIED',
+  [MCP_ERROR_CODES.CONFIRMATION_REQUIRED]: 'VALIDATION_FAILED',
+  [MCP_ERROR_CODES.CONFIRMATION_INVALID]: 'VALIDATION_FAILED',
+  [MCP_ERROR_CODES.STALE_REVISION]: 'CONFLICT',
+  [MCP_ERROR_CODES.NOT_FOUND]: 'NOT_FOUND',
+  [MCP_ERROR_CODES.CONFLICT]: 'CONFLICT',
+  [MCP_ERROR_CODES.CAPABILITY_UNAVAILABLE]: 'CAPABILITY_UNAVAILABLE',
   [MCP_ERROR_CODES.INTERNAL]: 'INTERNAL',
 });
 
@@ -76,6 +91,13 @@ const HTTP_STATUS = Object.freeze({
   [MCP_ERROR_CODES.REQUEST_TIMEOUT]: 408,
   [MCP_ERROR_CODES.CONCURRENCY_LIMIT]: 429,
   [MCP_ERROR_CODES.METHOD_NOT_FOUND]: 404,
+  [MCP_ERROR_CODES.PERMISSION_DENIED]: 403,
+  [MCP_ERROR_CODES.CONFIRMATION_REQUIRED]: 428,
+  [MCP_ERROR_CODES.CONFIRMATION_INVALID]: 428,
+  [MCP_ERROR_CODES.STALE_REVISION]: 409,
+  [MCP_ERROR_CODES.NOT_FOUND]: 404,
+  [MCP_ERROR_CODES.CONFLICT]: 409,
+  [MCP_ERROR_CODES.CAPABILITY_UNAVAILABLE]: 503,
   [MCP_ERROR_CODES.INTERNAL]: 500,
 });
 
@@ -343,6 +365,7 @@ class McpServer {
     this.handlers = {};
     this.toolDefinitions = [];
     this.readCatalog = null;
+    this.mutationCatalog = null;
     const requestedCatalog = options.readCatalog ?? options.toolCatalog;
     if (options.registerReadTools !== false && requestedCatalog !== false) {
       const catalog = requestedCatalog && typeof requestedCatalog === 'object' && (
@@ -356,8 +379,31 @@ class McpServer {
         );
       this.registerToolCatalog(catalog);
     }
+    const requestedMutationCatalog = options.mutationCatalog;
+    if (options.registerMutationTools === true || options.mutationCatalogOptions || requestedMutationCatalog !== undefined) {
+      if (requestedMutationCatalog !== false) {
+        const catalog = requestedMutationCatalog && typeof requestedMutationCatalog === 'object' && (
+          requestedMutationCatalog.handlers || requestedMutationCatalog.tools || requestedMutationCatalog.definitions
+        )
+          ? requestedMutationCatalog
+          : createMutationCatalog(
+            requestedMutationCatalog && typeof requestedMutationCatalog === 'object'
+              ? requestedMutationCatalog
+              : options.mutationCatalogOptions || options,
+          );
+        this.registerMutationToolCatalog(catalog);
+      }
+    }
     if (options.handlers && typeof options.handlers === 'object') {
-      Object.assign(this.handlers, options.handlers);
+      const protectedMutationHandlers = this.mutationCatalog
+        && this.mutationCatalog.handlers
+        && typeof this.mutationCatalog.handlers === 'object'
+        ? this.mutationCatalog.handlers
+        : {};
+      for (const [name, handler] of Object.entries(options.handlers)) {
+        if (Object.prototype.hasOwnProperty.call(protectedMutationHandlers, name)) continue;
+        this.handlers[name] = handler;
+      }
     }
     this.requestHandler = typeof options.requestHandler === 'function'
       ? options.requestHandler
@@ -596,6 +642,20 @@ class McpServer {
     return this._status();
   }
 
+  /**
+   * Approve a pending mutation challenge from Main-process UI code. This
+   * method is intentionally not part of the loopback MCP transport.
+   */
+  confirmChallenge(challengeId) {
+    if (typeof challengeId !== 'string' || challengeId.length === 0) {
+      throw mcpError(MCP_ERROR_CODES.INVALID_REQUEST, 'challengeId must be a non-empty string.');
+    }
+    if (!this.mutationCatalog || typeof this.mutationCatalog.approveChallenge !== 'function') {
+      throw mcpError(MCP_ERROR_CODES.CAPABILITY_UNAVAILABLE, 'MCP mutation confirmation is unavailable.');
+    }
+    return this.mutationCatalog.approveChallenge(challengeId);
+  }
+
   status() {
     return this.getStatus();
   }
@@ -618,15 +678,30 @@ class McpServer {
     return this.getAuditLog(query);
   }
 
-  _recordAudit(ctx, outcome) {
+  _recordAudit(ctx, outcome, error = ctx.auditError) {
     if (ctx.auditRecorded) return;
     ctx.auditRecorded = true;
+    const rawCode = error?.code || error?.mcpCode || null;
+    const mcpCode = rawCode && Object.values(MCP_ERROR_CODES).includes(rawCode)
+      ? rawCode
+      : rawCode ? MCP_ERROR_CODES.INTERNAL : null;
+    const rawReason = error?.details && typeof error.details.reason === 'string'
+      ? error.details.reason
+      : null;
+    const reason = mcpCode === MCP_ERROR_CODES.CONFIRMATION_REQUIRED
+      ? 'required'
+      : mcpCode === MCP_ERROR_CODES.CONFIRMATION_INVALID
+        && ['unknown_or_expired', 'challenge_mismatch', 'not_approved'].includes(rawReason)
+        ? rawReason
+        : null;
     const record = {
       timestamp: new Date().toISOString(),
       peer: ctx.peer,
       route: ctx.route,
       tool: ctx.tool,
       outcome,
+      mcpCode,
+      reason,
       tokenIdHash: ctx.tokenRecord ? sha256(ctx.tokenRecord.tokenId) : null,
       requestIdHash: ctx.requestId ? sha256(ctx.requestId) : null,
     };
@@ -669,6 +744,13 @@ class McpServer {
 
   _sendError(ctx, error, id) {
     if (ctx.responseSent || ctx.res.writableEnded) return;
+    const currentRevision = error && error.details && (
+      error.details.currentProjectRevision ?? error.details.currentRevision
+    );
+    if (currentRevision !== undefined && currentRevision !== null) {
+      ctx.projectRevision = safeProjectRevision(currentRevision);
+    }
+    ctx.auditError = error;
     ctx.outcome = error.status === 401 || error.status === 403 ? 'denied' : (
       error.code === MCP_ERROR_CODES.REQUEST_TIMEOUT ? 'timeout' : 'rejected'
     );
@@ -681,6 +763,19 @@ class McpServer {
     ctx.outcome = 'success';
     ctx.responseSent = true;
     this._send(ctx.res, status, this._envelope(ctx, id, result));
+  }
+
+  /**
+   * Register a mutation/processing catalogue additively over the read seam.
+   * Mutation registration is opt-in so legacy read-only clients keep the
+   * exact D2 tools/list projection until Main enables the new scopes.
+   */
+  registerMutationToolCatalog(catalog) {
+    const readCatalog = this.readCatalog;
+    this.registerToolCatalog(catalog);
+    this.readCatalog = readCatalog;
+    this.mutationCatalog = catalog;
+    return this;
   }
 
   /**
@@ -771,13 +866,26 @@ class McpServer {
         ? params.arguments
         : {};
       if (ctx.projectId === null) ctx.projectId = safeProjectId(args.projectId);
-      if (ctx.projectRevision === null) ctx.projectRevision = safeProjectRevision(args.projectRevision);
+      if (ctx.projectRevision === null) {
+        ctx.projectRevision = safeProjectRevision(
+          args.projectRevision ?? args.expectedProjectRevision ?? args.expectedRevision,
+        );
+      }
       ctx.tool = toolName;
       const toolHandler = this.handlers[toolName];
       if (typeof toolHandler !== 'function') {
         throw mcpError(MCP_ERROR_CODES.METHOD_NOT_FOUND, `MCP tool "${toolName}" is not available.`);
       }
-      return { id, result: await toolHandler(args, handlerContext()) };
+      const result = await toolHandler(args, handlerContext());
+      if (
+        result
+        && typeof result === 'object'
+        && result.projectRevision !== undefined
+        && result.projectRevision !== null
+      ) {
+        ctx.projectRevision = safeProjectRevision(result.projectRevision);
+      }
+      return { id, result };
     }
 
     let handler = this.handlers[method];
@@ -818,7 +926,7 @@ class McpServer {
     }
     if (!isLoopbackOrigin(req.headers.origin)) {
       const error = mcpError(MCP_ERROR_CODES.UNAUTHORIZED, 'MCP requests must originate from loopback.');
-      this._recordAudit(ctx, 'denied');
+      this._recordAudit(ctx, 'denied', error);
       this._send(res, error.status, this._envelope(ctx, null, undefined, error));
       return;
     }
@@ -827,13 +935,13 @@ class McpServer {
         this.state === 'draining' ? MCP_ERROR_CODES.SERVER_DRAINING : MCP_ERROR_CODES.SERVER_NOT_RUNNING,
         'MCP server is not accepting requests.',
       );
-      this._recordAudit(ctx, 'rejected');
+      this._recordAudit(ctx, 'rejected', error);
       this._send(res, error.status, this._envelope(ctx, null, undefined, error));
       return;
     }
     if (this.activeRequests >= this.maxConcurrency) {
       const error = mcpError(MCP_ERROR_CODES.CONCURRENCY_LIMIT, 'MCP concurrency limit reached.');
-      this._recordAudit(ctx, 'rejected');
+      this._recordAudit(ctx, 'rejected', error);
       req.resume();
       this._send(res, error.status, this._envelope(ctx, null, undefined, error));
       return;

@@ -223,6 +223,54 @@ export function registerIpcRouter(
   );
 }
 
+/** Main-only channel used by a trusted renderer confirmation affordance. */
+export const MCP_CONFIRM_CHALLENGE_CHANNEL = 'mcp:confirmChallenge' as const;
+
+export interface McpChallengeConfirmer {
+  confirmChallenge: (challengeId: string) => boolean | Promise<boolean>;
+}
+
+export type McpChallengeConfirmationTarget =
+  | McpChallengeConfirmer
+  | ((challengeId: string) => boolean | Promise<boolean>);
+
+/**
+ * Register the human confirmation seam separately from the bearer-authenticated
+ * MCP transport. The payload contains only the opaque challenge id; callers
+ * must supply the renderer sender validator used by the app's IPC wiring.
+ */
+export function registerMcpConfirmationChannel(
+  ipcMain: IpcMain,
+  target: McpChallengeConfirmationTarget,
+  options: Pick<DispatchOptions, 'validateSender'> = {},
+): void {
+  ipcMain.handle(MCP_CONFIRM_CHALLENGE_CHANNEL, async (event, raw) => {
+    if (options.validateSender && !options.validateSender(event)) {
+      throw createAppError('PERMISSION_DENIED', 'Sender frame is not authorized to confirm MCP challenges.');
+    }
+    const challengeId = typeof raw === 'string'
+      ? raw
+      : isPlainObject(raw) && typeof raw.challengeId === 'string'
+        ? raw.challengeId
+        : '';
+    if (challengeId.length === 0) {
+      throw createAppError('VALIDATION_FAILED', 'challengeId must be a non-empty string.');
+    }
+    const approve = typeof target === 'function'
+      ? target
+      : target && typeof target.confirmChallenge === 'function'
+        ? (id: string) => target.confirmChallenge(id)
+        : null;
+    if (typeof approve !== 'function') {
+      throw createAppError('CAPABILITY_UNAVAILABLE', 'MCP mutation confirmation is unavailable.');
+    }
+    return {
+      challengeId,
+      approved: Boolean(await approve(challengeId)),
+    };
+  });
+}
+
 // ─── App settings read/update handlers (SET-04) ────────────────────────────
 // Renderer-facing handlers backed by the main-process settings store. A
 // factory accepts an injected store so tests can use an in-memory adapter
