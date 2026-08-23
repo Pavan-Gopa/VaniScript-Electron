@@ -22,6 +22,7 @@ export const ERROR_CODES = [
   'OUTPUT_COLLISION',
   'UPDATE_BLOCKED',
   'CORRUPT_DATA',
+  'TAMPERED',
   'INTERNAL',
 ] as const;
 

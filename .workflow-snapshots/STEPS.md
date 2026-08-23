@@ -141,11 +141,11 @@
 
 **Do:**
 - [x] [P3D.D1] Update state/readiness: blockers/receipts/quit prep
-- [ ] [P3D.D2] Platform updater adapters: mac/win/linux behavior
+- [x] [P3D.D2] Platform updater adapters: mac/win/linux behavior
 - [ ] [P3D.D3] Updates Settings/UI: check/download/install UX
 
 ### Objective gates
-- [ ] [P3D.O1] State/failure and fake feed/tamper tests pass
+- [x] [P3D.O1] State/failure and fake feed/tamper tests pass
 - [ ] [P3D.O2] Check/download/install component/E2E passes
 
 ### Judgment gates

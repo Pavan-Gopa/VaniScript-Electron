@@ -5,10 +5,11 @@ onboarding:
   model_pairs_confirmed: true
   completed_at: 2026-08-21T00:00:00Z
 current_step: P3D
-current_work_item_id: P3D.D2
+current_work_item_id: P3D.D3
 current_work_item: >-
-  Platform updater adapters: mac/win/linux behavior. IN PROGRESS under
-  the standing continuous-pipeline order (card P3D; D1 CLOSED).
+  Updates Settings/UI: check/download/install UX. IN PROGRESS under the
+  standing continuous-pipeline order (card P3D final item; D1+D2 CLOSED,
+  O1 checked; O2 closes with D3).
 step_description: >-
   Card P3C COMPLETE (D1-D5, gates O1/O2/J1/J2; suite 478 -> 529). Continuous
   pipeline per Human standing order — entering card P3D Updates at D1.
@@ -25,17 +26,18 @@ implementation:
   status: in_progress
   attempts: 0
   note: >-
-    Fresh cycle for P3D.D2 (UPD-02): platform updater adapters mac/win/linux
-    over the D1 FSM seams; acceptance = fake feed/tamper tests per §20.
-    Consumes UPD-01 + SEC-01.
+    Fresh cycle for P3D.D3 (UPD-03): Updates Settings/UI — check/download/
+    install UX over D1 FSM + D2 adapter capabilities; acceptance =
+    component/E2E per §20. Consumes UPD-01. Auto-install remains forbidden;
+    blockers list surfaces per §12.3.
 retry_guard:
   max_attempts_without_progress: 3
   last_failure_signature: "Reviewer attempt-3 residuals: collectPages deep-chain RangeError, literal trailing-escape TypeError, ZIP offset/compSize trust, unclosed XML canImport, nested textbox part routing, sourceHash-per-part"
   repeated_failure_count: 0
   blocker: null # cleared 2026-08-21 ~14:41Z — Human authorized one more same-model Tester attempt
 omp:
-  last_result_artifact: history://P3DD1Tester2
-  active_agent: P3DD2Coder1 (workflow-coder)
+  last_result_artifact: history://P3DD2Tester1
+  active_agent: P3DD3Coder1 (workflow-coder)
   active_role: coder
   status: dispatched
   role: coder
@@ -75,15 +77,15 @@ review:
     queued after its coder attempt. Binding adjudications retained.
 qa:
   status: passed
-  suite: updateService + full Electron suite
+  suite: updatePlatformAdapters + updateService + full Electron suite
   bugs_open: 0
-  note: D1 re-confirm PASS 557/557 retained. D2 QA queued after review.
+  note: D2 confirmation PASS 580/580 retained; O1 checked. D3 QA queued after review.
 next_actor: coder
-omp_status_note: running_p3d_d2_coder_dispatched
+omp_status_note: running_p3d_d3_coder_dispatched
 checkpoint:
   last_pre_tag: null
   last_post_tag: null
-  last_commit: aa1d2cf
+  last_commit: dd30fb7
   note: >-
     Pushes: #9 797fa62 (D1), #10 d98952f (D2), #11 19d479b (D3), synced.
     Continuous pipeline — P3B.D4 coder dispatched.

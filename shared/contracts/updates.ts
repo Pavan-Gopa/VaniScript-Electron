@@ -63,6 +63,22 @@ export type UpdateUserAction = (typeof UPDATE_USER_ACTIONS)[number];
 
 export const UPDATE_CHANNELS = ['stable', 'beta'] as const;
 export type UpdateChannel = (typeof UPDATE_CHANNELS)[number];
+/**
+ * Artifact formats understood by the platform adapters. The descriptor keeps
+ * this metadata explicit so platform policy is enforced before download.
+ */
+export const UPDATE_ARTIFACT_TYPES = [
+  'zip',
+  'zip+json',
+  'squirrel',
+  'nsis',
+  'nsis-web',
+  'appimage',
+  'deb',
+  'rpm',
+  'dmg',
+] as const;
+export type UpdateArtifactType = (typeof UPDATE_ARTIFACT_TYPES)[number];
 
 export const UPDATE_RECEIPT_OUTCOMES = ['success', 'failed'] as const;
 export type UpdateReceiptOutcome = (typeof UPDATE_RECEIPT_OUTCOMES)[number];
@@ -141,6 +157,8 @@ export interface UpdateDescriptor {
   platform: string;
   arch: string;
   channel: UpdateChannel;
+  /** Platform package format used to select the safe install policy. */
+  artifactType: string | null;
   /** Optional artifact digest reserved for UPD-02 signature/hash verification. */
   artifactHash: string | null;
   /** Optional feed signature reserved for UPD-02 tamper rejection. */
@@ -318,6 +336,9 @@ export function createUpdateDescriptor(
     platform: typeof input.platform === 'string' && input.platform.length > 0 ? input.platform : 'darwin',
     arch: typeof input.arch === 'string' && input.arch.length > 0 ? input.arch : 'arm64',
     channel,
+    artifactType: typeof input.artifactType === 'string' && input.artifactType.length > 0
+      ? input.artifactType
+      : null,
     artifactHash: typeof input.artifactHash === 'string' && input.artifactHash.length > 0
       ? input.artifactHash
       : null,
@@ -364,6 +385,12 @@ export function validateUpdateDescriptor(value: unknown): UpdateValidationResult
   }
   const platform = stringValue(value.platform) || 'darwin';
   const arch = stringValue(value.arch) || 'arm64';
+  const artifactType = value.artifactType === null || value.artifactType === undefined
+    ? null
+    : stringValue(value.artifactType);
+  if (value.artifactType !== null && value.artifactType !== undefined && !artifactType) {
+    return fail('VALIDATION_FAILED', 'descriptor.artifactType must be a non-empty string or null.');
+  }
   const artifactHash = value.artifactHash === null || value.artifactHash === undefined
     ? null
     : stringValue(value.artifactHash);
@@ -386,6 +413,7 @@ export function validateUpdateDescriptor(value: unknown): UpdateValidationResult
       notes: typeof value.notes === 'string' ? value.notes : '',
       critical: Boolean(value.critical),
       informational: Boolean(value.informational),
+      artifactType: artifactType ?? null,
       publishDate: publishDate ?? null,
       sizeBytes,
       infoUrl: infoUrl ?? null,
