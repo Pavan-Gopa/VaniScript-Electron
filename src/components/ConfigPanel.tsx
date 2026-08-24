@@ -11,7 +11,9 @@ interface ConfigPanelProps {
   onCancel: () => void;
 }
 
-const LANGS = [
+// Existing Config target-language catalog, shared with the Review screen's
+// Add Translation control so both surfaces offer the same targets.
+export const TARGET_LANGUAGE_OPTIONS = [
   { value: 'same', label: 'Keep original (Same)' },
   { value: 'Russian', label: 'Russian' },
   { value: 'English', label: 'English' },
@@ -205,7 +207,7 @@ export function ConfigPanel({ fileName, settings, onStart, onCancel }: ConfigPan
             <div className="field">
               <label>Target Language</label>
               <select data-tour="target-lang-select" value={cfg.targetLang} onChange={e => upd({ targetLang: e.target.value })}>
-                {LANGS.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}
+                {TARGET_LANGUAGE_OPTIONS.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}
               </select>
             </div>
           </div>

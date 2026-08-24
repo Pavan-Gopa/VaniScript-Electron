@@ -22,9 +22,6 @@ function registerAppLifecycle({
   windowManager,
 }) {
   app.setName(APP_NAME);
-  // Enforce browser hardening (strict CSP, blocked popups, blocked
-  // unauthorized navigations) as early as possible in the lifecycle.
-  registerSecurityHandlers({ app, session });
   if (process.platform === 'darwin') {
     app.setAboutPanelOptions({
       applicationName: APP_NAME,
@@ -40,6 +37,11 @@ function registerAppLifecycle({
   }
 
   app.whenReady().then(() => {
+    // Enforce browser hardening (strict CSP, blocked popups, blocked
+    // unauthorized navigations) as early as legally possible: touching
+    // session.defaultSession throws before readiness, so this must run here —
+    // still ahead of every display-capture/menu/tray/window setup below.
+    registerSecurityHandlers({ app, session });
     getTempDir();
     windowManager.configureDisplayMediaCapture();
     windowManager.installAppMenu();

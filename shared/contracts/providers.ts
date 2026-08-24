@@ -8,9 +8,13 @@
 // Main performs the actual HTTP calls and injects API keys from the vault, so
 // the Renderer never sees a secret. Errors cross the bridge as a structured
 // AppError-shaped envelope (see `shared/contracts/errors.ts`).
+//
+// Typed façade: the runtime value below is declared once in
+// `providers-runtime.js` / `providers-runtime.d.ts` (plain CommonJS, loadable
+// by the Electron main process without TypeScript support) and re-exported
+// here; only TypeScript types are declared in this file.
 
-/** IPC channel used for provider invocations from the Renderer. */
-export const PROVIDER_INVOKE_COMMAND = 'provider:invoke';
+export { PROVIDER_INVOKE_COMMAND } from './providers-runtime.js';
 
 /** Capability a provider invocation is meant to satisfy. */
 export type ProviderPurpose =

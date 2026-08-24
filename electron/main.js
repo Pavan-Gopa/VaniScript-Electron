@@ -26,6 +26,7 @@ const windowManager = require('./main/windows/window-manager');
 const { handleMigrateLegacy } = require('./main/storage/migrationHandler');
 const { invokeProvider } = require('./main/providers/router');
 const { manageModels, MODELS_MANAGE_CHANNEL } = require('./main/models/modelManager.js');
+const { registerAppLifecycle } = require('./main/bootstrap/app-lifecycle');
 
 for (const stream of [process.stdout, process.stderr]) {
   stream?.on?.('error', (error) => {

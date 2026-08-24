@@ -908,3 +908,169 @@
 - **Main final verification**: focused **11/11 PASS**; full suite **602/602 PASS** across 43 files. Product code is unchanged since Main’s compile exit 0 and clean vite build; test-only QA additions do not invalidate those gates.
 - **Closure transaction**: `[x] P3E.D1`. P3E.O1/O2/J1/J2 remain open for the rest of the media lane. Canonical pointer advanced to `P3E.D2`.
 - **Next Step**: mirror closure memory, commit/push nested Electron repo, then discover and dispatch P3E.D2.
+
+### P3E.D2 Architect — Attempt 1
+- **Architect (`P3ED2Architect1`)**: binding clean-cut decision accepted by Main. Canonical runtime/session selection is `activeTranslationLanguage`, matching Apple SessionState and ProjectV3. Legacy `selectedTranslationLanguage` is accepted only during load normalization and stripped; MCP keeps its published selected-named response key sourced from canonical active.
+- **Archive authority**: `chunks[].translationsByLanguage` with exact Apple-compatible TranslationVariant fields. Legacy `translated`, `translatedCues`, and `translatedFormats` remain eagerly synchronized active-language projections for current Review/export consumers. One shared pure normalizer/resolver serves Main importer, renderer coordinator, and read-only MCP.
+- **Stale contract**: one renderer media-review coordinator owns every source/translation mutation and transient generation ledger. Late async results require session, chunk identity, source baseline/generation, language/variant baseline/generation, and operation-lane freshness; stale completions are deep no-ops. No Electron-only persisted source hash/stale flag.
+- **User contract**: Review can select existing variants and add a target from the existing Config language catalog. Add Translation commits progressively; switching language never projects a late result into the current view. Autosave remains unchanged and persists canonical JSON.
+- **Main scope adjustment**: repository tests run only from `test/**/*.test.js`; therefore coordinator/shared migration behavior tests belong under `Electron/test/`, not the Architect-suggested excluded `src/**/*.test.ts` path. Existing excluded source-regex review test is not deleted in this attempt.
+- **Next Step**: `P3ED2Coder1`, `ponytail_mode: full`.
+
+## P3E.D2 — Coder Attempt 1
+- **Coder (`P3ED2Coder1`, `ponytail_mode: full`)**: completed the Architect-approved 13-file canonical archive/coordinator/App/import/MCP implementation. Assigned focused gate **44/44 PASS** across media-review, project-session, MCP-read, and existing media-processing tests. Scope conforms.
+- **Main verification failure**: `npm run compile` exit 2. Exact root issues: `App.tsx:901/902/925` uses missing `keyRepeatRef`; `types.ts` replaced instead of retained `SessionState.targetLang`, breaking ChunkReview/WorkspaceView callers; `media-review-coordinator.ts:167/168/182/183` passes optional active language through a declaration that returns boolean rather than a TypeScript type predicate.
+- **Adjudication**: behavior tests remain valid, but implementation is not reviewable until compile is clean. No symptom suppression and no caller widening: restore the missing existing ref, restore required `targetLang`, and make the truthful shared language guard declaration narrow to string (or equivalently narrow once locally). Three-file fix only.
+- **Next Step**: fresh `P3ED2Coder2`, `ponytail_mode: lite`; focused 44/44 plus compile required.
+
+## P3E.D2 — Coder Attempt 2 / Main Gates
+- **Coder (`P3ED2Coder2`, `ponytail_mode: lite`)**: restored `keyRepeatRef`, required `SessionState.targetLang`, and a truthful `isRealTranslationLanguage(...): language is string` declaration. Main confirmed exact four-line root diff.
+- **Main gates**: compile exit 0; focused D2 **44/44 PASS**; full suite **630/630 PASS** across 45 files.
+- **Build failure**: `npm run vite-build` fails before bundling: `normalizeMediaSessionTranslations` is not exported by `shared/media-translations.js`. The module is intentionally CommonJS for synchronous Electron Main `require`; Vite did not run its local `.js` file through CommonJS transform. Tests/tsc use the `.d.ts` and Node CJS successfully, so they did not expose the bundler seam.
+- **Adjudication**: preserve one shared implementation and synchronous Main loading. Do not duplicate an ESM renderer implementation. Add the exact local shared module to Vite’s CommonJS transform include while retaining node_modules coverage.
+- **Next Step**: fresh `P3ED2Coder3`, config-only `ponytail_mode: lite`; build, compile, focused required.
+
+## P3E.D2 — Coder Attempt 3 / Main Verification
+- **Coder (`P3ED2Coder3`, config-only `ponytail_mode: lite`)**: added a separator-safe Vite CommonJS include for exactly `shared/media-translations.js` while retaining node_modules coverage. No implementation duplication or import/module rewrite.
+- **Main verification**: scoped config is correct; Vite build clean (1915 modules, 1.21s; existing chunk warning only); compile exit 0; focused D2 **44/44 PASS**. Full suite from the immediately preceding code state is **630/630 PASS**; attempt 3 changed only build configuration and cannot alter test runtime behavior.
+- **Objective Gate runner**: P3E.O1/O2 remain manual with no embedded commands. D1+D2 provide extraction/review parity evidence toward O1; card gates remain open for D3-D5.
+- **Integrated review scope**: 14 files total (13 Architect-approved implementation/test files plus scoped `vite.config.ts`). Required judgment: canonical single ownership, migration data preservation, stale-result no-op matrix, App/TextPanel effect boundaries, Add Translation behavior, MCP language correctness/immutability, exact current-media parity, and no D3-D5 leakage.
+- **Next Step**: `P3ED2Reviewer1` full review.
+
+## P3E.D2 — Reviewer Attempt 1
+- **Reviewer (`P3ED2Reviewer1`)**: **CHANGES_REQUIRED**, scope conforms. Coordinator stale matrix, MCP immutability/exact-language reads, canonical field ownership in renderer, and Vite CJS integration pass. P3E.J1 slice fails on three reachable data-correctness holes.
+- **Major 1 — competing importer resolver**: `electron/project-session.js` re-resolves/seeds/projects variants before the shared normalizer. With `targetLang='same'`, real `config.targetLang`, first archive in another language, and leftover translated*, it can activate/project the wrong language and invent a variant. Main verified the duplicate pre-pass and truthy `same` chain. Fix: restore assets/index only, then let the shared normalizer own precedence/seeding/projection; default to `same` only after normalization when no real active exists.
+- **Major 2 — cross-language undo/edit**: TextPanel local undo/edit/selection state survives chunk/language switches. Cmd+Z after Russian→French can write stored Russian text through the French active variant. Main verified no key/reset identity. Fix: remount/reset by source chunk identity and translated chunk+active-language identity.
+- **Major 3 — glossary contamination**: App applies `entry.translation` to every archived variant. A Russian default can replace terms inside French/English variants. Main verified the archive-wide rewrite. Fix: active variant may use active/default replacement; inactive variants require a language-specific `entry.translations[variant.language]`, otherwise remain byte-identical. Keep coordinator commit/generation bump and projection.
+- **Required tests**: sentinel `same` importer precedence/no invented variant; two-language glossary inactive preservation/language-specific replacement; identity-switch undo/edit reset (component/runtime proof or exact remount contract plus Tester UI exercise).
+- **Next Step**: `P3ED2Coder4`, `ponytail_mode: lite`, followed by Main gates and focused re-review.
+
+## P3E.D2 — Coder Attempt 4 / Main Verification
+- **Coder (`P3ED2Coder4`, review-retry `ponytail_mode: lite`)**: fixed all three Reviewer1 majors in exactly five allowed paths.
+- **Importer fix**: deleted competing language resolution/seeding/projection. Assets/index restore first; exactly one shared normalization pass receives unmasked base/config targets; `same` compatibility default applies only after no real language resolves. New sentinel fixture pins Russian-over-first-French precedence and no importer-created replacement.
+- **TextPanel identity fix**: App keys source panel by exact chunk identity and translated panel by chunk identity + canonical active language. Chunk/language switch remounts and clears undo/edit/selection; same identity preserves undo. `TextPanel.tsx` untouched.
+- **Glossary fix**: `MediaReviewCoordinator.applyGlossaryEntry` owns rewrite/generation/projection. Active variant may use generic fallback; inactive variants require explicit case-insensitive language mapping or remain byte-identical. Two-language test pins text/cues/formats/provider/time and projection behavior.
+- **Main gates**: focused D2 **46/46 PASS**; full suite **632/632 PASS** across 45 files; compile exit 0; Vite build clean (1915 modules, 1.28s; existing chunk warning only). Source inspection confirms touched indexes are array positions and each generation bumps once.
+- **Next Step**: `P3ED2Reviewer2` focused re-check, then Tester/UI QA if approved.
+
+## P3E.D2 — Reviewer Attempt 2 / Main Adjudication
+- **Reviewer (`P3ED2Reviewer2`)**: **APPROVED_WITH_RESIDUALS**. All three Reviewer1 majors CLOSED; P3E.J1 slice PASS. Importer has one shared resolver; exact TextPanel keys isolate undo/edit state; glossary rewrites are language-scoped with generation invalidation.
+- **Residual finding**: incomplete untranslated imports with `targetLang='same'` and missing `config.targetLang` leave config target undefined. Reviewer classified minor because well-formed Electron sessions include it.
+- **Main verification/adjudication**: source confirms `handleRetry` and `handleApproveAndNext` spread `session.config`; `shouldTranslateChunk(targetLang: string)` immediately calls `targetLang.trim()`. Thus the incomplete imported fixture has a deterministic Retry/Approve-next TypeError. This is reachable compatibility behavior, not a hypothetical residual, and must be fixed before Tester.
+- **Required fix**: after the single shared normalization pass, when no real active language exists, independently default any missing/non-real session target and config target to `same`; create/select no variant and do not restate precedence. Pin `plain.config.targetLang === 'same'`.
+- **Next Step**: `P3ED2Coder5` one-source/one-test fix, Main verification, focused Reviewer3, then Tester.
+
+## P3E.D2 — Coder Attempt 5 / Main Verification
+- **Coder (`P3ED2Coder5`, `ponytail_mode: lite`)**: fixed the post-normalize compatibility guard in `electron/project-session.js` and extended the untranslated fixture only.
+- **Behavior**: with no real active language, session and config targets are independently sanitized to `same` when missing/non-real; real values are defensively preserved. Other config fields survive. No variant is created/selected and shared precedence/seeding/projection is untouched.
+- **Main verification**: exact guard confirmed; fixture asserts active absent, both targets `same`, no archive invented, and JSON-round-trip normalization deep-idempotent. Focused D2 **46/46 PASS**; compile exit 0.
+- **Next Step**: `P3ED2Reviewer3` final focused check, then Tester runtime/UI QA.
+
+## P3E.D2 — Reviewer Attempt 3
+- **Reviewer (`P3ED2Reviewer3`)**: **APPROVED_WITH_RESIDUALS**, findings 0. Coder5 guard runs after the sole shared normalizer, independently defaults missing/non-real targets only when no active resolved, preserves config fields, creates no active/variant, and leaves all three prior major closures intact.
+- **Crash closure**: untranslated fixture would fail the old two-condition guard; `config.targetLang` now remains safe for Retry/Approve-next. Variant precedence and idempotence pass.
+- **Tester requirements**: actual TextPanel undo/edit remount across chunk/language changes; same-identity undo still works; importer sentinel + untranslated Retry safety; two-language glossary/default/explicit mapping; active-language Add Translation availability including an initially `same` session; progressive archive commits and language-switch stale no-ops; MCP exact-language reads/immutability.
+- **Carry residuals for evidence, not automatic failure**: cross-lane over-invalidation, first-save autosave without adopt, regional-prefix collapse, source originalCues glossary behavior, no search language argument, stale excluded regex test. Do not open D3-D5.
+- **Next Step**: `P3ED2Tester1` final behavior + actual Electron/UI QA.
+
+## P3E.D2 — Tester Runtime Interruption
+- **Tester (`P3ED2Tester1`)**: no QA result. Worker failed before execution with provider/network error `[openai-codex/gpt-5.6-sol] getaddrinfo ENOTFOUND chatgpt.com`.
+- **Classification**: provider DNS failure; no product attempt, no test evidence, no QA verdict, no retry-guard increment.
+- **Human instruction**: «Продолжай». Main interprets this as authorization to retry the primary Tester fresh. It is not explicit authorization for `workflow-tester-backup`; automatic cross-model fallback remains disabled.
+- **Next Step**: fresh primary `P3ED2Tester2` with the same D2 behavior/UI assignment.
+
+## P3E.D2 — Tester Attempt 2 / Human Launch Evidence
+- **Tester (`P3ED2Tester2`)**: **CHANGES_REQUIRED**. Baseline focused matrix **46/46 PASS**. Added one observable MCP binding test; `mcpReadCatalog.test.js` is now **6/7**, failing because handlers read `args.language` but public schemas omit it. Same-target importer no-throw probe passes.
+- **Blocker — actual Electron startup**: Human supplied ground-truth launch screenshot: Main-process `SyntaxError: Unexpected identifier 'as'`; isolated temporary-profile Electron smoke also exits before `firstWindow`, so no UI/screenshot can be claimed. Main source diagnosis: startup provider router/settings store runtime-require `shared/contracts/errors.ts`, `providers.ts`, and `settings.ts`; Electron’s embedded Node cannot parse TS assertions (`errors.ts:27` is the first `as const`). Plain Node 26 tests hide this because their loader strips TypeScript. Root fix must establish a real JavaScript runtime contract boundary; no runtime Main `require(.ts)` on the startup graph.
+- **Major — MCP binding**: `get_chunk` and `search_transcript` handlers accept explicit `language`, but their published input schemas omit it. Hidden handler behavior passes; real clients cannot advertise/validate the selector.
+- **Major — first target unreachable**: App computes `hasTranslation=false` for `same`, then nests the entire Add Translation selector/button under `hasTranslation`. An initially untranslated Review session cannot add its first target, violating the binding D2 user contract.
+- **Deterministic coordinator debts promoted to fixes**: shared cross-lane content generation can invalidate a source operation on translation-only edit (and vice versa); a stale retry can leave already-published `status='processing'`; source glossary rewrites original/formats but not originalCues, leaving karaoke spelling stale. First-save autosave without adopt remains accepted because same-semantic-session assignment intentionally preserves the epoch.
+- **QA environment**: temp profile/fixture removed; Human data untouched; no provider call. `test/mcpReadCatalog.test.js` is Tester-owned failing evidence and must be preserved.
+- **Next Step**: `P3ED2Coder6` fixes startup runtime boundary + four D2 bugs, then Main launch/gates, focused Reviewer, and fresh actual-UI Tester.
+
+## P3E.D2 — Coder Attempt 6 / Packaged Launch Gate
+- **Coder (`P3ED2Coder6`, QA-retry `ponytail_mode: lite`)**: fixed real Electron20 runtime loading through one-runtime-source JS modules + typed façades; MCP language schemas; first-target Add control; invalidated-operation processing settlement; source glossary cues/mapping precedence. Tester-owned MCP failing test preserved and now green.
+- **Main automated gates**: exact Electron 34 / Node 20 router require prints `router ok`; focused **58/58 PASS**; full suite **644/644 PASS** across 46 files; compile exit 0; Vite build clean (1916 modules). `npm run pack` rebuilt and distribution-signed `release/mac-arm64/VaniScript-Electron.app`; notarization skipped by existing config.
+- **Artifact clarification**: earlier dyld crash report came from incomplete local `build/VScript.app` lacking Electron Framework; that artifact is excluded. Complete `release/mac-arm64` package contains the framework and launches Main.
+- **New Human ground-truth blocker**: rebuilt complete package reaches `electron/main.js:3422` then throws `ReferenceError: registerAppLifecycle is not defined`. Main verified `electron/main/bootstrap/app-lifecycle.js` exports the function and main.js invokes it but has no import. This is a missing clean-cut callsite migration, not a lifecycle implementation defect.
+- **Required fix**: import the existing lifecycle function at Main startup; add an active regression that executes the bootstrap binding far enough to fail on an undefined symbol without opening a display. No duplicate lifecycle implementation.
+- **Next Step**: `P3ED2Coder7` one-import fix; Main rebuild/actual package launch; Reviewer + UI Tester.
+
+## P3E.D2 — Coder Attempt 7 / Actual Package Security Gate
+- **Coder (`P3ED2Coder7`)**: added the single missing `registerAppLifecycle` import in `electron/main.js`; one-file/one-line diff. Main verified source, Node syntax, app-boot 4/4, full suite **644/644**, compile 0, and rebuilt the complete signed directory package.
+- **Actual package result**: lifecycle binding is fixed; Main proceeds into `app-lifecycle.js` and then Human/tool window shows `TypeError: Session can only be received when app is ready` at `security/index.js:110`, called from `registerSecurityHandlers` at app-lifecycle line 27.
+- **Root**: lifecycle invokes combined app+session security registration before `app.whenReady()`. `registerSecurityHandlers` dereferences `session.defaultSession`; Electron forbids that pre-ready. No renderer window is created.
+- **Required fix**: move the existing combined registration into the `whenReady` continuation, before display capture/menu/tray/window creation. This still registers web-contents protection before any app window and installs CSP only when defaultSession is legal. Do not weaken/remove security controls.
+- **Coverage**: add lifecycle-order behavior test proving security registration occurs after ready callback begins and before window creation.
+- **Next Step**: `P3ED2Coder8`, then Main full gates/repack/actual window.
+
+## P3E.D2 — Coder Attempt 8 / Main Package Success
+- **Coder (`P3ED2Coder8`)**: moved combined security registration to the first statement of `app.whenReady()` and added a mutation-verified lifecycle-order test. CSP + popup/navigation guards remain installed before display/menu/tray/window/MCP setup.
+- **Main full gates**: after restoring Node ABI for tests, full suite **645/645 PASS** across 46 files; compile exit 0. `npm run pack` rebuilt the complete signed `release/mac-arm64/VaniScript-Electron.app` with Electron 34.5.8; notarization remains skipped by existing configuration.
+- **Actual package launch**: fresh temp profile starts Main, creates temp dir, loads `app.asar/dist/index.html`, starts authenticated MCP SSE, reaches renderer DOM ready/finished/ready-to-show, and reveals a visible focused 1536×984 main window. CDP attached to title `VaniScript`; accessibility tree exposed onboarding controls. Screenshot: `/var/folders/x0/5c_9ph9s67bd4vplgt29f_sh0000gn/T/omp-sshots-1563d174d00cb5ac.webp`.
+- **Warnings only**: Google Fonts stylesheet is blocked by the strict CSP; bundled local Cuprum fonts render the app. Existing Rollup chunk warning and skipped notarization remain unchanged.
+- **Objective Gate runner**: P3E.O1/O2 remain manual/no embedded commands. D1+D2 automated/package/UI evidence contributes to O1; card gates remain open through D3-D5.
+- **Next Step**: `P3ED2Reviewer4` reviews integrated Coder6-8 fixes, then fresh Tester performs D2 Review UI scenarios on the working complete package.
+
+## P3E.D2 — Reviewer Attempt 4
+- **Reviewer (`P3ED2Reviewer4`)**: **APPROVED_WITH_RESIDUALS**. Runtime contract boundary, lifecycle/security startup, MCP language binding, first-target Add control, stale-processing settlement, and glossary cue/mapping behavior all PASS. P3E.J1 D2 slice PASS.
+- **Findings**: two nits only — typed façade comments still say CommonJS although runtime modules are ESM loaded synchronously through Node20 require(esm); settings runtime declaration is not self-contained under stricter declaration checking. No runtime/product fix required before QA.
+- **Security/startup judgment**: complete package empirically supports require(esm); AppError identity/defaults/migrations preserved; CSP and popup/navigation guards remain pre-window; actual renderer smoke closes prior launch blockers.
+- **Known residual boundary**: other non-D2 Main modules still directly require unrelated `.ts` contracts and may fail under Electron Node20 when those lanes are entered. Not on D2 startup graph; carry to the owning future work, do not hide it.
+- **Next Step**: `P3ED2Tester3` actual Review UI with temp same/two-language fixtures, no Human data/provider calls.
+
+## P3E.D2 — Tester Attempt 3 (Actual Signed Package)
+- **Tester (`P3ED2Tester3`)**: **CHANGES_REQUIRED**, product/test writes 0. Launched the signed package with isolated HOME/userData/Documents; codesign valid; Main/renderer/window stable; no Human data/provider calls. Automated evidence retained from Main.
+- **Green actual UI**: onboarding isolation; exact Russian/French variants on two chunks; declared missing German projects blank; same-identity Cmd+Z; cross-language and cross-chunk undo/edit/selection/menu reset; duplicate/`same` Add exclusions; first-target Add visible for untranslated session; selection alone makes no network/provider request; viewport/focus/navigation stable.
+- **Major — stale structured cues after manual edit**: Save Revision updates source/variant plain text and TXT format, but leaves old `originalCues` / variant `cues`. TextPanel prioritizes cues, so Review continues rendering pre-edit text after autosave/navigation. Reproduced independently on source and French translation. Evidence: `/tmp/vaniscript-p3e-d2-evidence-8aDFjz/fixture-a-stale-cues-after-edits.png` and `stale-cue-persisted-state.json`.
+- **Minor — Add draft identity leak**: selecting Spanish without Add in Fixture B, then opening Fixture A, leaves Spanish selected and Add enabled. No provider call, but transient draft crosses session identity.
+- **Required semantics**: arbitrary manual/AI selection rewrite cannot truthfully retain timed cues/SRT/VTT. Invalidate structured cues and timed formats while preserving edited plain text/TXT; Review must render edited text. Deterministic glossary replacement remains cue-reconcilable and keeps its existing rewrite. Reset Add target draft when session/project identity changes.
+- **Packaging residual**: Main log emitted missing `Contents/Resources/parakeet.worker.js` during automatic local worker attempt. Non-fatal and outside D2 text path, but must be carried to the owning local-AI/packaging work; Google Fonts CSP refusal remains known.
+- **Next Step**: `P3ED2Coder9`, then Main package gates, focused Reviewer, and actual UI Tester4.
+
+## P3E.D2 — Coder Attempt 9 / Main Invariant Check
+- **Coder (`P3ED2Coder9`)**: arbitrary direct and selection-based source/translation replacements now invalidate cues and timed formats, retain TXT-only canonical text, preserve inactive variants, and keep deterministic glossary/provider commits structured. Add-target draft resets on stable project/source identity. Focused coordinator **28/28**, compile 0, Vite clean.
+- **Main source verification**: representation policy is centralized and uses canonical `LanguageResult.TXT` key; source/active archive paths and tests match Tester3’s corruption. Add identity effect excludes chunk/language/content/autosave revision dependencies.
+- **Additional same-invariant defect**: `failTranscription()` writes `original = Error: ...` but retains prior `originalCues`/timed formats. TextPanel prioritizes cues, so a cue-backed retry failure can continue showing old transcript and hide the error. This is reachable P3E.D2 reprocess/error parity.
+- **Required fix**: route failure error text through the same source untimed policy, then set status error; keep stale-failure no-op/generation behavior. Pin cue-backed failure: error visible canonical/TXT, cues and SRT/VTT absent.
+- **Next Step**: `P3ED2Coder10`, then Main full/package actual checks.
+
+## P3E.D2 — Coder Attempts 9–10 / Main Final Gates
+- **Coder9**: arbitrary direct/selection source and translation edits now collapse only the touched lane to TXT-only canonical text, deleting stale cues/SRT/VTT; inactive variants remain byte-identical; deterministic glossary/provider commits retain structured timing. Add-target draft resets on stable project/source identity. Coordinator 28/28, compile 0, Vite clean.
+- **Coder10**: `failTranscription` now uses the same source untimed policy before status `error`, preventing cue-backed retry failures from hiding `Error: ...`. Mutation test failed against old spread behavior, then passed **29/29**.
+- **Main full gates**: after Node ABI restore, full suite **650/650 PASS** across 46 files; compile exit 0. `npm run pack` built/signed Electron 34 package; Vite clean (1916 modules, 1.24s; known chunk warning only).
+- **Actual package startup**: fresh temp profile reaches Main ready, renderer DOM ready, renderer finished loading, ready-to-show, visible/focused 1536×984 window; no JS error dialog. Known Google Fonts CSP refusal only.
+- **Next Step**: `P3ED2Reviewer5` focused representation review, then `P3ED2Tester4` reruns persisted manual-edit + draft identity scenarios.
+
+## P3E.D2 — Reviewer Attempt 5
+- **Reviewer (`P3ED2Reviewer5`)**: **APPROVED_WITH_RESIDUALS**, findings 0. Source/translation manual edits, selection rewrites, structured glossary/provider commits, failure surface, and Add draft identity all PASS. P3E.J1 D2 honest-untimed slice PASS.
+- **Representation judgment**: arbitrary writes delete stale cues/timed formats and keep exact TXT; active projection follows; inactive variants remain byte-identical; provider metadata survives. Undo restores plain text without inventing timing. Transcription failure is visible TXT-only error; translation failure preserves prior variant.
+- **Known residuals**: first projectId mint can clear a draft; same-source unsaved restart can retain one; glossary intentionally does not rewrite `cue.words[].text`. None block the tested loaded-project D2 flow.
+- **Next Step**: `P3ED2Tester4` actual packaged persistence/UI rerun, then close D2 if green.
+
+## P3E.D2 — Human Visual Feedback / Designer Escalation
+- **Human screenshot**: top-right controls appear as an unintelligible overlapping cluster; Human asks what the button/icon pile is.
+- **Main identification**: intended controls are Help Tour, AI Assistant, Projects, Batch workspace/status, and Settings. This is not intentional visual grouping.
+- **Root source**: Batch launcher is a standalone fixed `.settings-btn` with inline `right:62`, while `.corner-actions` is another fixed flex row at `right:16` containing four buttons. Their independent positioning overlaps Batch across Assistant/Projects at the packaged viewport.
+- **Design decision**: direct bounded implementation. Move Batch into the single corner-actions flow; give it a readable `Batch · <status>` compact pill with a distinct hit area; preserve Help/Assistant/Projects/Settings behavior, native drag exclusion, active/error states, accessibility names, light/dark themes, and narrow-window behavior. No backend/navigation/state changes.
+- **Next Step**: `P3ED2TopbarDesigner1`, Main packaged visual inspection, Reviewer/Tester, then Human visual acceptance.
+- **Designer runtime interruption**: `P3ED2TopbarDesigner1` wrote a coherent two-file candidate, then stalled after reporting pre-existing Vite blank-render failure (`displayTranslationLanguage` ESM export mismatch). Main stopped out-of-scope shim work and cancelled the stalled session. This is runtime interruption, not a product-attempt failure. Fresh Designer will reconcile the existing candidate before Main package verification.
+- **Designer reconciliation (`P3ED2TopbarDesigner2`)**: COMPLETE with no additional edits. Confirmed the interrupted two-file candidate has one flex-owned Batch action per mutually exclusive surface, visible title-cased status, independent hit areas, preserved handlers/data-tour hooks, and focus/theme/error states.
+- **Main packaged verification**: `npm run pack` succeeded (Vite 1916 modules; Electron 34.5.8 arm64 package signed; notarization skipped by existing config). `npm run compile` exited 0.
+- **Actual package**: launched `release/mac-arm64/VaniScript-Electron.app` with a disposable `/tmp` profile. Accessibility tree exposes five distinct controls: Enable Help Tour, AI Assistant, Projects, Batch workspace · Idle, Settings.
+- **Measured geometry**: five rectangles are 32×32, 32×32, 32×32, 92.8×32, 32×32 with exact 8px gaps; automated pairwise intersection list is empty. Product enforces a minimum resizable window, so `resizeTo(598,416)` clamps above the Human screenshot crop; the minimum-window capture remains collision-free.
+- **Screenshot**: `/var/folders/x0/5c_9ph9s67bd4vplgt29f_sh0000gn/T/omp-sshots-1563e8f43326706d.webp`.
+- **Next Step**: bounded Reviewer judgment on `App.tsx`/`index.css`, then final packaged Tester rerun and Human visual acceptance.
+- **Topbar Review (`P3ED2TopbarReviewer1`)**: **APPROVED**, findings 0, judgment gates 7/7 PASS. Root cause removed (one flex owner per surface, `.batch-action` static), Batch reads `Batch` + title-cased live state, handlers/`data-tour` hooks/ARIA preserved, geometry clean (32px targets, 8px gaps, no intersections at product min window 900×640 per `window-manager.js`), focus-visible and light/failed states token-correct, scope confined to the two files.
+- **Main re-verification of Review claims**: confirmed `App.tsx:2700-2710/2917-2927`, `index.css:119-135/717-770/156-160/4316-4356`, and `window-manager.js:201-202` (minWidth 900, minHeight 640) match the cited evidence.
+- **Next Step**: `P3ED2Tester4` final packaged cue/draft/topbar rerun, then Human visual acceptance.
+
+## P3E.D2 — Final Tester and Closure
+- **Tester (`P3ED2Tester4`)**: **PASS_WITH_RESIDUALS**. All requested packaged checks passed using disposable HOME/profile/fixtures: startup; non-Review and Review topbar geometry; source edit TXT-only persistence; active translation TXT-only persistence; inactive French byte identity; same-language undo without timing resurrection; cross-project Add-target reset; exact Russian/French switching.
+- **Topbar evidence**: at 1536×984 and product minimum 900×640, exactly five controls are exposed. Rectangles are 32×32, 32×32, 32×32, 92.8×32, 32×32; every adjacent gap is 8px; all ten pairwise intersection areas are 0; none is clipped. Review Batch precedes Settings and New Session with zero intersections.
+- **Persistence evidence**: source edit survives reload as exact TXT with no original cues/SRT/VTT. Active Russian becomes TXT-only/cueless. Inactive French remains 522 bytes with identical SHA-256 `84133f2931ff8e7c3476a35eb3bbb74141994e1a15bdf530918f72f0749c3d8e`. Undo restores plain text without timings. Project A/B draft switches reset to empty.
+- **Evidence directory**: `/tmp/vaniscript-p3e-d2-tester4-evidence-MIaAON`.
+- **Main verification**: independently read geometry, persisted JSON, SHA-256, draft-reset, and minimum-window artifacts. Binding D2 assertions match Tester result.
+- **Non-binding residual**: main source chooser at supported 900×640 spans y=-99..833 while document scrollHeight equals clientHeight 640, making top/bottom cards unreachable. This is a real medium UI defect, unrelated to D2 review/multi-language and the corrected topbar. Recorded for later UI ownership; not silently added to D2.
+- **Human acceptance**: after the corrected packaged capture, Human instructed «Продолжай». Main treats this as authorization to advance.
+- **Closure**: P3E.D2 checked complete; canonical pointer advanced to P3E.D3. Mandatory nested Electron product + workflow-snapshot backup follows.

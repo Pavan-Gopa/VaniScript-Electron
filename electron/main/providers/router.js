@@ -11,13 +11,15 @@
 //   - Throw structured AppErrors (PERMISSION_DENIED / PROVIDER_ERROR / etc.) so
 //     the IPC layer can return a typed envelope to the Renderer.
 //
-// This file is loaded by the Electron main process (CommonJS). It imports the
-// shared TS contracts via Node's type-stripping, exactly like settingsStore.js
-// already requires shared/contracts/settings.ts at runtime.
+// This file is loaded by the Electron main process (CommonJS). It requires the
+// plain-JavaScript shared contract runtimes (`*-runtime.js`: no TypeScript
+// syntax, loaded via require(esm)) so it loads under the bundled Node runtime
+// without a TypeScript loader — never the `.ts` façades, which are for typed
+// Renderer/bundler consumption only.
 
 const path = require('node:path');
-const { createAppError, isAppError } = require('../../../shared/contracts/errors.ts');
-const { PROVIDER_INVOKE_COMMAND } = require('../../../shared/contracts/providers.ts');
+const { createAppError, isAppError } = require('../../../shared/contracts/errors-runtime.js');
+const { PROVIDER_INVOKE_COMMAND } = require('../../../shared/contracts/providers-runtime.js');
 const { readSettings } = require('../storage/settingsStore.js');
 const { getSecret } = require('../storage/vault.js');
 

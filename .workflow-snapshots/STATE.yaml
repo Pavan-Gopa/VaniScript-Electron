@@ -5,13 +5,14 @@ onboarding:
   model_pairs_confirmed: true
   completed_at: 2026-08-21T00:00:00Z
 current_step: P3E
-current_work_item_id: P3E.D2
+current_work_item_id: P3E.D3
 current_work_item: >-
-  Review/multi-language parity: variants/stale/reprocess. P3E.D1 verified and
-  closing through mandatory nested-repo backup before D2 discovery/dispatch.
+  Export/project parity: formats/bundles/naming. P3E.D2 verified through
+  Coder, Main, Reviewer, packaged Tester, and Human-directed continuation;
+  closure backup is in progress before D3 discovery/dispatch.
 step_description: >-
-  Card P3D COMPLETE (D1-D3, gates O1/O2/J1/J2; full suite 591/591,
-  focused 11/11, compile and vite build clean). Entering P3E at D1.
+  P3E.D1-D2 complete. Active pointer advanced to P3E.D3 export/project parity;
+  card-level O1/O2/J1/J2 remain open until D3-D5 complete.
 completed_steps:
   - P0
   - P1
@@ -25,23 +26,22 @@ parked_steps: []
 implementation:
   status: not_started
   attempts: 0
-  note: >-
-    P3E.D2 pending after P3E.D1 backup push. Target: extract/preserve review and
-    multi-language variant, stale-result, retry/reprocess behavior from App.
+  note: P3E.D3 discovery pending completion of the mandatory D2 backup push.
 retry_guard:
   max_attempts_without_progress: 3
-  last_failure_signature: "P3D.D3 rapid double install: busyAction set after await; two bridge installNow calls (2 != 1)"
+  last_failure_signature: null
   repeated_failure_count: 0
   blocker: null
 omp:
-  last_result_artifact: history://P3ED1Tester1
+  last_result_artifact: history://P3ED2Tester4
   active_agent: null
-  active_role: coder
-  status: backup_push_pending
-  role: coder
-  primary_agent: workflow-coder
-  evidence: history://P3ED1Tester1
+  active_role: orchestrator
+  status: closure_pending
+  role: orchestrator
+  primary_agent: null
+  evidence: /tmp/vaniscript-p3e-d2-tester4-evidence-MIaAON
   backup_agent: null
+standing_order:
   human_instruction: >-
     STANDING ORDER (2026-08-22, supersedes all earlier pause directives):
     «продолжать в том же духе до победного конца — полностью все шаги».
@@ -56,42 +56,46 @@ omp:
     элементами не требуется; стоп только по прямой команде Human.
   authorized_at: 2026-08-22T00:00:00Z
 interruption:
-  status: none
-  role: null
-  run_id: null
+  status: recovered
+  role: tester
+  run_id: P3ED2Tester1
   candidate_id: null
-  classification: null
+  classification: provider_dns_failure_no_product_attempt
   recovered_artifact: null
-  recorded_at: null
+  recorded_at: 2026-08-24T00:00:00Z
 human_acceptance:
-  status: required
-  evidence: Automated coder-reviewer-tester cycle authorized by Human.
+  status: accepted
+  evidence: >-
+    Human reviewed the corrected packaged topbar capture and instructed
+    «Продолжай», authorizing advancement.
 review:
   status: not_started
   last_feedback_file: AI_Workflow_Kit/docs/AI/FEEDBACK.md
   verdict: null
-  note: P3E.D1 review closed APPROVED; P3E.D2 review awaits implementation.
+  note: P3E.D2 Reviewer approvals retained in FEEDBACK.md; P3E.D3 not reviewed.
 qa:
   status: not_started
-  suite: null
+  suite: "P3E.D2 full 650/650; final packaged Tester4 8/8 PASS_WITH_RESIDUALS"
   bugs_open: 0
-  note: P3E.D1 Tester1 PASS_WITH_RESIDUALS retained; P3E.D2 QA not started.
-# Lean-pipeline experiment. Default standard keeps Coder -> Reviewer -> Tester.
+  note: D2 binding checks passed; unrelated 900x640 source-chooser clipping residual logged for later UI ownership.
 pipeline:
   profile: standard
+  reviewer_enabled: true
+  tester_enabled: true
+security_audit:
+  status: not_started
   authorized_by: null
   authorized_at: null
   note: null
-
-next_actor: coder
-omp_status_note: p3e_d1_closed_backup_push_pending_before_p3e_d2
+next_actor: orchestrator
+omp_status_note: p3e_d2_closed_canonical_backup_push_pending
 checkpoint:
   last_pre_tag: null
   last_post_tag: null
-  last_commit: bb963fb
+  last_commit: 240d85d
   note: >-
-    P3E.D1 closure verified: focused 11/11, full 602/602; prior compile 0 and
-    vite build clean remain valid (Tester changed tests only). Backup push pending.
+    P3E.D2 canonically closed and pointer advanced to P3E.D3. Nested Electron
+    product/snapshot commit and push pending; outer workflow root remains local.
 notes: |
   2026-08-21 canonical state repair: STEPS.md rewritten as Step Cards (P0..P5) with
   stable IDs <step>.D/O/J; current_step restored; completed_steps limited to
@@ -149,3 +153,26 @@ notes: |
   2026-08-23 P3E.D1 closure: Coder1 extracted startup media preparation;
   Reviewer1 APPROVED with zero findings; Tester1 final focused 11/11, Main full
   602/602. D1 checked; card O1/O2/J1/J2 remain open for D2-D5.
+  P3E.D1 product/snapshot commit 240d85d pushed to the nested Electron repo.
+  Canonical workflow root remains local outside that repository; next mirror
+  will include this checkpoint metadata.
+  P3E.D2 source discovery found a naming/ownership conflict: Apple media sessions
+  use activeTranslationLanguage + translationsByLanguage; Electron MCP read
+  catalog expects selectedTranslationLanguage + availableTranslationLanguages;
+  project-session importer already recognizes Apple variants. Architect required
+  to select one clean contract before Coder.
+  P3E.D2 binding architecture: one canonical runtime name
+  activeTranslationLanguage; translationsByLanguage is per-chunk authority;
+  translated/translatedCues/translatedFormats are active-language projections;
+  selectedTranslationLanguage is accepted only at load and emitted only as the
+  established MCP response property. No persisted stale/source-fingerprint field;
+  staleness means generation-guarded late-result suppression.
+  2026-08-24 P3E.D2 closure: review/multi-language variants, active-language
+  projection, stale async suppression, reprocess behavior, arbitrary-edit
+  untimed semantics, migration, MCP exact-language reads, and cross-project
+  draft isolation passed full 650/650 plus final packaged Tester4 8/8. Human
+  topbar complaint was fixed by a single flex-owned action group with readable
+  Batch status; Reviewer approved and packaged geometry had zero intersections.
+  Tester4 found an unrelated medium residual: at the supported 900x640 minimum,
+  the main source chooser clips vertically without scroll. It is recorded for
+  later UI ownership and does not reopen D2's review/multi-language contract.

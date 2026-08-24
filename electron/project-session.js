@@ -2,6 +2,12 @@
 
 const path = require('path');
 
+// Single shared implementation of the multi-language contract (display/key
+// normalization, usability policy, archive re-keying, active resolution,
+// eager projection). Main and the renderer both use this module — no
+// duplicate normalization here.
+const mediaTranslations = require('../shared/media-translations');
+
 const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'm4a', 'flac', 'ogg', 'aac', 'wma']);
 const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'mkv', 'webm']);
 
@@ -72,30 +78,6 @@ function normalizeOutputFormats(outputFormats, configFormats) {
   return formats.map((format) => String(format || '').trim()).filter(Boolean);
 }
 
-function pickActiveTranslationVariant(chunk, activeLang) {
-  const archive = chunk?.translationsByLanguage;
-  if (!archive || typeof archive !== 'object') return null;
-  const variants = Object.keys(archive).map((key) => archive[key]).filter(Boolean);
-  if (variants.length === 0) return null;
-  const norm = (value) => String(value || '').trim().toLowerCase();
-  const target = norm(activeLang);
-  if (target) {
-    const match = variants.find((variant) => norm(variant.language) === target);
-    if (match) return match;
-  }
-  return variants[0];
-}
-
-function restoreImportedChunk(chunk, filePath, activeLang) {
-  const variant = pickActiveTranslationVariant(chunk, activeLang);
-  const legacyTranslated = String(chunk?.translated || '').trim();
-  const translated = legacyTranslated ? chunk.translated : (variant?.text ?? chunk?.translated ?? '');
-  const translatedCues = Array.isArray(variant?.cues) && variant.cues.length > 0
-    ? variant.cues
-    : chunk?.translatedCues;
-  return { ...chunk, filePath, translated, translatedCues };
-}
-
 function assetPath(assetMap, key) {
   return assetMap && typeof assetMap.get === 'function' ? assetMap.get(key) : undefined;
 }
@@ -131,35 +113,43 @@ function normalizeImportedProjectSession(session, options = {}) {
     || (sourceMediaKind === 'video' ? sourceFile : '');
   const mediaInfoPath = sourceMediaKind === 'video' ? (originalVideoPath || sourceFile) : sourceFile;
   const sourceMediaInfo = normalizeSourceMediaInfo(base.sourceMediaInfo, mediaInfoPath, sourceMediaKind);
-  const activeTranslationLanguage = base.activeTranslationLanguage || base.targetLang;
-  const chunks = Array.isArray(base.chunks)
-    ? base.chunks.map((chunk, index) =>
-        restoreImportedChunk(chunk, assetPath(assetMap, `chunk:${index}`) || chunk.filePath || '', activeTranslationLanguage)
-      )
-    : [];
-  const currentIndex = resolveSessionCurrentIndex(base, chunks.length);
   const metadata = base.metadata && typeof base.metadata === 'object' ? base.metadata : {};
   const existingConfig = base.config && typeof base.config === 'object' ? base.config : {};
-  const targetLang = base.targetLang || existingConfig.targetLang || activeTranslationLanguage || 'same';
+  const rawChunks = Array.isArray(base.chunks) ? base.chunks : [];
+  const currentIndex = resolveSessionCurrentIndex(base, rawChunks.length);
+  // Restoration is strictly non-translation mechanics: re-point assets and
+  // keep every other chunk field verbatim. Active resolution, legacy seeding,
+  // and eager projection belong to the single shared pass below.
+  const restoredChunks = rawChunks.map((chunk, index) => ({
+    ...chunk,
+    filePath: assetPath(assetMap, `chunk:${index}`) || chunk.filePath || '',
+  }));
   const outputFormats = normalizeOutputFormats(base.outputFormats, existingConfig.formats);
-  const durationSec = firstPositiveFiniteNumber(base.durationSec, sourceMediaInfo?.durationSec, lastChunkEndSec(chunks));
+  const durationSec = firstPositiveFiniteNumber(base.durationSec, sourceMediaInfo?.durationSec, lastChunkEndSec(restoredChunks));
 
-  return {
+  // The one canonical translation pass over the assembled session, with
+  // base.targetLang and config.targetLang unmasked: the shared normalizer
+  // owns precedence (active -> selected -> targetLang -> config.targetLang ->
+  // first archive), seeding/re-keying/projection, the available-language
+  // union, and target synchronization.
+  const normalized = mediaTranslations.normalizeMediaSessionTranslations({
     ...base,
-    projectId: options.projectId || base.projectId,
+    ...(options.projectId || base.projectId
+      ? { projectId: options.projectId || base.projectId }
+      : {}),
     sourceFile,
     sourceMediaKind,
     originalVideoPath,
     wavPath: assetPath(assetMap, 'wavPath') || base.wavPath || '',
     sourceMediaInfo,
-    targetLang,
+    targetLang: base.targetLang,
     outputFormats,
     config: {
       date: metadata.date || existingConfig.date || '',
       location: metadata.location || existingConfig.location || '',
       lecturer: metadata.lecturer || existingConfig.lecturer || '',
       participants: metadata.participants || existingConfig.participants || '',
-      targetLang,
+      targetLang: existingConfig.targetLang,
       formats: outputFormats,
       transcriptionProvider: base.transcriptionProvider || existingConfig.transcriptionProvider || '',
       translationProvider: base.translationProvider || existingConfig.translationProvider || '',
@@ -167,13 +157,23 @@ function normalizeImportedProjectSession(session, options = {}) {
     currentIndex,
     currentChunkIndex: currentIndex,
     durationSec,
-    chunks,
-  };
+    chunks: restoredChunks,
+  });
+
+  // Compatibility default only: when nothing real resolved anywhere, restore
+  // the historical untranslated sentinel without creating or selecting any
+  // variant. Language resolution is never restated here.
+  if (!normalized.activeTranslationLanguage) {
+    const config = normalized.config && typeof normalized.config === 'object' ? normalized.config : {};
+    if (!mediaTranslations.isRealTranslationLanguage(normalized.targetLang)) normalized.targetLang = 'same';
+    if (!mediaTranslations.isRealTranslationLanguage(config.targetLang)) config.targetLang = 'same';
+    normalized.config = config;
+  }
+  return normalized;
 }
 
 module.exports = {
   normalizeImportedProjectSession,
   resolveSessionCurrentIndex,
   resolveSessionReviewProgressIndex,
-  restoreImportedChunk,
 };

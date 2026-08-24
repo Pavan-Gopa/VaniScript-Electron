@@ -10,6 +10,12 @@ export default defineConfig(({ mode }) => {
     build: {
       outDir: 'dist',
       emptyOutDir: true,
+      // Default include covers node_modules only; add the single local
+      // CommonJS module the renderer imports by name ([\\/] keeps the
+      // pattern separator-safe on Windows).
+      commonjsOptions: {
+        include: [/node_modules/, /[\\/]shared[\\/]media-translations\.js$/],
+      },
     },
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY || ''),

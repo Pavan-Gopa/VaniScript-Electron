@@ -77,10 +77,10 @@ function makeProject() {
       sourceFileName: 'source.wav',
       sourceLang: 'en',
       targetLang: 'fr',
+      activeTranslationLanguage: 'French',
+      availableTranslationLanguages: ['French', 'English'],
       durationSec: 4,
       currentChunkIndex: 0,
-      selectedTranslationLanguage: 'fr',
-      availableTranslationLanguages: ['fr'],
       chunks: [{
         index: 0,
         filePath: '/private/chunk.wav',
@@ -91,8 +91,21 @@ function makeProject() {
         translated: 'Bonjour monde',
         status: 'done',
         approved: true,
+        translationsByLanguage: {
+          french: {
+            language: 'French',
+            text: 'Bonjour monde',
+            cues: [{ startSec: 0, endSec: 2, text: 'Bonjour' }],
+            provider: 'gemini-cloud',
+          },
+          english: {
+            language: 'English',
+            text: 'Hello world',
+            cues: [{ startSec: 0, endSec: 2, text: 'Hello' }],
+          },
+        },
         originalCues: [{ startSec: 0, endSec: 2, text: 'Hare Krishna', words: [] }],
-        translatedCues: [{ startSec: 0, endSec: 2, text: 'Bonjour', words: [] }],
+        translatedCues: [{ startSec: 0, endSec: 2, text: 'Bonjour' }],
         unrecognizedFragments: ['Krishna'],
       }],
     },
@@ -252,6 +265,102 @@ test('unknown tools return a typed method-not-found error and reads cannot mutat
   assert.equal(read.status, 200);
   assert.equal(read.body.result.data.original, 'Hare Krishna world');
   assert.deepEqual(fixture.project, before);
+});
+
+test('translation reads publish canonical multi-language state without mutating the source session', async () => {
+  const project = makeProject();
+  const before = JSON.parse(JSON.stringify(project));
+  const catalog = createReadCatalog({ project, projectId: 'project-1', projectRevision: 'revision-1' });
+
+  // get_project_state: legacy selected stripped, canonical active published.
+  const state = await catalog.execute('get_project_state', { projectId: 'project-1' });
+  const publishedSession = state.data.project.session;
+  assert.equal('selectedTranslationLanguage' in publishedSession, false);
+  assert.equal(publishedSession.activeTranslationLanguage, 'French');
+  assert.equal(publishedSession.targetLang, 'French');
+  assert.deepEqual(publishedSession.availableTranslationLanguages, ['French', 'English']);
+  // Envelope canonicalization sorts object keys (stableClone).
+  assert.deepEqual(Object.keys(publishedSession.chunks[0].translationsByLanguage), ['english', 'french']);
+
+  // get_ui_state / list_translation_languages: established keys sourced from
+  // the canonical active.
+  const ui = await catalog.execute('get_ui_state', { projectId: 'project-1' });
+  assert.equal(ui.data.selectedTranslationLanguage, 'French');
+  const languages = await catalog.execute('list_translation_languages', { projectId: 'project-1' });
+  assert.equal(languages.data.activeLanguage, 'French');
+  assert.deepEqual(languages.data.availableLanguages, ['French', 'English']);
+
+  // get_chunk: default text comes from the exact active variant.
+  const chunk = await catalog.execute('get_chunk', { projectId: 'project-1', chunkIndex: 0 });
+  assert.equal(chunk.data.translated, 'Bonjour monde');
+  assert.equal(chunk.data.selectedTranslationLanguage, 'French');
+  assert.equal(chunk.data.translationCueCount, 1);
+
+  const englishChunk = await catalog.execute('get_chunk', {
+    projectId: 'project-1', chunkIndex: 0, language: 'English',
+  });
+  assert.equal(englishChunk.data.translated, 'Hello world');
+  assert.equal(englishChunk.data.translationCueCount, 1);
+
+  const unknownChunk = await catalog.execute('get_chunk', {
+    projectId: 'project-1', chunkIndex: 0, language: 'de',
+  });
+  assert.equal(unknownChunk.data.translated, '');
+  assert.equal(unknownChunk.data.translationCueCount, 0);
+
+  // get_chunk_cues: default (active), explicit language, and unknown language.
+  const frenchCues = await catalog.execute('get_chunk_cues', {
+    projectId: 'project-1', chunkIndex: 0, side: 'translated',
+  });
+  assert.equal(frenchCues.data.language, 'French');
+  assert.deepEqual(frenchCues.data.cues.map((cue) => cue.text), ['Bonjour']);
+
+  const englishCues = await catalog.execute('get_chunk_cues', {
+    projectId: 'project-1', chunkIndex: 0, side: 'translated', language: 'English',
+  });
+  assert.equal(englishCues.data.language, 'English');
+  assert.deepEqual(englishCues.data.cues.map((cue) => cue.text), ['Hello']);
+  assert.equal(englishCues.data.count, 1);
+
+  const unknownCues = await catalog.execute('get_chunk_cues', {
+    projectId: 'project-1', chunkIndex: 0, side: 'translated', language: 'de',
+  });
+  assert.equal(unknownCues.data.language, 'de');
+  assert.deepEqual(unknownCues.data.cues, []);
+  assert.equal(unknownCues.data.count, 0);
+
+  // search_transcript translated side follows the active projection.
+  const search = await catalog.execute('search_transcript', {
+    projectId: 'project-1', query: 'Bonjour', side: 'translated',
+  });
+  assert.equal(search.data.matchCount >= 1, true);
+
+  const englishSearch = await catalog.execute('search_transcript', {
+    projectId: 'project-1', query: 'Hello', side: 'translated', language: 'English',
+  });
+  assert.equal(englishSearch.data.matchCount, 1);
+
+  const unknownSearch = await catalog.execute('search_transcript', {
+    projectId: 'project-1', query: 'Hello', side: 'translated', language: 'de',
+  });
+  assert.equal(unknownSearch.data.matchCount, 0);
+
+  // Source immutability across every read above.
+  assert.deepEqual(project, before);
+});
+
+test('translated text reads publish the language selector accepted by their handlers', () => {
+  const languageAwareTextReads = ['get_chunk', 'search_transcript'];
+  assert.deepEqual(
+    languageAwareTextReads.map((name) => ({
+      name,
+      publishesLanguage: Object.prototype.hasOwnProperty.call(
+        READ_TOOL_DEFINITIONS.find((tool) => tool.name === name).inputSchema.properties,
+        'language'
+      ),
+    })),
+    languageAwareTextReads.map((name) => ({ name, publishesLanguage: true }))
+  );
 });
 
 test('get_safe_settings drops secret-named primitive values at every depth', async () => {

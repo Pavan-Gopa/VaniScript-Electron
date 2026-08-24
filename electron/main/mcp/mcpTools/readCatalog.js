@@ -12,6 +12,11 @@
 
 const fs = require('node:fs');
 
+// Single shared multi-language implementation (P3E.D2): every read
+// normalizes a clone through it so published state is canonical and the
+// caller's session object is never touched.
+const mediaTranslations = require('../../../../shared/media-translations.js');
+
 const READ_SCOPE = 'read';
 const READ_RISK = 'read';
 const READ_SCHEMA_VERSION = 1;
@@ -129,6 +134,7 @@ const READ_TOOL_DEFINITIONS = Object.freeze([
   definition('get_chunk', 'Get one transcript chunk by stable chunkId or zero-based chunkIndex.', objectSchema({
     chunkId: string('Stable chunk identifier returned by list_chunks.'),
     chunkIndex: integer(0, undefined, 'Zero-based chunk index.'),
+    language: string('Optional translation language.'),
     projectId: projectIdSchema,
   })),
   definition('get_chunk_cues', 'Get timed source or translated cues for one transcript chunk.', objectSchema({
@@ -142,7 +148,7 @@ const READ_TOOL_DEFINITIONS = Object.freeze([
     query: string('Search text.'),
     side: { type: 'string', enum: ['all', 'original', 'translated'] },
     caseSensitive: boolean(),
-    wholeWord: boolean(),
+    language: string('Optional translation language.'),
     limit: limitSchema,
     projectId: projectIdSchema,
   }, ['query'])),
@@ -401,17 +407,53 @@ function projectSummary(project, fallbackId = null) {
 
 function sourceSession(options, project) {
   const raw = asObject(project || options.project || options.activeProject);
-  return asObject(options.session || raw.session || raw.mediaState || raw.state);
+  const session = asObject(options.session || raw.session || raw.mediaState || raw.state);
+  return normalizeSessionView(session);
 }
 
+/**
+ * Canonical read view of one media session: a deep clone normalized through
+ * the shared module (strips the legacy selected field, resolves the active
+ * language, projects the eager fields). The input object is never mutated,
+ * so repeated reads are deep-equal to the stored source.
+ */
+function normalizeSessionView(session) {
+  const clone = JSON.parse(JSON.stringify(session));
+  return mediaTranslations.normalizeMediaSessionTranslations(clone);
+}
+
+/** Canonical read view of a whole project record (its session normalized). */
+function projectView(project) {
+  if (!isObject(project)) return project;
+  const clone = JSON.parse(JSON.stringify(project));
+  if (isObject(clone.session)) clone.session = normalizeSessionView(clone.session);
+  return clone;
+}
+
+/**
+ * Exact translation lookup for publication: an explicitly requested language
+ * resolves to exactly that variant text or empty; without one the canonical
+ * active variant is used. Never a fallback to another language.
+ */
 function translationFor(chunk, session, language) {
   if (!isObject(chunk)) return '';
-  if (language && isObject(chunk.translations)) {
-    const candidate = chunk.translations[language];
-    if (typeof candidate === 'string') return candidate;
-    if (isObject(candidate) && typeof candidate.text === 'string') return candidate.text;
-  }
-  return typeof chunk.translated === 'string' ? chunk.translated : '';
+  const variant = mediaTranslations.resolveChunkVariant(
+    chunk,
+    typeof language === 'string' ? language : undefined,
+    typeof session.activeTranslationLanguage === 'string' ? session.activeTranslationLanguage : ''
+  );
+  return variant ? variant.text : '';
+}
+
+/** Cue count from the exact requested (or canonical active) variant. */
+function translationCueCount(chunk, session, language) {
+  if (!isObject(chunk)) return 0;
+  const variant = mediaTranslations.resolveChunkVariant(
+    chunk,
+    typeof language === 'string' ? language : undefined,
+    typeof session.activeTranslationLanguage === 'string' ? session.activeTranslationLanguage : ''
+  );
+  return Array.isArray(variant?.cues) ? variant.cues.length : 0;
 }
 
 function chunkId(chunk, arrayIndex) {
@@ -449,9 +491,9 @@ function resolveChunk(chunks, args) {
   return null;
 }
 
-function cueItems(chunk, side, language, arrayIndex) {
+function cueItems(chunk, side, language, arrayIndex, resolvedCues) {
   const cues = side === 'translated'
-    ? (Array.isArray(chunk?.translatedCues) ? chunk.translatedCues : [])
+    ? (Array.isArray(resolvedCues) ? resolvedCues : [])
     : (Array.isArray(chunk?.originalCues) ? chunk.originalCues : []);
   return cues.map((cue, index) => ({
     cueId: `${chunkId(chunk, arrayIndex)}-${side}-cue-${index}`,
@@ -605,7 +647,7 @@ function createReadCatalog(options = {}) {
       projectId: context.projectId,
       projectRevision: context.projectRevision,
       active: Boolean(project),
-      project: safeClone(project),
+      project: project ? safeClone(projectView(project)) : null,
     };
   });
 
@@ -644,7 +686,7 @@ function createReadCatalog(options = {}) {
       sourceFileName: session.sourceFileName || '',
       durationSec: Number.isFinite(session.durationSec) ? session.durationSec : 0,
       hasActiveSession: Boolean(project || settings.session),
-      selectedTranslationLanguage: session.selectedTranslationLanguage || '',
+      selectedTranslationLanguage: typeof session.activeTranslationLanguage === 'string' ? session.activeTranslationLanguage : '',
       availableTranslationLanguages: Array.isArray(session.availableTranslationLanguages) ? session.availableTranslationLanguages : [],
       chunkCount: chunks.length,
       approvedChunkCount: chunks.filter((chunk) => Boolean(chunk?.approved)).length,
@@ -729,24 +771,31 @@ function createReadCatalog(options = {}) {
       ...chunkSummary(chunk, resolved.index, session),
       original: typeof chunk.original === 'string' ? chunk.original : '',
       translated: translationFor(chunk, session, args.language),
-      selectedTranslationLanguage: session.selectedTranslationLanguage || '',
+      selectedTranslationLanguage: typeof session.activeTranslationLanguage === 'string' ? session.activeTranslationLanguage : '',
       availableTranslationLanguages: Array.isArray(session.availableTranslationLanguages) ? session.availableTranslationLanguages : [],
       unrecognizedFragments: Array.isArray(chunk.unrecognizedFragments) ? chunk.unrecognizedFragments : [],
       originalCueCount: Array.isArray(chunk.originalCues) ? chunk.originalCues.length : 0,
-      translationCueCount: Array.isArray(chunk.translatedCues) ? chunk.translatedCues.length : 0,
+      translationCueCount: translationCueCount(chunk, session, args.language),
     };
   });
 
   handlers.get_chunk_cues = handlerFor('get_chunk_cues', (args, context) => {
     const { session, chunks } = chunksFor(args, context);
     const resolved = resolveChunk(chunks, args);
+    const requestedLanguage = typeof args.language === 'string' && args.language.length > 0 ? args.language : '';
+    const activeLanguage = typeof session.activeTranslationLanguage === 'string' ? session.activeTranslationLanguage : '';
     const side = args.side === 'translated' ? 'translated' : 'original';
-    const cues = resolved ? cueItems(resolved.chunk, side, side === 'translated' ? args.language || session.selectedTranslationLanguage || '' : session.sourceLang || '', resolved.index) : [];
+    const variant = side === 'translated'
+      ? mediaTranslations.resolveChunkVariant(resolved?.chunk, requestedLanguage || undefined, activeLanguage || undefined)
+      : null;
+    const cues = resolved
+      ? cueItems(resolved.chunk, side, side === 'translated' ? (requestedLanguage || activeLanguage) : session.sourceLang || '', resolved.index, variant?.cues)
+      : [];
     return {
       chunkId: resolved ? chunkId(resolved.chunk, resolved.index) : null,
       displayNumber: resolved ? (Number.isInteger(resolved.chunk.index) ? resolved.chunk.index + 1 : resolved.index + 1) : null,
       side,
-      language: side === 'translated' ? args.language || session.selectedTranslationLanguage || '' : session.sourceLang || '',
+      language: side === 'translated' ? requestedLanguage || activeLanguage : session.sourceLang || '',
       cues,
       count: cues.length,
     };
@@ -809,7 +858,7 @@ function createReadCatalog(options = {}) {
     const session = sourceSession(settings, project);
     const availableLanguages = Array.isArray(session.availableTranslationLanguages) ? session.availableTranslationLanguages : [];
     return {
-      activeLanguage: session.selectedTranslationLanguage || '',
+      activeLanguage: typeof session.activeTranslationLanguage === 'string' ? session.activeTranslationLanguage : '',
       availableLanguages,
       supportedLanguages: Array.isArray(settings.supportedLanguages) ? settings.supportedLanguages : [],
       targetLanguage: session.targetLang || '',

@@ -104,6 +104,21 @@ export interface LanguageResult {
   Markdown?: string;
 }
 
+// One archived translation of a chunk. Mirrors TranslationVariant in the
+// Apple Silicon edition's SessionModels.swift (same JSON keys), so archives
+// round-trip across editions. `translationsByLanguage` (keyed by the
+// lowercased display language, see shared/media-translations.js) is the
+// authority; `translated`/`translatedCues`/`translatedFormats` are eager
+// projections of the current active variant.
+export interface TranslationVariant {
+  language: string;
+  text: string;
+  cues?: TranscriptCue[];
+  formats?: LanguageResult;
+  provider?: string;
+  updatedAt?: string;
+}
+
 export interface ChunkData {
   index: number;
   filePath: string;           // local WAV path
@@ -123,6 +138,10 @@ export interface ChunkData {
   // markers in `original`/`translated`) keep working via marker fallback.
   originalCues?: TranscriptCue[];
   translatedCues?: TranscriptCue[];
+  // Multi-language archive authority. Keyed by canonical language key
+  // (lowercased display name). Optional so legacy single-language sessions
+  // keep working via the eager projection fields above.
+  translationsByLanguage?: Record<string, TranslationVariant>;
 }
 
 // Mirrors TranscriptWord/TranscriptCue in SessionModels.swift (no custom
@@ -147,6 +166,11 @@ export interface SessionState {
   metadata: AudioMetadata;
   sourceLang: string;
   targetLang: string;
+  // Canonical multi-language selection state (P3E.D2). The legacy
+  // `selectedTranslationLanguage` field is load-only input and is stripped by
+  // shared normalization — it must never appear on a persisted session.
+  activeTranslationLanguage?: string;
+  availableTranslationLanguages?: string[];
   transcriptionProvider: TranscriptionProvider;
   translationProvider: TranslationProvider;
   outputFormats: OutputFormat[];

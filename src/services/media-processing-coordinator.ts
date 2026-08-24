@@ -48,6 +48,13 @@ export interface MediaPreparationDependencies {
 /**
  * Prepared-session core returned to the composition root. App's `Session`
  * extends this with project/shorts-only fields.
+ *
+ * The canonical multi-language fields are part of this contract; they are
+ * initialized from the real config target during session hydration
+ * (MediaReviewCoordinator.adopt -> shared normalizeMediaSessionTranslations),
+ * so the first transcription starts canonical. They stay optional here to
+ * keep prepareMediaSession's returned shape byte-compatible for parity
+ * testing.
  */
 export interface PreparedMediaSession {
   sourceFile: string;
@@ -60,6 +67,8 @@ export interface PreparedMediaSession {
   currentIndex: number;
   targetLang: string;
   sourceMediaInfo?: SourceMediaInfo;
+  activeTranslationLanguage?: string;
+  availableTranslationLanguages?: string[];
 }
 
 function isWavPath(filePath: string): boolean {

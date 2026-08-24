@@ -22,7 +22,7 @@ const {
   SETTINGS_SCHEMA_VERSION,
   createDefaultSettings,
   migrateSettings,
-} = require('../../../shared/contracts/settings.ts');
+} = require('../../../shared/contracts/settings-runtime.js');
 
 const SETTINGS_FILENAME = 'settings.json';
 const CORRUPT_DIRNAME = 'Corrupt';

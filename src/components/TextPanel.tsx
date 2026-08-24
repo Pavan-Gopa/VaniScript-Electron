@@ -15,8 +15,12 @@ interface TextPanelProps {
   scrollRef: React.RefObject<HTMLDivElement | null>;
   onScroll: React.UIEventHandler<HTMLDivElement>;
   onUpdateContent: (newContent: string) => void;
-  onAiReprocess: (oldText: string) => Promise<string>;
-  onPolishTranslation?: (oldText: string) => Promise<string>;
+  // Async AI operations receive the captured selection (text plus its line
+  // context) and own their commit through the parent/coordinator; they never
+  // hand text back to this panel. Manual editing/undo stays synchronous via
+  // onUpdateContent.
+  onAiReprocess: (selection: { selectedText: string; contextText: string }) => Promise<void>;
+  onPolishTranslation?: (selection: { selectedText: string; contextText: string }) => Promise<void>;
   onAddToGlossary?: (selectedText: string, lang: 'original' | 'translated') => void;
   karaokeEnabled?: boolean;
   karaokeTimeSec?: number;
@@ -221,15 +225,7 @@ export function TextPanel({
     setMenuPos(null);
     setIsProcessingAI(true);
     try {
-      const newText = await onAiReprocess(textToProcess);
-      if (newText) {
-        const result = replaceSelectedText(content, {
-          selectedText: textToProcess,
-          replacementText: newText,
-          contextText: contextToUse,
-        });
-        if (result.changed) applyContentUpdate(result.text);
-      }
+      await onAiReprocess({ selectedText: textToProcess, contextText: contextToUse });
     } catch (err) {
       console.error(err);
       alert("AI Reprocessing failed.");
@@ -246,15 +242,7 @@ export function TextPanel({
     setMenuPos(null);
     setIsProcessingAI(true);
     try {
-      const newText = await onPolishTranslation(textToProcess);
-      if (newText) {
-        const result = replaceSelectedText(content, {
-          selectedText: textToProcess,
-          replacementText: newText,
-          contextText: contextToUse,
-        });
-        if (result.changed) applyContentUpdate(result.text);
-      }
+      await onPolishTranslation({ selectedText: textToProcess, contextText: contextToUse });
     } catch (err) {
       console.error(err);
       const message = err instanceof Error ? err.message : String(err || 'Unknown error');

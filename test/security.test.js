@@ -221,3 +221,91 @@ test('registerSecurityHandlers throws on invalid deps', () => {
   assert.throws(() => security.registerSecurityHandlers({ app: { on() {} } }),
     /session/);
 });
+
+// --- App lifecycle ordering (packaged-startup regression) -------------------
+
+// Regression: registerAppLifecycle used to call registerSecurityHandlers()
+// before app readiness. That dereferences session.defaultSession and crashed
+// fresh packaged startups with "TypeError: Session can only be received when
+// app is ready". Required behavior: no defaultSession/CSP access before
+// readiness; the deferred whenReady callback wires the web-contents + CSP
+// guards before display-capture/menu/tray/window setup; the window is still
+// created exactly once afterward.
+test('registerAppLifecycle wires security handlers on ready, before any window', () => {
+  const timeline = [];
+  let readyContinuation = null;
+  let webContentsHandler = null;
+
+  const fakeSession = {
+    get defaultSession() {
+      timeline.push('session-accessed');
+      return {
+        webRequest: {
+          onHeadersReceived() { timeline.push('csp-installed'); },
+        },
+      };
+    },
+  };
+  const fakeApp = {
+    setName() {},
+    setAboutPanelOptions() {},
+    getVersion: () => '0.0.0-test',
+    requestSingleInstanceLock: () => true,
+    on(evt, handler) {
+      if (evt === 'web-contents-created') {
+        timeline.push('web-contents-guard-registered');
+        webContentsHandler = handler;
+      }
+    },
+    whenReady() {
+      timeline.push('whenReady-called');
+      return { then(cb) { readyContinuation = cb; } };
+    },
+  };
+  const windowManager = {
+    configureDisplayMediaCapture() { timeline.push('display-capture-configured'); },
+    installAppMenu() { timeline.push('menu-installed'); },
+    installTray() { timeline.push('tray-installed'); },
+    createWindow() { timeline.push('window-created'); },
+    showMainWindow() {},
+    setIsQuitting() {},
+  };
+
+  const lifecycle = withElectronStub({ app: fakeApp, session: fakeSession }, () =>
+    require('../electron/main/bootstrap/app-lifecycle')
+  );
+  lifecycle.registerAppLifecycle({
+    getTempDir: () => '',
+    cleanupTempDir: () => {},
+    startMcpServer: () => {},
+    stopMcpServer: () => {},
+    broadcastSharedLocalModels: () => {},
+    windowManager,
+  });
+
+  // Pre-ready registration must not touch session.defaultSession (the exact
+  // crash from the field report) nor create anything.
+  assert.strictEqual(typeof readyContinuation, 'function',
+    'whenReady continuation must be registered synchronously');
+  assert.ok(!timeline.includes('session-accessed'),
+    'defaultSession must not be accessed before app readiness');
+  assert.ok(!timeline.includes('csp-installed'),
+    'CSP must not be enforced before app readiness');
+  assert.ok(!timeline.includes('window-created'),
+    'no window may be created before app readiness');
+
+  // Fire the deferred readiness callback.
+  readyContinuation();
+
+  const at = (name) => timeline.indexOf(name);
+  assert.ok(webContentsHandler, 'web-contents-created guard registered on ready');
+  assert.ok(timeline.includes('csp-installed'), 'CSP enforced on ready');
+  for (const step of ['display-capture-configured', 'menu-installed', 'tray-installed', 'window-created']) {
+    assert.ok(at('web-contents-guard-registered') < at(step)
+      && at('csp-installed') < at(step),
+      `security wiring must precede ${step}`);
+  }
+  assert.strictEqual(
+    timeline.filter((entry) => entry === 'window-created').length, 1,
+    'window creation occurs exactly once, after security wiring');
+});

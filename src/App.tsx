@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Settings, Download, RefreshCw, Play, Pause, FolderOpen, Share2, Trash2, Upload, Archive, ChevronDown, ChevronRight, ArrowLeft, Search, HelpCircle, Film, FileAudio, Info, Sparkles } from 'lucide-react';
-import { AppSettings, ChunkData, GlossaryEntry, LanguageResult, ProjectSummary, SessionConfig, SourceMediaInfo, TranscriptCue, UsageStats } from './types';
+import { AppSettings, GlossaryEntry, ProjectSummary, SessionConfig, SourceMediaInfo, TranscriptCue, UsageStats } from './types';
 import { loadSettings, saveSettings, loadUsage, applyTheme, trackUsage } from './services/storage';
 import { transcribeChunkGemini, transcribeChunkOpenAI, fileToBase64 } from './services/transcription';
 import { prepareMediaSession, PreparedMediaSession } from './services/media-processing-coordinator';
+import { MediaReviewCoordinator, ReviewOperation, ReviewSide, SelectionPayload } from './services/media-review-coordinator';
 import { SettingsModal } from './components/SettingsModal';
 import { Workspace } from './components/Workspace';
 import { BatchWorkspace } from './components/BatchWorkspace';
-import { ConfigPanel } from './components/ConfigPanel';
+import { ConfigPanel, TARGET_LANGUAGE_OPTIONS } from './components/ConfigPanel';
 import { OnboardingTour } from './components/OnboardingTour';
 import { Logo } from './components/Logo';
 import { buildChunkPreview, buildTranscriptExport } from './lib/review-format';
@@ -70,8 +71,8 @@ interface Session extends PreparedMediaSession {
   shortsPlans?: ShortsClipPlan[];
   selectedShortsPlanIndexes?: number[];
 }
-
 type LocalAsrSegment = { t0?: number; t1?: number; text?: string } | [number, number, string];
+
 type GlossaryScope = 'current' | 'processed';
 type ShortsExportProgress = {
   jobId: string;
@@ -433,12 +434,15 @@ export default function App() {
   const [selectedShortsPlanIndexes, setSelectedShortsPlanIndexes] = useState<number[]>([]);
   const [shortsVideoSourceInfo, setShortsVideoSourceInfo] = useState<{ width: number; height: number; durationSec: number; fps?: number } | null>(null);
   const [glossaryDraft, setGlossaryDraft] = useState<GlossaryDraft | null>(null);
+  const [addLanguageChoice, setAddLanguageChoice] = useState('');
+  const [isAddingTranslation, setIsAddingTranslation] = useState(false);
   const [editingProvider, setEditingProvider] = useState<string>(() => loadShortsDefaults().planningProvider || settings.translationProvider);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const navigation = useNavigationStore();
   const navigate = useNavigate();
   const batchSnapshot = useBatchStore();
   const batchBadge = getBatchBadgeState(batchSnapshot.scheduler, batchSnapshot.jobs);
+  const batchBadgeLabel = batchBadge.charAt(0).toUpperCase() + batchBadge.slice(1);
   useEffect(() => {
     void batchStore.refresh();
   }, []);
@@ -455,6 +459,14 @@ export default function App() {
   const keyRepeatRef = useRef<Record<string, number>>({});
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  // Media review coordinator (P3E.D2): owns every source/translation
+  // mutation plus the transient generation ledger. Sessions are read through
+  // sessionRef so async completions validate against the freshest snapshot.
+  const reviewRef = useRef<MediaReviewCoordinator | null>(null);
+  if (!reviewRef.current) reviewRef.current = new MediaReviewCoordinator();
+  const review = reviewRef.current;
+  const sessionRef = useRef<Session | null>(null);
+  sessionRef.current = session;
   const audioRef = useRef<HTMLAudioElement>(null);
   const currentAudioPath = useMemo(
     () => session?.chunks[session.currentIndex]?.filePath || session?.wavPath || session?.sourceFile || '',
@@ -502,11 +514,17 @@ export default function App() {
     });
   }, [onboardingBuildId]);
 
+  // Session/project identity switch: projectId when present, otherwise the
+  // stable source path (creation identity). Transient per-session drafts
+  // reset here — the Add Translation target among them — while ordinary
+  // edits, chunk navigation, active-language switches, and autosave
+  // revisions keep identity and therefore the user's in-progress choice.
   useEffect(() => {
     setShortsPlans(session?.shortsPlans ?? []);
     setSelectedShortsPlanIndex(null);
     setSelectedShortsPlanIndexes(session?.selectedShortsPlanIndexes ?? []);
     setShortsVideoSourceInfo(null);
+    setAddLanguageChoice('');
   }, [session?.projectId, session?.sourceFile]);
 
   useEffect(() => {
@@ -1007,28 +1025,6 @@ export default function App() {
     ].join('\n');
   }, []);
 
-  const applyGlossaryEntryToChunk = useCallback((chunk: ChunkData, entry: GlossaryEntry): ChunkData => {
-    const original = applyGlossaryToText(chunk.original, [entry], 'source').text;
-    const translated = applyGlossaryToText(chunk.translated, [entry], 'translation').text;
-    const applyFormats = (formats: LanguageResult | undefined, target: 'source' | 'translation') => {
-      if (!formats) return formats;
-      return Object.fromEntries(
-        Object.entries(formats).map(([key, value]) => [
-          key,
-          typeof value === 'string' ? applyGlossaryToText(value, [entry], target).text : value,
-        ])
-      ) as LanguageResult;
-    };
-
-    return {
-      ...chunk,
-      original,
-      translated,
-      originalFormats: applyFormats(chunk.originalFormats, 'source'),
-      translatedFormats: applyFormats(chunk.translatedFormats, 'translation'),
-    };
-  }, []);
-
   const openGlossaryDraft = useCallback((selectedText: string, lang: 'original' | 'translated') => {
     const cleaned = selectedText.replace(/\s+/g, ' ').trim();
     if (!cleaned) return;
@@ -1087,31 +1083,43 @@ export default function App() {
     saveSettings(nextSettings);
     setSettings(nextSettings);
 
-    setSession(prev => {
-      if (!prev) return prev;
-      const chunks = prev.chunks.map((chunk) => {
+    const currentSession = sessionRef.current;
+    if (currentSession) {
+      const touched: number[] = [];
+      currentSession.chunks.forEach((chunk, position) => {
         const shouldApply = glossaryDraft.scope === 'current'
-          ? chunk.index === prev.currentIndex
-          : chunk.status === 'done' || chunk.index === prev.currentIndex;
-        return shouldApply ? applyGlossaryEntryToChunk(chunk, entry) : chunk;
+          ? chunk.index === currentSession.currentIndex
+          : chunk.status === 'done' || chunk.index === currentSession.currentIndex;
+        if (shouldApply) touched.push(position);
       });
-      return { ...prev, chunks };
-    });
+      // Bulk rewrites go through the coordinator so concurrent operations on
+      // touched chunks drop, every eager projection is refreshed, and each
+      // archive variant only receives its own language's replacement.
+      setSession(review.applyGlossaryEntry(currentSession, touched, entry));
+    }
     setGlossaryDraft(null);
-  }, [applyGlossaryEntryToChunk, glossaryDraft, session?.targetLang]);
+  }, [glossaryDraft, session?.targetLang]);
 
+  // Audio-aware review: the selection baseline is captured before any await;
+  // the parent commits through the coordinator, so TextPanel never applies
+  // returned text itself.
   const runAudioAwareReview = useCallback(async (
-    selectedText: string,
-    mode: 'original' | 'translated'
-  ): Promise<string> => {
-    if (!session || !window.electronAPI) return selectedText;
+    selection: SelectionPayload,
+    mode: ReviewSide
+  ): Promise<void> => {
+    const currentSession = sessionRef.current;
+    if (!currentSession || !window.electronAPI) return;
     if (!settingsRef.current.geminiKey) {
       alert('Audio-Aware Review currently requires a Gemini API key in Settings.');
-      return selectedText;
+      return;
     }
 
-    const chunk = session.chunks[session.currentIndex];
-    if (!chunk?.filePath) return selectedText;
+    const index = currentSession.currentIndex;
+    const chunk = currentSession.chunks[index];
+    if (!chunk?.filePath) return;
+
+    const operation = review.beginSelectionOperation(currentSession, index, mode, selection, 'review');
+    if (!operation) return;
 
     const file = await window.electronAPI.readFileBuffer({ filePath: chunk.filePath });
     if (!file.success) {
@@ -1124,63 +1132,78 @@ export default function App() {
     );
     const audioBase64 = await fileToBase64(blob);
 
-    return reviewFragmentWithGeminiAudio({
+    const revised = await reviewFragmentWithGeminiAudio({
       audioBase64,
       mimeType: blob.type,
-      selectedText,
+      selectedText: selection.selectedText,
       mode,
-      targetLang: session.targetLang,
+      targetLang: currentSession.targetLang,
       apiKey: settingsRef.current.geminiKey,
-      speakerHint: session.config.lecturer,
+      speakerHint: currentSession.config.lecturer,
       glossaryBlock: buildGlossaryPromptBlock(settingsRef.current.glossary),
       promptPresets: settingsRef.current.promptPresets,
     });
-  }, [session]);
 
-  const runLiteraryPolish = useCallback(async (selectedText: string): Promise<string> => {
-    if (!session) return selectedText;
-    const providerId = editingProvider || session.config.translationProvider;
+    const latest = sessionRef.current;
+    if (!latest) return;
+    const next = review.commitSelectionReplacement(latest, operation, revised, new Date().toISOString());
+    if (next) setSession(next);
+  }, [review]);
+
+  const runLiteraryPolish = useCallback(async (selection: SelectionPayload): Promise<void> => {
+    const currentSession = sessionRef.current;
+    if (!currentSession) return;
+    const providerId = editingProvider || currentSession.config.translationProvider;
     const glossaryBlock = buildGlossaryPromptBlock(settingsRef.current.glossary);
     const base = {
-      text: selectedText,
-      targetLang: session.targetLang,
-      speakerHint: session.config.lecturer,
+      text: selection.selectedText,
+      targetLang: currentSession.targetLang,
+      speakerHint: currentSession.config.lecturer,
       glossaryBlock,
       promptPresets: settingsRef.current.promptPresets,
     };
 
+    // Baseline captured up front so edits made during the provider call drop
+    // the commit instead of landing on drifted text.
+    const operation = review.beginSelectionOperation(currentSession, currentSession.currentIndex, 'translated', selection, 'polish');
+    if (!operation) return;
+
+    let polished: string;
     if (isLocalTranslationProvider(settingsRef.current, providerId)) {
       await reconcileLocalModelsWithDisk();
       if (!isLocalTranslationProvider(settingsRef.current, providerId)) {
         throw new Error(`Local translation model ${providerId} is not installed. Download it in Settings.`);
       }
-      return polishTranslationLocally({ ...base, modelId: providerId });
+      polished = await polishTranslationLocally({ ...base, modelId: providerId });
+    } else {
+      const apiKey = getApiKeyForProvider(settingsRef.current, providerId);
+      if (!apiKey) {
+        alert('Selected editing model has no API key configured.');
+        return;
+      }
+
+      switch (providerId) {
+        case 'gemini-cloud':
+          polished = await polishTranslationWithGemini({ ...base, apiKey });
+          break;
+        case 'gpt-cloud':
+          polished = await polishTranslationWithOpenAI({ ...base, apiKey });
+          break;
+        case 'claude-cloud':
+          polished = await polishTranslationWithClaude({ ...base, apiKey });
+          break;
+        default:
+          throw new Error(`Unsupported editing model: ${providerId}`);
+      }
+
+      recordCloudUsage(providerId, { inputText: selection.selectedText, outputText: polished });
     }
 
-    const apiKey = getApiKeyForProvider(settingsRef.current, providerId);
-    if (!apiKey) {
-      alert('Selected editing model has no API key configured.');
-      return selectedText;
-    }
-
-    let polished = selectedText;
-    switch (providerId) {
-      case 'gemini-cloud':
-        polished = await polishTranslationWithGemini({ ...base, apiKey });
-        break;
-      case 'gpt-cloud':
-        polished = await polishTranslationWithOpenAI({ ...base, apiKey });
-        break;
-      case 'claude-cloud':
-        polished = await polishTranslationWithClaude({ ...base, apiKey });
-        break;
-      default:
-        throw new Error(`Unsupported editing model: ${providerId}`);
-    }
-
-    recordCloudUsage(providerId, { inputText: selectedText, outputText: polished });
-    return polished;
-  }, [editingProvider, reconcileLocalModelsWithDisk, recordCloudUsage, session]);
+    const latest = sessionRef.current;
+    if (!latest) return;
+    const next = review.commitSelectionReplacement(latest, operation, polished, new Date().toISOString());
+    if (next) setSession(next);
+  }, [editingProvider, recordCloudUsage, reconcileLocalModelsWithDisk, review]);
 
   const translateWithProvider = useCallback(async (
     originalText: string,
@@ -1228,24 +1251,18 @@ export default function App() {
   }, [reconcileLocalModelsWithDisk]);
 
   // ─── Transcribe one chunk ─────────────────────────────────────────────────
-  const doTranscribe = useCallback(async (
+  // Provider pipeline only; begin/commit/fail bookkeeping lives in the review
+  // coordinator so stale completions (old session, edited source, newer
+  // operation) land as no-ops and never restore older selections.
+  const runTranscription = useCallback(async (
+    operation: ReviewOperation,
     chunkFilePath: string,
-    chunkIndex: number,
     cfg: SessionConfig,
     transcriptionApiKey: string,
     chunkStartSec = 0,
     chunkDurationSec = 0
   ) => {
-    if (isTranscribing.current) return;
-    isTranscribing.current = true;
-
-    setSession(prev => {
-      if (!prev) return prev;
-      const c = [...prev.chunks];
-      c[chunkIndex] = { ...c[chunkIndex], status: 'processing' };
-      return { ...prev, chunks: c };
-    });
-
+    const chunkIndex = operation.chunkIndex;
     try {
       const transcConfig = {
         sourceLang: settingsRef.current.defaultSourceLang,
@@ -1387,34 +1404,29 @@ export default function App() {
           .map((line) => ({ startSec: line.startSec, endSec: line.endSec, text: line.text }));
       }
 
-      setSession(prev => {
-        if (!prev) return prev;
-        const c = [...prev.chunks];
-        c[chunkIndex] = {
-          ...c[chunkIndex],
-          original,
-          translated,
-          originalFormats,
-          translatedFormats,
-          unrecognizedFragments,
-          originalCues,
-          translatedCues,
-          status: 'done',
-        };
-        return { ...prev, chunks: c };
+      const currentSession = sessionRef.current;
+      if (!currentSession) return;
+      const next = review.commitTranscription(currentSession, operation, {
+        original,
+        originalFormats,
+        originalCues,
+        unrecognizedFragments,
+        translatedText: translated || undefined,
+        translatedCues,
+        translatedFormats,
+        provider: shouldTranslateChunk(cfg.targetLang) ? cfg.translationProvider : undefined,
+        updatedAt: new Date().toISOString(),
       });
-    } catch (err: any) {
+      if (next) setSession(next);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
       console.error(`Chunk ${chunkIndex} failed:`, err);
-      setSession(prev => {
-        if (!prev) return prev;
-        const c = [...prev.chunks];
-        c[chunkIndex] = { ...c[chunkIndex], status: 'error', original: `Error: ${err?.message ?? err}` };
-        return { ...prev, chunks: c };
-      });
-    } finally {
-      isTranscribing.current = false;
+      const currentSession = sessionRef.current;
+      if (!currentSession) return;
+      const next = review.failTranscription(currentSession, operation, message || 'Transcription failed');
+      if (next) setSession(next);
     }
-  }, [buildMetadataPrefix, reconcileLocalModelsWithDisk, recordCloudUsage, translateWithProvider]);
+  }, [buildMetadataPrefix, reconcileLocalModelsWithDisk, recordCloudUsage, review, translateWithProvider]);
 
   // ─── Start engine ─────────────────────────────────────────────────────────
   const handleStartEngine = async (cfg: SessionConfig) => {
@@ -1453,71 +1465,88 @@ export default function App() {
           },
         },
       );
-
-      setSession(prepared);
+      // Hydration: canonical normalization (active/available languages from
+      // the real config target) plus a fresh generation epoch, so the first
+      // transcription starts canonical.
+      const adopted = review.adopt(prepared);
+      const begun = review.beginTranscription(adopted, 0, cfg, { retry: false });
+      if (!begun) return;
+      setSession(begun.session);
       setScreen('review');
 
       // Start transcribing first chunk
-      doTranscribe(prepared.chunks[0].filePath, 0, cfg, transcriptionApiKey, prepared.chunks[0].startSec, prepared.chunks[0].durationSec);
+      void runTranscription(begun.operation, adopted.chunks[0].filePath, cfg, transcriptionApiKey, adopted.chunks[0].startSec, adopted.chunks[0].durationSec);
 
-    } catch (err: any) {
+    } catch (err) {
       console.error('Engine start failed:', err);
-      setProcMsg(`Error: ${err?.message ?? String(err)}`);
+      const message = err instanceof Error ? err.message : String(err);
+      setProcMsg(`Error: ${message}`);
       setTimeout(() => setScreen('config'), 3000);
     }
   };
 
   // ─── Handle chunk actions ─────────────────────────────────────────────────
   const handleApproveAndNext = () => {
-    if (!session) return;
+    const currentSession = sessionRef.current;
+    if (!currentSession) return;
     const activeConfig = {
-      ...session.config,
-      transcriptionProvider: settingsRef.current.transcriptionProvider || session.config.transcriptionProvider,
-      translationProvider: shouldTranslateChunk(session.targetLang)
-        ? (settingsRef.current.translationProvider || session.config.translationProvider)
-        : session.config.translationProvider,
+      ...currentSession.config,
+      transcriptionProvider: settingsRef.current.transcriptionProvider || currentSession.config.transcriptionProvider,
+      translationProvider: shouldTranslateChunk(currentSession.targetLang)
+        ? (settingsRef.current.translationProvider || currentSession.config.translationProvider)
+        : currentSession.config.translationProvider,
     };
-    const { currentIndex, chunks } = session;
+    const { currentIndex, chunks } = currentSession;
     const nextIdx = currentIndex + 1;
     const transcriptionApiKey = getApiKeyForProvider(settingsRef.current, activeConfig.transcriptionProvider);
 
-    setSession(prev => {
-      if (!prev) return prev;
-      const c = [...prev.chunks];
-      c[currentIndex] = { ...c[currentIndex], approved: true };
-      return { ...prev, config: activeConfig, chunks: c, currentIndex: Math.min(nextIdx, c.length - 1) };
-    });
+    // Approval stays chunk-global; the cursor advances without touching
+    // archives. Both moves route through the coordinator.
+    setSession(review.setCurrentIndex(
+      review.setApproval(currentSession, currentIndex, true),
+      Math.min(nextIdx, chunks.length - 1),
+    ));
 
     if (nextIdx >= chunks.length) { setScreen('export'); return; }
 
     const nextChunk = chunks[nextIdx];
     if (nextChunk?.status === 'pending') {
-      setTimeout(() => doTranscribe(nextChunk.filePath, nextIdx, activeConfig, transcriptionApiKey, nextChunk.startSec, nextChunk.durationSec), 50);
+      setTimeout(() => {
+        const latest = sessionRef.current;
+        if (!latest) return;
+        const begun = review.beginTranscription(latest, nextIdx, activeConfig, { retry: false });
+        if (!begun) return;
+        const target = begun.session.chunks[nextIdx];
+        if (!target) return;
+        setSession(begun.session);
+        void runTranscription(begun.operation, target.filePath, activeConfig, transcriptionApiKey, target.startSec, target.durationSec);
+      }, 50);
     }
   };
 
   const handleRetry = (index: number) => {
-    if (!session) return;
+    const currentSession = sessionRef.current;
+    if (!currentSession) return;
     const activeConfig = {
-      ...session.config,
-      transcriptionProvider: settingsRef.current.transcriptionProvider || session.config.transcriptionProvider,
-      translationProvider: shouldTranslateChunk(session.targetLang)
-        ? (settingsRef.current.translationProvider || session.config.translationProvider)
-        : session.config.translationProvider,
+      ...currentSession.config,
+      transcriptionProvider: settingsRef.current.transcriptionProvider || currentSession.config.transcriptionProvider,
+      translationProvider: shouldTranslateChunk(currentSession.targetLang)
+        ? (settingsRef.current.translationProvider || currentSession.config.translationProvider)
+        : currentSession.config.translationProvider,
     };
     const transcriptionApiKey = getApiKeyForProvider(settingsRef.current, activeConfig.transcriptionProvider);
     if (isCloudProvider(activeConfig.transcriptionProvider) && !transcriptionApiKey) {
       alert('Please add the API key for the selected transcription provider in Settings first.');
       return;
     }
-    const chunk = session.chunks[index];
-    setSession(prev => {
-      if (!prev) return prev;
-      const c = [...prev.chunks];
-      c[index] = { ...c[index], approved: false, status: 'pending' };
-      return { ...prev, config: activeConfig, chunks: c };
-    });
-    doTranscribe(chunk.filePath, index, activeConfig, transcriptionApiKey, chunk.startSec, chunk.durationSec);
+    const chunk = currentSession.chunks[index];
+    if (!chunk) return;
+    // Retry resets approval/status at start; a valid late success preserves
+    // approval/current-index changes made after start (coordinator commit).
+    const begun = review.beginTranscription(currentSession, index, activeConfig, { retry: true });
+    if (!begun) return;
+    setSession(begun.session);
+    void runTranscription(begun.operation, chunk.filePath, activeConfig, transcriptionApiKey, chunk.startSec, chunk.durationSec);
   };
 
   const handleRetranscribeCurrent = () => {
@@ -1526,22 +1555,23 @@ export default function App() {
   };
 
   const handleRetryTranslation = async () => {
-    if (!session) return;
-    const index = session.currentIndex;
-    const chunk = session.chunks[index];
+    const currentSession = sessionRef.current;
+    if (!currentSession) return;
+    const index = currentSession.currentIndex;
+    const chunk = currentSession.chunks[index];
     if (!chunk?.original?.trim()) {
       alert('No source transcript is available for translation.');
       return;
     }
-    if (!shouldTranslateChunk(session.targetLang)) {
+    if (!shouldTranslateChunk(currentSession.targetLang)) {
       alert('Choose a target language before retrying translation.');
       return;
     }
 
     const activeConfig = {
-      ...session.config,
-      targetLang: session.targetLang,
-      translationProvider: settingsRef.current.translationProvider || session.config.translationProvider,
+      ...currentSession.config,
+      targetLang: currentSession.targetLang,
+      translationProvider: settingsRef.current.translationProvider || currentSession.config.translationProvider,
     };
     if (!activeConfig.translationProvider) {
       alert('Choose a translation model or set target language to Same.');
@@ -1555,12 +1585,11 @@ export default function App() {
       }
     }
 
-    setSession(prev => {
-      if (!prev) return prev;
-      const c = [...prev.chunks];
-      c[index] = { ...c[index], status: 'processing' };
-      return { ...prev, config: activeConfig, chunks: c };
-    });
+    // Captured active language + baselines at begin; the commit writes only
+    // this captured key and drops after any source/edit/session/language race.
+    const begun = review.beginTranslationRetry(currentSession, index);
+    if (!begun) return;
+    setSession(begun.session);
 
     try {
       let translated = await translateWithProvider(chunk.original, activeConfig);
@@ -1580,26 +1609,94 @@ export default function App() {
         TXT: `${localizedMetadataPrefix(activeConfig, index === 0, activeConfig.targetLang)}${stripMetadataBlock(translated)}`.trim(),
       };
 
-      setSession(prev => {
-        if (!prev) return prev;
-        const c = [...prev.chunks];
-        c[index] = {
-          ...c[index],
-          translated,
-          translatedFormats,
-          translatedCues,
-          status: 'done',
-        };
-        return { ...prev, config: activeConfig, chunks: c };
+      const latest = sessionRef.current;
+      if (!latest) return;
+      const next = review.commitTranslationResult(latest, begun.operation, {
+        text: translated,
+        cues: translatedCues,
+        formats: translatedFormats,
+        provider: activeConfig.translationProvider,
+        updatedAt: new Date().toISOString(),
       });
-    } catch (err: any) {
-      alert(`Translation failed: ${err?.message ?? String(err)}`);
-      setSession(prev => {
-        if (!prev) return prev;
-        const c = [...prev.chunks];
-        c[index] = { ...c[index], status: c[index].original ? 'done' : 'error' };
-        return { ...prev, chunks: c };
-      });
+      if (next) setSession(next);
+    } catch (err) {
+      alert(`Translation failed: ${err instanceof Error ? err.message : String(err)}`);
+      const latest = sessionRef.current;
+      if (!latest) return;
+      const next = review.failTranslationRetry(latest, begun.operation);
+      if (next) setSession(next);
+    }
+  };
+
+  // ─── Add Translation (progressive per-language sweep) ─────────────────────
+  const handleAddTranslation = async () => {
+    const currentSession = sessionRef.current;
+    if (!currentSession || !addLanguageChoice || isAddingTranslation) return;
+    const language = addLanguageChoice;
+    const availability = getAvailableTranslationProviders(settingsRef.current, language);
+    const providerId = settingsRef.current.translationProvider || currentSession.config.translationProvider;
+    if (!availability.enabled || !availability.providers.some((provider) => provider.id === providerId)) {
+      alert(`Choose a translation model that supports ${language} in Settings first.`);
+      return;
+    }
+    if (isCloudProvider(providerId) && !getApiKeyForProvider(settingsRef.current, providerId)) {
+      alert('Please add the API key for the selected translation provider in Settings first.');
+      return;
+    }
+
+    setIsAddingTranslation(true);
+    try {
+      // Register and select immediately; the projection switches synchronously
+      // while every prior language stays archived.
+      const registered = review.addLanguage(currentSession, language);
+      if (!registered) return;
+      setSession(registered);
+      const sweepConfig: SessionConfig = { ...registered.config, targetLang: language, translationProvider: providerId };
+
+      for (let index = 0; index < registered.chunks.length; index += 1) {
+        const latest = sessionRef.current;
+        if (!latest) break;
+        // Per-chunk operation: unusable sources, replaced chunks, or chunks
+        // with newer in-flight work are skipped instead of blocking the sweep.
+        const operation = review.beginLanguageSweepStep(latest, index, language);
+        if (!operation) continue;
+        const chunk = latest.chunks[index];
+        try {
+          let translated = await translateWithProvider(chunk.original, sweepConfig);
+          recordCloudUsage(providerId, {
+            inputText: stripMetadataBlock(chunk.original),
+            outputText: translated,
+          });
+          translated = normalizeRelativeTimestamps(translated, chunk.startSec, chunk.endSec);
+          if (settingsRef.current.glossary.length > 0) {
+            translated = applyGlossaryToText(translated, settingsRef.current.glossary, 'translation').text;
+          }
+          const translatedCues = parseKaraokeLines(translated, chunk.startSec, chunk.endSec)
+            .filter((line): line is KaraokeTimedLine => line.kind === 'timed')
+            .map((line) => ({ startSec: line.startSec, endSec: line.endSec, text: line.text }));
+          const translatedFormats = {
+            TXT: `${localizedMetadataPrefix(sweepConfig, index === 0, language)}${stripMetadataBlock(translated)}`.trim(),
+          };
+
+          // Commits archive only the captured language; a user language switch
+          // mid-sweep never gets reselected by a late completion.
+          const freshest = sessionRef.current;
+          if (!freshest) break;
+          const next = review.commitLanguageSweepStep(freshest, operation, {
+            text: translated,
+            cues: translatedCues,
+            formats: translatedFormats,
+            provider: providerId,
+            updatedAt: new Date().toISOString(),
+          });
+          if (next) setSession(next);
+        } catch (error) {
+          console.warn(`Add Translation skipped segment ${index + 1}:`, error);
+        }
+      }
+    } finally {
+      setIsAddingTranslation(false);
+      setAddLanguageChoice('');
     }
   };
 
@@ -1616,7 +1713,9 @@ export default function App() {
     const nextIndex = typeof options.chunkIndex === 'number'
       ? clampChunkIndex(options.chunkIndex, loadedProjectSession.chunks.length)
       : clampChunkIndex(loadedProjectSession.currentIndex, loadedProjectSession.chunks.length);
-    const loaded = { ...loadedProjectSession, currentIndex: nextIndex };
+    // Project open activates a fresh generation epoch over the normalized
+    // session (legacy selected stripped, variants re-keyed and projected).
+    const loaded = review.adopt({ ...loadedProjectSession, currentIndex: nextIndex });
     setSourceFile(loaded.sourceFile);
     setSourceFileName(loaded.sourceFileName);
     setSession(loaded);
@@ -1640,11 +1739,10 @@ export default function App() {
   };
 
   const openCurrentSessionChunk = (chunkIndex: number) => {
-    const nextIndex = clampChunkIndex(chunkIndex, session?.chunks.length ?? 0);
-    setSession((prev) => {
-      if (!prev) return prev;
-      return { ...prev, currentIndex: nextIndex };
-    });
+    const currentSession = sessionRef.current;
+    if (!currentSession) return;
+    const nextIndex = clampChunkIndex(chunkIndex, currentSession.chunks.length);
+    setSession(review.setCurrentIndex(currentSession, nextIndex));
     setScreen('review');
     closeProjectSidebar();
   };
@@ -1675,7 +1773,7 @@ export default function App() {
       return;
     }
     await refreshProjects();
-    const loaded = result.project.session as Session;
+    const loaded = review.adopt(result.project.session as Session);
     setSourceFile(loaded.sourceFile);
     setSourceFileName(loaded.sourceFileName);
     setSession(loaded);
@@ -1691,6 +1789,7 @@ export default function App() {
       return;
     }
     if (session?.projectId === id) {
+      review.reset();
       setSession(null);
       setSourceFile('');
       setSourceFileName('');
@@ -1716,6 +1815,7 @@ export default function App() {
       alert(result?.error || 'Could not clear project archive.');
       return;
     }
+    review.reset();
     setSession(null);
     setSourceFile('');
     setSourceFileName('');
@@ -1723,13 +1823,6 @@ export default function App() {
     await refreshProjects();
   };
 
-  const handleUpdateChunk = (index: number, patch: Partial<ChunkData>) => {
-    setSession(prev => {
-      if (!prev) return prev;
-      const c = [...prev.chunks]; c[index] = { ...c[index], ...patch };
-      return { ...prev, chunks: c };
-    });
-  };
 
   const download = (content: string, name: string) => {
     const a = document.createElement('a');
@@ -2406,7 +2499,7 @@ export default function App() {
     switch (name) {
       case 'get_project_state':
         return {
-          session,
+          session: sessionRef.current,
           settings,
           currentScreen: screen,
           shortsPlans,
@@ -2414,21 +2507,25 @@ export default function App() {
         };
       case 'update_chunk_text': {
         const { chunkIndex, original, translated } = args;
-        if (!session || chunkIndex < 0 || chunkIndex >= session.chunks.length) {
+        const currentSession = sessionRef.current;
+        if (!currentSession || chunkIndex < 0 || chunkIndex >= currentSession.chunks.length) {
           throw new Error(`Invalid chunkIndex ${chunkIndex}`);
         }
-        handleUpdateChunk(chunkIndex, {
-          ...(original !== undefined ? { original } : {}),
-          ...(translated !== undefined ? { translated } : {}),
-        });
+        let next = currentSession;
+        if (original !== undefined) next = review.editSource(next, chunkIndex, original, original);
+        if (translated !== undefined) {
+          next = review.editTranslation(next, chunkIndex, translated, translated, new Date().toISOString());
+        }
+        setSession(next);
         return { success: true, message: `Updated segment ${chunkIndex + 1}` };
       }
       case 'approve_chunk': {
         const { chunkIndex, approved } = args;
-        if (!session || chunkIndex < 0 || chunkIndex >= session.chunks.length) {
+        const currentSession = sessionRef.current;
+        if (!currentSession || chunkIndex < 0 || chunkIndex >= currentSession.chunks.length) {
           throw new Error(`Invalid chunkIndex ${chunkIndex}`);
         }
-        handleUpdateChunk(chunkIndex, { approved });
+        setSession(review.setApproval(currentSession, chunkIndex, approved));
         return { success: true, message: `Updated approval for segment ${chunkIndex + 1} to ${approved}` };
       }
       case 'get_subtitle_style':
@@ -2437,7 +2534,7 @@ export default function App() {
         const { stylePatch } = args;
         setShortsSettings(prev => ({
           ...prev,
-          ...stylePatch
+          ...stylePatch,
         }));
         return { success: true, message: 'Updated subtitle styles' };
       }
@@ -2547,7 +2644,7 @@ export default function App() {
       default:
         throw new Error(`Unknown tool name ${name}`);
     }
-  }, [session, settings, screen, shortsPlans, shortsSettings, selectedShortsPlanIndex, handleUpdateChunk]);
+  }, [review, screen, settings, shortsPlans, shortsSettings, selectedShortsPlanIndex]);
 
   useEffect(() => {
     if (!window.electronAPI?.onMcpCallTool) return;
@@ -2568,17 +2665,6 @@ export default function App() {
       <div className="app-bg" />
       <div className="app-shell">
         <div className="drag-region" />
-        <button
-          type="button"
-          className="settings-btn"
-          aria-label="Open Batch workspace"
-          title={`Batch · ${batchBadge}`}
-          onClick={() => navigate(NAVIGATION_ROUTES.BATCH)}
-          style={{ right: 62, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 3, width: 'auto', minWidth: 32, padding: '0 7px', color: batchBadge === 'failed' ? '#ff7070' : 'inherit' }}
-        >
-          <Play size={13} />
-          <span style={{ fontSize: 8, fontWeight: 800, textTransform: 'uppercase' }}>{batchBadge}</span>
-        </button>
 
         {/* Settings button */}
         {screen !== 'review' && (
@@ -2589,6 +2675,8 @@ export default function App() {
                 setOnboardingVisible(!settings.annotationMode);
               }}
               title={settings.annotationMode ? "Disable Help Tour" : "Enable Help Tour"}
+              aria-label={settings.annotationMode ? "Disable Help Tour" : "Enable Help Tour"}
+              aria-pressed={settings.annotationMode}
             >
               <HelpCircle size={15} style={{ color: settings.annotationMode ? 'var(--accent)' : 'inherit' }} />
             </button>
@@ -2596,13 +2684,37 @@ export default function App() {
               className={`settings-btn inline ${pane.showChatSidebar ? 'active' : ''}`}
               onClick={() => paneStore.setChatSidebar(!pane.showChatSidebar)}
               title="AI Assistant"
+              aria-label="AI Assistant"
+              aria-pressed={pane.showChatSidebar}
             >
               <Sparkles size={15} style={{ color: pane.showChatSidebar ? 'var(--accent)' : 'inherit' }} />
             </button>
-            <button className="settings-btn inline" onClick={() => { navigate(NAVIGATION_ROUTES.PROJECT); openProjectSidebar(); }} title="Projects">
+            <button
+              className="settings-btn inline"
+              onClick={() => { navigate(NAVIGATION_ROUTES.PROJECT); openProjectSidebar(); }}
+              aria-label="Projects"
+              title="Projects"
+            >
               <FolderOpen size={15} />
             </button>
-            <button className="settings-btn inline" data-tour="settings-btn" onClick={() => { setShowSettings(true); setSettingsTab(0); }} title="Settings">
+            <button
+              className={`settings-btn inline batch-action ${navigation.route === NAVIGATION_ROUTES.BATCH ? 'active' : ''} ${batchBadge === 'failed' ? 'is-failed' : ''}`}
+              onClick={() => navigate(NAVIGATION_ROUTES.BATCH)}
+              aria-label={`Batch workspace · ${batchBadgeLabel}`}
+              aria-current={navigation.route === NAVIGATION_ROUTES.BATCH ? 'page' : undefined}
+              title={`Batch · ${batchBadgeLabel}`}
+            >
+              <Play size={13} aria-hidden="true" />
+              <span className="batch-action-label">Batch</span>
+              <span className="batch-action-status">{batchBadgeLabel}</span>
+            </button>
+            <button
+              className="settings-btn inline"
+              data-tour="settings-btn"
+              onClick={() => { setShowSettings(true); setSettingsTab(0); }}
+              aria-label="Settings"
+              title="Settings"
+            >
               <Settings size={15} />
             </button>
           </div>
@@ -2648,6 +2760,9 @@ export default function App() {
         {/* ── REVIEW ── */}
         {screen === 'review' && session && (() => {
           const chunk = session.chunks[session.currentIndex];
+          // Canonical active language: part of the translated pane's identity
+          // so a language switch remounts it and clears undo/edit/selection.
+          const activeLanguage = review.activeLanguage(session);
           const total = session.chunks.length;
           const approved = session.chunks.filter(c => c.approved).length;
           const hasTranslation = session.targetLang !== 'same' && session.targetLang !== '';
@@ -2691,6 +2806,57 @@ export default function App() {
                       </select>
                     </div>
                   )}
+                  {hasTranslation && session.availableTranslationLanguages && session.availableTranslationLanguages.length > 0 && (
+                    <div className="review-editing-model" data-tour="review-language-select">
+                      <span>Language</span>
+                      <select
+                        aria-label="Active translation language"
+                        value={session.activeTranslationLanguage ?? ''}
+                        onChange={(event) => {
+                          const latest = sessionRef.current;
+                          if (!latest) return;
+                          const next = review.selectLanguage(latest, event.target.value);
+                          if (next) setSession(next);
+                        }}
+                      >
+                        {session.availableTranslationLanguages.map((language) => (
+                          <option key={language} value={language}>{language}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  {/* Add Translation stays available even when the session has no
+                      active translation yet (target 'same'); handleAddTranslation
+                      still validates provider/busy state before any call. */}
+                  {(() => {
+                    const languages = session.availableTranslationLanguages ?? [];
+                    const remaining = TARGET_LANGUAGE_OPTIONS.filter(
+                      (option) => option.value !== 'same' && !languages.includes(option.value)
+                    );
+                    if (remaining.length === 0) return null;
+                    return (
+                      <div className="review-editing-model" data-tour="review-add-language">
+                        <select
+                          aria-label="Add translation target language"
+                          value={addLanguageChoice}
+                          onChange={(event) => setAddLanguageChoice(event.target.value)}
+                        >
+                          <option value="">Add translation…</option>
+                          {remaining.map((option) => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
+                          ))}
+                        </select>
+                        <button
+                          className="review-new-btn"
+                          disabled={!addLanguageChoice || isAddingTranslation}
+                          onClick={() => void handleAddTranslation()}
+                          title="Translate every processed segment into the chosen language"
+                        >
+                          {isAddingTranslation ? 'Adding…' : '+ Add'}
+                        </button>
+                      </div>
+                    );
+                  })()}
                   {/* View mode */}
                   <div className="review-view-group" data-tour="review-view-group">
                     <button className={`review-view-btn ${pane.viewMode === 'source' ? 'active' : ''}`} onClick={() => paneStore.setViewMode('source')}>Source</button>
@@ -2724,6 +2890,8 @@ export default function App() {
                     className={`review-icon-btn ${pane.showChatSidebar ? 'active' : ''}`}
                     onClick={() => paneStore.setChatSidebar(!pane.showChatSidebar)}
                     title="AI Assistant"
+                    aria-label="AI Assistant"
+                    aria-pressed={pane.showChatSidebar}
                   >
                     <Sparkles size={14} style={{ color: pane.showChatSidebar ? 'var(--accent)' : 'inherit' }} />
                   </button>
@@ -2733,21 +2901,44 @@ export default function App() {
                       setOnboardingVisible(!settings.annotationMode);
                     }}
                     title={settings.annotationMode ? "Disable Help Tour" : "Enable Help Tour"}
+                    aria-label={settings.annotationMode ? "Disable Help Tour" : "Enable Help Tour"}
+                    aria-pressed={settings.annotationMode}
                   >
                     <HelpCircle size={14} style={{ color: settings.annotationMode ? 'var(--accent)' : 'inherit' }} />
                   </button>
-                  <button className="review-icon-btn" onClick={openProjectSidebar} title="Projects">
+                  <button
+                    className="review-icon-btn"
+                    onClick={openProjectSidebar}
+                    aria-label="Projects"
+                    title="Projects"
+                  >
                     <FolderOpen size={14} />
                   </button>
-                  <button className="review-icon-btn" data-tour="settings-btn" onClick={() => { setShowSettings(true); setSettingsTab(0); }} title="Settings">
+                  <button
+                    className={`review-new-btn batch-action ${navigation.route === NAVIGATION_ROUTES.BATCH ? 'active' : ''} ${batchBadge === 'failed' ? 'is-failed' : ''}`}
+                    onClick={() => navigate(NAVIGATION_ROUTES.BATCH)}
+                    aria-label={`Batch workspace · ${batchBadgeLabel}`}
+                    aria-current={navigation.route === NAVIGATION_ROUTES.BATCH ? 'page' : undefined}
+                    title={`Batch · ${batchBadgeLabel}`}
+                  >
+                    <Play size={13} aria-hidden="true" />
+                    <span className="batch-action-label">Batch</span>
+                    <span className="batch-action-status">{batchBadgeLabel}</span>
+                  </button>
+                  <button
+                    className="review-icon-btn"
+                    data-tour="settings-btn"
+                    onClick={() => { setShowSettings(true); setSettingsTab(0); }}
+                    aria-label="Settings"
+                    title="Settings"
+                  >
                     <Settings size={14} />
                   </button>
-                  <button className="review-new-btn" onClick={() => { setSession(null); setSourceFile(''); setSourceFileName(''); setScreen('upload'); }}>
+                  <button className="review-new-btn" onClick={() => { review.reset(); setSession(null); setSourceFile(''); setSourceFileName(''); setScreen('upload'); }}>
                     + New Session
                   </button>
                 </div>
               </div>
-
               {/* ── Audio bar ── */}
               <div className="review-audio-bar" data-tour="review-audio-bar">
                 <span className="review-audio-label">CURRENT SEGMENT AUDIO</span>
@@ -2868,6 +3059,7 @@ export default function App() {
                         </button>
                       </div>
                       <TextPanel
+                        key={`${session.currentIndex}:${chunk?.filePath}:${chunk?.startSec}:${chunk?.endSec}`}
                         content={originalPreview}
                         format={outputFormat}
                         lang="original"
@@ -2875,13 +3067,9 @@ export default function App() {
                         onScroll={pane.viewMode === 'dual' ? handleLeftScroll : (() => {})}
                         onUpdateContent={(val) => {
                           if (!isEditableTextMode) return;
-                          handleUpdateChunk(session.currentIndex, {
-                            original: val,
-                            originalFormats: {
-                              ...(chunk?.originalFormats || {}),
-                              TXT: val,
-                            },
-                          });
+                          const latest = sessionRef.current;
+                          if (!latest) return;
+                          setSession(review.editSource(latest, latest.currentIndex, val, val));
                         }}
                         onAiReprocess={(selected) => runAudioAwareReview(selected, 'original')}
                         onAddToGlossary={openGlossaryDraft}
@@ -2916,6 +3104,7 @@ export default function App() {
                         </button>
                       </div>
                       <TextPanel
+                        key={`${session.currentIndex}:${chunk?.filePath}:${chunk?.startSec}:${chunk?.endSec}:${activeLanguage}`}
                         content={translatedPreview}
                         format={outputFormat}
                         lang="translated"
@@ -2923,13 +3112,9 @@ export default function App() {
                         onScroll={pane.viewMode === 'dual' ? handleRightScroll : (() => {})}
                         onUpdateContent={(val) => {
                           if (!isEditableTextMode) return;
-                          handleUpdateChunk(session.currentIndex, {
-                            translated: val,
-                            translatedFormats: {
-                              ...(chunk?.translatedFormats || {}),
-                              TXT: val,
-                            },
-                          });
+                          const latest = sessionRef.current;
+                          if (!latest) return;
+                          setSession(review.editTranslation(latest, latest.currentIndex, val, val, new Date().toISOString()));
                         }}
                         onAiReprocess={(selected) => runAudioAwareReview(selected, 'translated')}
                         onPolishTranslation={runLiteraryPolish}
@@ -2972,7 +3157,11 @@ export default function App() {
                     className="btn-nav"
                     data-tour="previous-segment-btn"
                     disabled={session.currentIndex === 0}
-                    onClick={() => setSession(p => p ? { ...p, currentIndex: p.currentIndex - 1 } : p)}
+                    onClick={() => {
+                      const latest = sessionRef.current;
+                      if (!latest) return;
+                      setSession(review.setCurrentIndex(latest, latest.currentIndex - 1));
+                    }}
                   >‹ Previous</button>
                   <button className="btn-approve" data-tour="approve-next-btn" onClick={handleApproveAndNext}>
                     {session.currentIndex < total - 1 ? '✓ Approve & Next ›' : '✓ Complete & Export'}
@@ -3213,7 +3402,7 @@ export default function App() {
                   <button className="btn-cancel" onClick={openProjectSidebar}>
                     <FolderOpen size={14} /> Sessions
                   </button>
-                  <button className="btn-cancel" onClick={() => { setSession(null); setSourceFile(''); setSourceFileName(''); setScreen('upload'); }}>
+                  <button className="btn-cancel" onClick={() => { review.reset(); setSession(null); setSourceFile(''); setSourceFileName(''); setScreen('upload'); }}>
                     New Session
                   </button>
                 </div>
