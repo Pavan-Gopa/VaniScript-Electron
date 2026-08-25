@@ -2,9 +2,6 @@ import { OutputFormat } from '../types';
 
 export type ExportFileNameInput = {
   sourceFileName: string;
-  lecturer?: string;
-  location?: string;
-  date?: string;
   which: 'original' | 'translated';
   targetLang?: string;
   format: OutputFormat;
@@ -15,7 +12,7 @@ export function exportExtension(format: OutputFormat): string {
 }
 
 function cleanPart(value: string | undefined): string {
-  const text = String(value || '').trim();
+  const text = String(value || '').normalize('NFC').trim();
   if (!text || /^(unknown|неизвестно|none|нет|n\/a)$/i.test(text)) return '';
   return text
     .replace(/\.[^.]+$/g, '')
@@ -27,14 +24,7 @@ function cleanPart(value: string | undefined): string {
 export function buildExportFileName(input: ExportFileNameInput): string {
   const sourceStem = cleanPart(input.sourceFileName) || 'VaniScript';
   const suffix = input.which === 'translated'
-    ? cleanPart(input.targetLang) || 'translated'
+    ? (cleanPart(input.targetLang) || 'translated')
     : 'original';
-  const parts = [
-    cleanPart(input.lecturer),
-    cleanPart(input.location),
-    cleanPart(input.date),
-  ].filter(Boolean);
-  const baseParts = parts.length > 0 ? parts : [sourceStem];
-  const uniqueParts = baseParts.filter((part, index, arr) => arr.indexOf(part) === index);
-  return `${[...uniqueParts, suffix].join('_')}.${exportExtension(input.format)}`;
+  return `${sourceStem}_${suffix}.${exportExtension(input.format)}`;
 }

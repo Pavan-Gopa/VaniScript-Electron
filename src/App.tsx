@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Settings, Download, RefreshCw, Play, Pause, FolderOpen, Share2, Trash2, Upload, Archive, ChevronDown, ChevronRight, ArrowLeft, Search, HelpCircle, Film, FileAudio, Info, Sparkles } from 'lucide-react';
-import { AppSettings, GlossaryEntry, ProjectSummary, SessionConfig, SourceMediaInfo, TranscriptCue, UsageStats } from './types';
+import { AppSettings, GlossaryEntry, McpExportReadiness, ProjectSummary, SessionConfig, SourceMediaInfo, TranscriptCue, UsageStats } from './types';
 import { loadSettings, saveSettings, loadUsage, applyTheme, trackUsage } from './services/storage';
 import { transcribeChunkGemini, transcribeChunkOpenAI, fileToBase64 } from './services/transcription';
 import { prepareMediaSession, PreparedMediaSession } from './services/media-processing-coordinator';
@@ -11,7 +11,7 @@ import { BatchWorkspace } from './components/BatchWorkspace';
 import { ConfigPanel, TARGET_LANGUAGE_OPTIONS } from './components/ConfigPanel';
 import { OnboardingTour } from './components/OnboardingTour';
 import { Logo } from './components/Logo';
-import { buildChunkPreview, buildTranscriptExport } from './lib/review-format';
+import { buildChunkPreview, buildTranscriptExport, buildTranscriptArtifact } from './lib/review-format';
 import { audioMimeTypeForPath, createObjectAudioUrl } from './lib/audio-source';
 import { TextPanel } from './components/TextPanel';
 import { shouldTranslateChunk, translateTextLocally } from './services/local-translation';
@@ -23,7 +23,6 @@ import { acceleratedSeekStep, bestTimedNavigationContent, nextTimedLineStart, sh
 import { reviewFragmentWithGeminiAudio } from './services/audio-review';
 import { getAvailableTranscriptionProviders, getAvailableTranslationProviders, ProviderOption } from './lib/provider-registry';
 import { polishTranslationLocally, polishTranslationWithClaude, polishTranslationWithGemini, polishTranslationWithOpenAI } from './services/literary-polish';
-import { buildExportFileName } from './lib/export-filename';
 import { filterGlossaryEntries, listGlossaryCategories } from './lib/glossary-management';
 import {
   canOpenSidebarChunk,
@@ -31,7 +30,6 @@ import {
   isProjectExportReady,
   projectChunkNumbers,
 } from './lib/project-navigation';
-import { formatDocumentExportLocally, formatDocumentExportWithGemini, formatDocumentExportWithOpenAI } from './services/document-export';
 import { reconcileLocalModelStatesWithDisk } from './services/model-presence';
 import { ShortsReelsPanel, ShortsSettings } from './components/ShortsReelsPanel';
 import { AssistantSidebar } from './components/AssistantSidebar';
@@ -63,6 +61,14 @@ import { usePaneStore, paneStore } from './stores/paneStore';
 type Screen = 'upload' | 'config' | 'processing' | 'review' | 'export';
 type ViewMode = 'source' | 'translated' | 'dual';
 type OutputFormat = 'TXT' | 'SRT' | 'VTT' | 'Markdown';
+
+// MCP export bridge: catalogue-side transcript formats → renderer formats.
+const MCP_TRANSCRIPT_FORMATS: Record<string, OutputFormat> = {
+  txt: 'TXT',
+  markdown: 'Markdown',
+  srt: 'SRT',
+  vtt: 'VTT',
+};
 
 interface Session extends PreparedMediaSession {
   projectId?: string;
@@ -345,18 +351,6 @@ function isShortsPromptTooLargeForLocalAi(prompt: string): boolean {
   return estimateTokens(prompt) > 12000;
 }
 
-function gibibytes(bytes: number): number {
-  return bytes / 1024 / 1024 / 1024;
-}
-
-function localExportRecommendedMemoryBytes(modelId: string, format: OutputFormat): number {
-  const id = modelId.toLowerCase();
-  const markdownExtra = format === 'Markdown' ? 4 : 2;
-  if (id.includes('4b')) return (24 + markdownExtra) * 1024 ** 3;
-  if (id.includes('2b')) return (14 + markdownExtra) * 1024 ** 3;
-  if (id.includes('0.8b') || id.includes('1b')) return (8 + markdownExtra) * 1024 ** 3;
-  return (16 + markdownExtra) * 1024 ** 3;
-}
 
 function getQualityLabel(mediaInfo: SourceMediaInfo): string {
   if (mediaInfo.kind === 'audio') return 'Audio';
@@ -421,7 +415,6 @@ export default function App() {
   const [shortsVideoSrc, setShortsVideoSrc] = useState('');
   const [subtitleMaxCharsPerLine, setSubtitleMaxCharsPerLine] = useState(() => loadShortsDefaults().subtitleMaxCharsPerLine ?? 42);
   const [subtitleMaxLines, setSubtitleMaxLines] = useState(() => loadShortsDefaults().subtitleMaxLines ?? 2);
-  const [exportingKey, setExportingKey] = useState('');
   const [shortsSettings, setShortsSettings] = useState<ShortsSettings>(() => ({
     ...DEFAULT_SHORTS_SETTINGS,
     ...(loadShortsDefaults().settings ?? {}),
@@ -1825,76 +1818,20 @@ export default function App() {
 
 
   const download = (content: string, name: string) => {
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([content], { type: 'text/plain;charset=utf-8' }));
-    a.download = name; document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  };
-
-  const confirmLocalExportCapacity = async (providerId: string, format: OutputFormat): Promise<boolean> => {
-    if (format === 'TXT' || !isLocalTranslationProvider(settingsRef.current, providerId)) return true;
-    let memory: Awaited<ReturnType<NonNullable<typeof window.electronAPI>['getSystemMemoryInfo']>> | undefined;
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
     try {
-      memory = await window.electronAPI?.getSystemMemoryInfo?.();
-    } catch (error) {
-      console.warn('Could not read system memory for local export preflight; continuing export.', error);
-      return true;
+      a.click();
+    } finally {
+      if (a.parentNode) {
+        a.parentNode.removeChild(a);
+      }
+      URL.revokeObjectURL(url);
     }
-    if (!memory?.totalBytes) return true;
-    const recommendedBytes = localExportRecommendedMemoryBytes(providerId, format);
-    if (memory.totalBytes >= recommendedBytes) return true;
-    const totalGb = gibibytes(memory.totalBytes).toFixed(1);
-    const recommendedGb = gibibytes(recommendedBytes).toFixed(0);
-    return confirm([
-      `Local AI ${format} export may be unstable on this computer.`,
-      '',
-      `Installed unified/system memory: ${totalGb} GB`,
-      `Recommended for this model/export: ${recommendedGb} GB`,
-      '',
-      'Use Gemini/OpenAI export for this document, or continue locally anyway?',
-    ].join('\n'));
-  };
-
-  const buildAiExport = async (which: 'original' | 'translated', format: OutputFormat, baseText: string): Promise<string> => {
-    if (!session || format === 'TXT') return baseText;
-    const providerId = editingProvider || session.config.translationProvider;
-    const targetLang = which === 'translated' ? session.targetLang : (session.config.targetLang === 'same' ? 'English' : session.config.targetLang);
-    const base = {
-      format,
-      targetLang,
-      text: baseText,
-      subtitleMaxCharsPerLine,
-      subtitleMaxLines,
-      promptPresets: settingsRef.current.promptPresets,
-    };
-
-    try {
-      if (isLocalTranslationProvider(settingsRef.current, providerId)) {
-        await reconcileLocalModelsWithDisk();
-        if (!isLocalTranslationProvider(settingsRef.current, providerId)) {
-          throw new Error(`Local translation model ${providerId} is not installed. Download it in Settings.`);
-        }
-        const result = await formatDocumentExportLocally({ ...base, modelId: providerId });
-        return result.trim() || baseText;
-      }
-
-      const apiKey = getApiKeyForProvider(settingsRef.current, providerId);
-      if (!apiKey) return baseText;
-
-      if (providerId === 'gemini-cloud') {
-        const result = await formatDocumentExportWithGemini({ ...base, apiKey });
-        recordCloudUsage(providerId, { inputText: baseText, outputText: result });
-        return result.trim() || baseText;
-      }
-      if (providerId === 'gpt-cloud') {
-        const result = await formatDocumentExportWithOpenAI({ ...base, apiKey });
-        recordCloudUsage(providerId, { inputText: baseText, outputText: result });
-        return result.trim() || baseText;
-      }
-    } catch (error) {
-      console.warn('AI document export failed; falling back to deterministic export.', error);
-    }
-
-    return baseText;
   };
 
   const updateShortsSettings = useCallback((next: ShortsSettings) => {
@@ -2444,31 +2381,23 @@ export default function App() {
     }
   }, [selectedShortsPlanIndexes, session?.originalVideoPath, shortsPlans, shortsSettings, shortsVideoSourceInfo, writeShortsAssFile]);
 
-  const handleExportDownload = async (which: 'original' | 'translated', format: OutputFormat) => {
+  const handleExportDownload = (which: 'original' | 'translated', format: OutputFormat) => {
     if (!session) return;
-    const key = `${which}-${format}`;
-    const providerId = editingProvider || session.config.translationProvider;
     try {
-      const canContinue = await confirmLocalExportCapacity(providerId, format);
-      if (!canContinue) return;
-      setExportingKey(key);
-      const baseText = buildTranscriptExport(which, format, session.chunks, exportOptions);
-      const content = await buildAiExport(which, format, baseText);
-      const fileName = buildExportFileName({
-        sourceFileName: session.sourceFileName,
-        lecturer: session.config.lecturer,
-        location: session.config.location,
-        date: session.config.date,
+      const artifact = buildTranscriptArtifact({
         which,
-        targetLang: which === 'translated' ? session.targetLang : undefined,
         format,
+        chunks: session.chunks,
+        sourceFileName: session.sourceFileName,
+        options: exportOptions,
+        translationLanguage: which === 'translated'
+          ? (session.activeTranslationLanguage ?? session.targetLang)
+          : undefined,
       });
-      download(content, fileName);
+      download(artifact.content, artifact.fileName);
     } catch (error) {
       console.error('Export failed.', error);
       alert(`Export failed: ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      setExportingKey('');
     }
   };
 
@@ -2658,6 +2587,76 @@ export default function App() {
     });
     return unsubscribe;
   }, [executeMcpTool]);
+
+  // ─── MCP Exports compute bridges (S4-C) ──────────────────────────────────
+  useEffect(() => {
+    if (!window.electronAPI?.onMcpBuildTranscriptArtifact) return;
+    const unsubscribe = window.electronAPI.onMcpBuildTranscriptArtifact(async ({ requestId, arguments: args }) => {
+      try {
+        const currentSession = sessionRef.current;
+        if (!currentSession) throw new Error('NO_ACTIVE_PROJECT: Open a project before exporting a transcript.');
+        const which: 'original' | 'translated' = args?.side === 'original' ? 'original' : 'translated';
+        const format = MCP_TRANSCRIPT_FORMATS[args?.format ?? ''];
+        if (!format) throw new Error('"format" must be one of txt, markdown, srt, vtt.');
+        const requestedLanguage = typeof args?.language === 'string' && args.language.trim().length > 0
+          ? args.language.trim()
+          : undefined;
+        const language = which === 'translated'
+          ? (requestedLanguage ?? currentSession.activeTranslationLanguage ?? currentSession.targetLang)
+          : undefined;
+        if (which === 'translated' && !language) {
+          throw new Error('NO_TRANSLATION_LANGUAGE: A translation language must be selected before exporting the translated side.');
+        }
+        const result = buildTranscriptArtifact({
+          which,
+          format,
+          chunks: currentSession.chunks,
+          sourceFileName: currentSession.sourceFileName,
+          translationLanguage: language ?? undefined,
+          options: { targetLang: language },
+        });
+        window.electronAPI?.mcpBuildTranscriptArtifactResponse?.({ requestId, success: true, result });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        window.electronAPI?.mcpBuildTranscriptArtifactResponse?.({ requestId, success: false, error: message });
+      }
+    });
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    if (!window.electronAPI?.onMcpGetActiveProject) return;
+    const unsubscribe = window.electronAPI.onMcpGetActiveProject(({ requestId }) => {
+      window.electronAPI?.mcpGetActiveProjectResponse?.({
+        requestId,
+        success: true,
+        result: sessionRef.current?.projectId ?? null,
+      });
+    });
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    if (!window.electronAPI?.onMcpGetExportReadiness) return;
+    const unsubscribe = window.electronAPI.onMcpGetExportReadiness(async ({ requestId }) => {
+      try {
+        const currentSession = sessionRef.current;
+        const chunks = Array.isArray(currentSession?.chunks) ? currentSession.chunks : [];
+        const readiness: McpExportReadiness = {
+          sessionAvailable: Boolean(currentSession),
+          chunkCount: chunks.length,
+          originalNonEmptyCount: chunks.filter((chunk) => typeof chunk.original === 'string' && chunk.original.trim().length > 0).length,
+          shortsPlanCount: shortsPlans.length,
+          sourceVideoPath: currentSession?.originalVideoPath ?? null,
+        };
+        window.electronAPI?.mcpGetExportReadinessResponse?.({ requestId, success: true, result: readiness });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        window.electronAPI?.mcpGetExportReadinessResponse?.({ requestId, success: false, error: message });
+      }
+    });
+    return unsubscribe;
+  }, [shortsPlans]);
 
   // ─── Render ───────────────────────────────────────────────────────────────
   return (
@@ -3046,14 +3045,7 @@ export default function App() {
                         <button
                           className="review-dl-btn"
                           title="Download original"
-                          onClick={() => download(buildTranscriptExport('original', outputFormat, session.chunks, exportOptions), buildExportFileName({
-                            sourceFileName: session.sourceFileName,
-                            lecturer: session.config.lecturer,
-                            location: session.config.location,
-                            date: session.config.date,
-                            which: 'original',
-                            format: outputFormat,
-                          }))}
+                          onClick={() => handleExportDownload('original', outputFormat)}
                         >
                           <Download size={13} />
                         </button>
@@ -3090,15 +3082,7 @@ export default function App() {
                         <button
                           className="review-dl-btn"
                           title="Download translation"
-                          onClick={() => download(buildTranscriptExport('translated', outputFormat, session.chunks, exportOptions), buildExportFileName({
-                            sourceFileName: session.sourceFileName,
-                            lecturer: session.config.lecturer,
-                            location: session.config.location,
-                            date: session.config.date,
-                            which: 'translated',
-                            targetLang: session.targetLang,
-                            format: outputFormat,
-                          }))}
+                          onClick={() => handleExportDownload('translated', outputFormat)}
                         >
                           <Download size={13} />
                         </button>
@@ -3210,20 +3194,18 @@ export default function App() {
                         <button
                           key={f}
                           className="btn-dl btn-dl-secondary"
-                          disabled={Boolean(exportingKey)}
                           onClick={() => handleExportDownload('original', f)}
                         >
-                          {exportingKey === `original-${f}` ? 'Formatting…' : `⬇ Original ${f}`}
+                          {`⬇ Original ${f}`}
                         </button>
                       ))}
                       {session.targetLang !== 'same' && (['TXT', 'SRT', 'VTT', 'Markdown'] as OutputFormat[]).map(f => (
                         <button
                           key={`t-${f}`}
                           className="btn-dl btn-dl-primary"
-                          disabled={Boolean(exportingKey)}
                           onClick={() => handleExportDownload('translated', f)}
                         >
-                          {exportingKey === `translated-${f}` ? 'Formatting…' : `⬇ Target ${f}`}
+                          {`⬇ Target ${f}`}
                         </button>
                       ))}
                     </div>

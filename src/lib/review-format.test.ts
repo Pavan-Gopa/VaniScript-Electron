@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildChunkPreview, buildTranscriptExport } from './review-format';
+import { buildChunkPreview, buildTranscriptExport, buildTranscriptArtifact } from './review-format';
 
 const chunks = [
   {
@@ -209,3 +209,122 @@ test('buildTranscriptExport wraps SRT and VTT cues by subtitle export settings',
   });
   assert.match(vtt, /^WEBVTT\n\n00:00:00\.000 --> 00:00:04\.000/m);
 });
+
+test('buildTranscriptExport resolves requested translation language from translationsByLanguage archive', () => {
+  const multiLangChunks = [
+    {
+      ...chunks[0],
+      translationsByLanguage: {
+        french: {
+          language: 'French',
+          text: 'Premi\u00e8re ligne',
+        },
+        russian: {
+          language: 'Russian',
+          text: '\u041f\u0435\u0440\u0432\u0430\u044f \u0441\u0442\u0440\u043e\u043a\u0430',
+        },
+      },
+    },
+    {
+      ...chunks[1],
+      translationsByLanguage: {
+        french: {
+          language: 'French',
+          text: 'Deuxi\u00e8me ligne',
+        },
+        russian: {
+          language: 'Russian',
+          text: '\u0412\u0442\u043e\u0440\u0430\u044f \u0441\u0442\u0440\u043e\u043a\u0430',
+        },
+      },
+    },
+  ];
+
+  const frText = buildTranscriptExport('translated', 'TXT', multiLangChunks, { translationLanguage: 'French' });
+  assert.equal(frText, 'Premi\u00e8re ligne\n\nDeuxi\u00e8me ligne');
+
+  const ruText = buildTranscriptExport('translated', 'TXT', multiLangChunks, { translationLanguage: 'Russian' });
+  assert.equal(ruText, '\u041f\u0435\u0440\u0432\u0430\u044f \u0441\u0442\u0440\u043e\u043a\u0430\n\n\u0412\u0442\u043e\u0440\u0430\u044f \u0441\u0442\u0440\u043e\u043a\u0430');
+});
+
+test('buildTranscriptExport throws an error when a requested translation variant is missing for a chunk', () => {
+  const missingVariantChunks = [
+    {
+      ...chunks[0],
+      translationsByLanguage: {
+        french: {
+          language: 'French',
+          text: 'Premi\u00e8re ligne',
+        },
+      },
+    },
+  ];
+
+  assert.throws(
+    () => buildTranscriptExport('translated', 'TXT', missingVariantChunks, { translationLanguage: 'Spanish' }),
+    /Missing requested translation variant "Spanish" for chunk 1/
+  );
+});
+
+test('buildTranscriptExport preserves active projection when no target language is supplied', () => {
+  const activeProjectionChunks = [
+    {
+      ...chunks[0],
+      translated: 'Active projected line',
+    },
+  ];
+
+  const txt = buildTranscriptExport('translated', 'TXT', activeProjectionChunks);
+  assert.equal(txt, 'Active projected line');
+});
+
+test('buildTranscriptArtifact builds byte-identical content and NFC filename', () => {
+  const artifact = buildTranscriptArtifact({
+    which: 'original',
+    format: 'TXT',
+    chunks,
+    sourceFileName: 'Test_Audio.mp3',
+  });
+  assert.equal(artifact.content, 'First line\n\nSecond line');
+  assert.equal(artifact.fileName, 'Test_Audio_original.txt');
+
+  const transArtifact = buildTranscriptArtifact({
+    which: 'translated',
+    format: 'Markdown',
+    chunks,
+    sourceFileName: 'Test_Audio.mp3',
+    options: { targetLang: 'Russian' },
+  });
+  assert.equal(transArtifact.fileName, 'Test_Audio_Russian.md');
+});
+
+test('buildTranscriptArtifact suffixes the resolved translation variant, not targetLang', () => {
+  const frenchContentChunks = [
+    {
+      ...chunks[0],
+      translationsByLanguage: {
+        french: { language: 'French', text: 'Première ligne' },
+        russian: { language: 'Russian', text: 'Первая строка' },
+      },
+    },
+    {
+      ...chunks[1],
+      translationsByLanguage: {
+        french: { language: 'French', text: 'Deuxième ligne' },
+        russian: { language: 'Russian', text: 'Вторая строка' },
+      },
+    },
+  ];
+
+  const artifact = buildTranscriptArtifact({
+    which: 'translated',
+    format: 'TXT',
+    chunks: frenchContentChunks,
+    sourceFileName: 'Test_Audio.mp3',
+    options: { targetLang: 'Russian' },
+    translationLanguage: 'French',
+  });
+  assert.ok(artifact.content.includes('Première ligne'));
+  assert.equal(artifact.fileName, 'Test_Audio_French.txt');
+});
+

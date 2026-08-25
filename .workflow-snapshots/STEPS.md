@@ -161,7 +161,7 @@
 **Do:**
 - [x] [P3E.D1] Media coordinator extraction: processing state machine
 - [x] [P3E.D2] Review/multi-language parity: variants/stale/reprocess
-- [ ] [P3E.D3] Export/project parity: formats/bundles/naming
+- [x] [P3E.D3] Export/project parity: formats/bundles/naming
 - [ ] [P3E.D4] Shorts plan/state parity: persisted plans/languages
 - [ ] [P3E.D5] Visual render contract: immutable render plan/cancel
 

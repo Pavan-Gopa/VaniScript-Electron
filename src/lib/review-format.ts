@@ -1,14 +1,22 @@
 import { ChunkData, LanguageResult, OutputFormat } from '../types';
 import { KaraokeTimedLine, cuesToKaraokeLines, hasInlineTimestampMarkers, parseKaraokeLines } from './karaoke';
+import { buildExportFileName } from './export-filename';
+import { resolveChunkVariant, isRealTranslationLanguage } from '../../shared/media-translations.js';
 
 type ReviewTextKind = 'original' | 'translated';
 
 export type TranscriptExportOptions = {
   targetLang?: string;
+  translationLanguage?: string;
   metadataSourceChunks?: ChunkData[];
   metadataFallback?: ExportMetadata;
   subtitleMaxCharsPerLine?: number;
   subtitleMaxLines?: number;
+};
+
+export type TranscriptArtifact = {
+  content: string;
+  fileName: string;
 };
 
 function formatClock(totalSeconds: number): string {
@@ -23,12 +31,43 @@ function formatClock(totalSeconds: number): string {
   ].join(':');
 }
 
-function getChunkText(chunk: Pick<ChunkData, 'original' | 'translated'>, which: ReviewTextKind): string {
-  return which === 'original' ? chunk.original : chunk.translated;
-}
+type ResolvedChunkContent = {
+  text: string;
+  cues?: ChunkData['originalCues'];
+  formats?: LanguageResult;
+};
 
-function getChunkFormats(chunk: ChunkData, which: ReviewTextKind): LanguageResult | undefined {
-  return which === 'original' ? chunk.originalFormats : chunk.translatedFormats;
+function getResolvedChunkContent(
+  chunk: ChunkData,
+  which: ReviewTextKind,
+  options: TranscriptExportOptions = {}
+): ResolvedChunkContent {
+  if (which === 'original') {
+    return {
+      text: chunk.original,
+      cues: chunk.originalCues,
+      formats: chunk.originalFormats,
+    };
+  }
+
+  const requestedLang = options.translationLanguage;
+  if (isRealTranslationLanguage(requestedLang)) {
+    const variant = resolveChunkVariant(chunk, requestedLang, undefined);
+    if (!variant) {
+      throw new Error(`Missing requested translation variant "${requestedLang}" for chunk ${chunk.index + 1}.`);
+    }
+    return {
+      text: variant.text,
+      cues: variant.cues,
+      formats: variant.formats,
+    };
+  }
+
+  return {
+    text: chunk.translated || '',
+    cues: chunk.translatedCues,
+    formats: chunk.translatedFormats,
+  };
 }
 
 function normalizeReviewText(text: string): string {
@@ -59,8 +98,9 @@ function stripInlineTimestamps(text: string): string {
     .trim();
 }
 
-function getExportSourceText(chunk: ChunkData, which: ReviewTextKind): string {
-  return normalizeReviewText(getChunkFormats(chunk, which)?.TXT || getChunkText(chunk, which));
+function getExportSourceText(chunk: ChunkData, which: ReviewTextKind, options: TranscriptExportOptions = {}): string {
+  const resolved = getResolvedChunkContent(chunk, which, options);
+  return normalizeReviewText(resolved.formats?.TXT || resolved.text);
 }
 
 type ExportMetadata = {
@@ -106,27 +146,28 @@ function extractMetadata(text: string): { metadata: ExportMetadata; body: string
   };
 }
 
-function collectMetadata(chunks: ChunkData[], which: ReviewTextKind): ExportMetadata {
+function collectMetadata(chunks: ChunkData[], which: ReviewTextKind, options: TranscriptExportOptions = {}): ExportMetadata {
   for (const chunk of chunks) {
-    const metadata = extractMetadata(getExportSourceText(chunk, which)).metadata;
+    const metadata = extractMetadata(getExportSourceText(chunk, which, options)).metadata;
     if (metadata.date || metadata.location || metadata.lecturer || metadata.participants) return metadata;
   }
   return {};
 }
 
 function collectExportMetadata(chunks: ChunkData[], which: ReviewTextKind, options: TranscriptExportOptions): ExportMetadata {
-  const primary = collectMetadata(chunks, which);
+  const primary = collectMetadata(chunks, which, options);
   if (primary.date || primary.location || primary.lecturer || primary.participants) return primary;
   if (options.metadataSourceChunks?.length) {
-    const source = collectMetadata(options.metadataSourceChunks, 'original');
+    const source = collectMetadata(options.metadataSourceChunks, 'original', options);
     if (source.date || source.location || source.lecturer || source.participants) return source;
   }
   return options.metadataFallback || {};
 }
 
-function timedLinesForChunk(chunk: ChunkData, which: ReviewTextKind): KaraokeTimedLine[] {
-  const { body } = extractMetadata(getExportSourceText(chunk, which));
-  const cues = which === 'original' ? chunk.originalCues : chunk.translatedCues;
+function timedLinesForChunk(chunk: ChunkData, which: ReviewTextKind, options: TranscriptExportOptions = {}): KaraokeTimedLine[] {
+  const resolved = getResolvedChunkContent(chunk, which, options);
+  const { body } = extractMetadata(getExportSourceText(chunk, which, options));
+  const cues = resolved.cues;
   if (!hasInlineTimestampMarkers(body) && cues?.length) {
     return cuesToKaraokeLines(cues)
       .filter((line) => stripInlineTimestamps(line.text).length > 0);
@@ -135,12 +176,12 @@ function timedLinesForChunk(chunk: ChunkData, which: ReviewTextKind): KaraokeTim
     .filter((line): line is KaraokeTimedLine => line.kind === 'timed' && stripInlineTimestamps(line.text).length > 0);
 }
 
-function collectSubtitleLines(chunks: ChunkData[], which: ReviewTextKind): KaraokeTimedLine[] {
+function collectSubtitleLines(chunks: ChunkData[], which: ReviewTextKind, options: TranscriptExportOptions = {}): KaraokeTimedLine[] {
   return chunks.flatMap((chunk) => {
-    const timed = timedLinesForChunk(chunk, which);
+    const timed = timedLinesForChunk(chunk, which, options);
     if (timed.length > 0) return timed;
 
-    const { body } = extractMetadata(getExportSourceText(chunk, which));
+    const { body } = extractMetadata(getExportSourceText(chunk, which, options));
     const text = stripInlineTimestamps(body);
     if (!text) return [];
     return [{
@@ -156,6 +197,15 @@ function collectSubtitleLines(chunks: ChunkData[], which: ReviewTextKind): Karao
 
 function isRussianTarget(targetLang = ''): boolean {
   return /^(ru|rus|russian|русский|русский язык)$/i.test(targetLang.trim());
+}
+
+function makeSectionTitle(text: string, index: number, targetLang = ''): string {
+  const cleaned = (text || '').replace(/\[\d{2}:\d{2}(?::\d{2})?\]/g, '').trim();
+  const firstLine = cleaned.split('\n')[0]?.trim() || '';
+  if (!firstLine) {
+    return isRussianTarget(targetLang) ? `Раздел ${index + 1}` : `Section ${index + 1}`;
+  }
+  return firstLine.length > 80 ? `${firstLine.slice(0, 77).trim()}...` : firstLine;
 }
 
 function localizeMetadataValue(value: string | undefined, targetLang = ''): string {
@@ -233,15 +283,15 @@ function groupTimedLines(lines: KaraokeTimedLine[]): { startSec: number; text: s
   return groups;
 }
 
-function buildTxtExportBody(chunks: ChunkData[], which: ReviewTextKind): string {
+function buildTxtExportBody(chunks: ChunkData[], which: ReviewTextKind, options: TranscriptExportOptions = {}): string {
   return chunks.map((chunk) => {
-    const timed = timedLinesForChunk(chunk, which);
+    const timed = timedLinesForChunk(chunk, which, options);
     if (timed.length > 0) {
       return groupTimedLines(timed)
         .map((group) => `[${formatClock(group.startSec)}] ${group.text}`)
         .join('\n\n');
     }
-    return stripInlineTimestamps(extractMetadata(getExportSourceText(chunk, which)).body);
+    return stripInlineTimestamps(extractMetadata(getExportSourceText(chunk, which, options)).body);
   }).filter(Boolean).join('\n\n');
 }
 
@@ -297,33 +347,22 @@ function splitSubtitleLine(line: KaraokeTimedLine, options: TranscriptExportOpti
   });
 }
 
-function subtitleCues(chunks: ChunkData[], which: ReviewTextKind, options: TranscriptExportOptions) {
-  return collectSubtitleLines(chunks, which).flatMap((line) => splitSubtitleLine(line, options));
+function subtitleCues(chunks: ChunkData[], which: ReviewTextKind, options: TranscriptExportOptions = {}) {
+  return collectSubtitleLines(chunks, which, options).flatMap((line) => splitSubtitleLine(line, options));
 }
 
-function makeSectionTitle(text: string, index: number, targetLang = ''): string {
-  const cleaned = stripInlineTimestamps(text)
-    .replace(/[*_`>#-]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  const firstSentence = cleaned.split(/(?<=[.!?。！？])\s+/)[0] || cleaned;
-  const words = firstSentence.split(/\s+/).filter(Boolean).slice(0, isRussianTarget(targetLang) ? 7 : 8);
-  const title = words.join(' ').replace(/[.,;:!?]+$/g, '');
-  return title || `${metadataLabels(targetLang).transcript} ${index + 1}`;
-}
-
-function buildSrtCue(chunk: Pick<ChunkData, 'index' | 'startSec' | 'endSec' | 'original' | 'translated'>, which: ReviewTextKind): string {
+function buildSrtCue(chunk: Pick<ChunkData, 'index' | 'startSec' | 'endSec'>, text: string): string {
   return [
     String(chunk.index + 1),
     `${formatClock(chunk.startSec)},000 --> ${formatClock(chunk.endSec)},000`,
-    getChunkText(chunk, which),
+    text,
   ].join('\n');
 }
 
-function buildVttCue(chunk: Pick<ChunkData, 'startSec' | 'endSec' | 'original' | 'translated'>, which: ReviewTextKind): string {
+function buildVttCue(chunk: Pick<ChunkData, 'startSec' | 'endSec'>, text: string): string {
   return [
     `${formatClock(chunk.startSec)}.000 --> ${formatClock(chunk.endSec)}.000`,
-    getChunkText(chunk, which),
+    text,
   ].join('\n');
 }
 
@@ -333,7 +372,8 @@ export function buildChunkPreview(
   format: OutputFormat,
   options: TranscriptExportOptions = {}
 ): string {
-  const formatted = getChunkFormats(chunk, which)?.[format];
+  const resolved = getResolvedChunkContent(chunk, which, options);
+  const formatted = resolved.formats?.[format];
   if (formatted) {
     if (format === 'TXT') {
       const normalized = normalizeReviewText(formatted);
@@ -349,10 +389,10 @@ export function buildChunkPreview(
     return formatted;
   }
 
-  if (format === 'TXT') return normalizeReviewText(getChunkText(chunk, which));
-  if (format === 'SRT') return buildSrtCue(chunk, which);
-  if (format === 'VTT') return `WEBVTT\n\n${buildVttCue(chunk, which)}`;
-  return `## Segment ${chunk.index + 1} [${buildTimeRange(chunk)}]\n\n${getChunkText(chunk, which)}`;
+  if (format === 'TXT') return normalizeReviewText(resolved.text);
+  if (format === 'SRT') return buildSrtCue(chunk, resolved.text);
+  if (format === 'VTT') return `WEBVTT\n\n${buildVttCue(chunk, resolved.text)}`;
+  return `## Segment ${chunk.index + 1} [${buildTimeRange(chunk)}]\n\n${resolved.text}`;
 }
 
 export function buildTranscriptExport(
@@ -363,7 +403,7 @@ export function buildTranscriptExport(
 ): string {
   if (format === 'TXT') {
     const metadata = metadataBlock(collectExportMetadata(chunks, which, options), options.targetLang);
-    const body = buildTxtExportBody(chunks, which);
+    const body = buildTxtExportBody(chunks, which, options);
     return [metadata, body].filter(Boolean).join('\n\n').trim();
   }
 
@@ -388,7 +428,7 @@ export function buildTranscriptExport(
   const labels = metadataLabels(options.targetLang);
   const title = metadata.location && !/^(unknown|неизвестно)$/i.test(metadata.location) ? metadata.location : labels.transcript;
   const meta = markdownMetadata(metadata, options.targetLang);
-  const groups = groupTimedLines(collectSubtitleLines(chunks, which));
+  const groups = groupTimedLines(collectSubtitleLines(chunks, which, options));
   const sections = groups.length > 0
     ? groups.map((group, index) => ({
       title: makeSectionTitle(group.text, index, options.targetLang),
@@ -400,6 +440,31 @@ export function buildTranscriptExport(
     : '';
   const body = sections.length > 0
     ? sections.map((section, index) => `## ${index + 1}. ${section.title}\n\n${section.text}`).join('\n\n')
-    : chunks.map((chunk) => stripInlineTimestamps(extractMetadata(getExportSourceText(chunk, which)).body)).filter(Boolean).join('\n\n');
+    : chunks.map((chunk) => stripInlineTimestamps(extractMetadata(getExportSourceText(chunk, which, options)).body)).filter(Boolean).join('\n\n');
   return [`# ${title}`, meta, '---', toc, body].filter(Boolean).join('\n\n').trim();
+}
+
+export type BuildTranscriptArtifactInput = {
+  which: ReviewTextKind;
+  format: OutputFormat;
+  chunks: ChunkData[];
+  sourceFileName: string;
+  options?: TranscriptExportOptions;
+  translationLanguage?: string;
+};
+
+export function buildTranscriptArtifact(input: BuildTranscriptArtifactInput): TranscriptArtifact {
+  const { which, format, chunks, sourceFileName, options = {}, translationLanguage } = input;
+  const exportOpts: TranscriptExportOptions = {
+    ...options,
+    ...(translationLanguage ? { translationLanguage } : {}),
+  };
+  const content = buildTranscriptExport(which, format, chunks, exportOpts);
+  const fileName = buildExportFileName({
+    sourceFileName,
+    which,
+    targetLang: translationLanguage || exportOpts.targetLang,
+    format,
+  });
+  return { content, fileName };
 }

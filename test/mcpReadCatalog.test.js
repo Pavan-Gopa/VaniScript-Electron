@@ -9,6 +9,7 @@ const {
 const {
   READ_TOOL_DEFINITIONS,
   READ_TOOL_NAMES,
+  ReadCatalogError,
   createReadCatalog,
 } = require('../electron/main/mcp/mcpTools/readCatalog.js');
 
@@ -133,6 +134,9 @@ function makeFixture() {
       subtitleStyle: { fontSize: 42 },
     },
     selection: { blockId: 'block-1', start: 0, end: 7, text: 'Hare' },
+    // S4-B: the two export reads resolve session truth through the injected
+    // readiness reader instead of a static stub projection.
+    exportReadiness: async () => makeReadiness({ shortsPlanCount: 1, sourceVideoPath: '/private/source.mp4' }),
   });
   const server = new McpServer({
     host: '127.0.0.1',
@@ -142,6 +146,27 @@ function makeFixture() {
   });
   const issued = server.rotateToken();
   return { server, issued, project };
+}
+
+function makeReadiness(overrides = {}) {
+  return {
+    sessionAvailable: true,
+    chunkCount: 1,
+    originalNonEmptyCount: 1,
+    shortsPlanCount: 0,
+    sourceVideoPath: '/private/source.wav',
+    // Main computes this via fs.existsSync after the renderer sends the path.
+    sourceVideoExists: true,
+    ...overrides,
+  };
+}
+
+function catalogWithReadiness(snapshot) {
+  return createReadCatalog({
+    projectId: 'project-1',
+    projectRevision: 'revision-1',
+    exportReadiness: async () => snapshot,
+  });
 }
 
 function isJsonSchema(schema) {
@@ -381,4 +406,245 @@ test('get_safe_settings drops secret-named primitive values at every depth', asy
     nested: { label: 'safe' },
     sibling: 'survives',
   });
+});
+
+test('list_export_options publishes the native nested shape from injected readiness', async () => {
+  const catalog = catalogWithReadiness(makeReadiness({ shortsPlanCount: 2, sourceVideoPath: '/private/source.mov' }));
+  const result = await catalog.execute('list_export_options', { projectId: 'project-1' });
+
+  assert.equal(result.schemaVersion, 1);
+  assert.equal(result.tool, 'list_export_options');
+  assert.equal(result.scope, 'read');
+  assert.equal(result.risk, 'read');
+  assert.equal(result.projectId, 'project-1');
+  assert.equal(result.projectRevision, 'revision-1');
+  assert.deepEqual(result.data, {
+    transcript: {
+      available: true,
+      sides: ['original', 'translated'],
+      formats: ['txt', 'markdown', 'srt', 'vtt'],
+    },
+    shortsIdeas: { available: true, languages: ['source', 'target'] },
+    shortsVideos: {
+      available: true,
+      formats: ['mp4', 'mov'],
+      resolutions: ['source', '1080p', '720p'],
+      frameRates: ['source', '30', '25', '24'],
+    },
+    destinationPolicy: 'Files are written only to VaniScript/MCP Exports and returned by exportId.',
+  });
+});
+
+test('list_export_options reports every group unavailable without an active session', async () => {
+  const shapes = [];
+  for (const snapshot of [null, makeReadiness({ sessionAvailable: false })]) {
+    const result = await catalogWithReadiness(snapshot).execute('list_export_options');
+    assert.deepEqual(result.data.transcript, {
+      available: false,
+      sides: ['original', 'translated'],
+      formats: ['txt', 'markdown', 'srt', 'vtt'],
+    });
+    assert.deepEqual(result.data.shortsIdeas, { available: false, languages: ['source', 'target'] });
+    assert.deepEqual(result.data.shortsVideos, {
+      available: false,
+      formats: ['mp4', 'mov'],
+      resolutions: ['source', '1080p', '720p'],
+      frameRates: ['source', '30', '25', '24'],
+    });
+    assert.equal(result.data.destinationPolicy, 'Files are written only to VaniScript/MCP Exports and returned by exportId.');
+    shapes.push(result);
+  }
+  assert.equal(shapes.length, 2);
+});
+
+test('validate_export drives every transcript branch from injected readiness', async () => {
+  const happy = await catalogWithReadiness(makeReadiness()).execute('validate_export', { kind: 'transcript' });
+  assert.deepEqual(happy.data, { valid: true, kind: 'transcript', issues: [] });
+
+  // Native allSatisfy semantics: an empty chunk list reports both issues.
+  const noChunks = await catalogWithReadiness(makeReadiness({ chunkCount: 0, originalNonEmptyCount: 0 }))
+    .execute('validate_export', { kind: 'transcript' });
+  assert.deepEqual(noChunks.data, {
+    valid: false,
+    kind: 'transcript',
+    issues: [
+      { severity: 'error', code: 'NO_CHUNKS', message: 'The project has no segments.' },
+      { severity: 'error', code: 'EMPTY_TRANSCRIPT', message: 'The project has no transcript text.' },
+    ],
+  });
+
+  const whitespaceOnly = await catalogWithReadiness(makeReadiness({ chunkCount: 3, originalNonEmptyCount: 0 }))
+    .execute('validate_export', { kind: 'transcript' });
+  assert.deepEqual(whitespaceOnly.data, {
+    valid: false,
+    kind: 'transcript',
+    issues: [{ severity: 'error', code: 'EMPTY_TRANSCRIPT', message: 'The project has no transcript text.' }],
+  });
+});
+
+test('validate_export fails typed when no project is open', async () => {
+  for (const snapshot of [null, undefined, makeReadiness({ sessionAvailable: false })]) {
+    await assert.rejects(
+      () => catalogWithReadiness(snapshot).execute('validate_export', { kind: 'transcript' }),
+      (error) => {
+        assert.ok(error instanceof ReadCatalogError);
+        assert.equal(error.mcpCode, 'MCP_NOT_FOUND');
+        assert.equal(error.message, 'NO_ACTIVE_PROJECT: No project is open');
+        return true;
+      },
+    );
+  }
+});
+
+test('unknown export kinds fail typed INVALID_REQUEST like native -2', async () => {
+  await assert.rejects(
+    () => catalogWithReadiness(makeReadiness()).execute('validate_export', { kind: 'video' }),
+    (error) => {
+      assert.ok(error instanceof ReadCatalogError);
+      assert.equal(error.mcpCode, 'MCP_INVALID_REQUEST');
+      assert.equal(error.message, 'kind must be transcript, shortsIdeas, or shortsVideos');
+      return true;
+    },
+  );
+});
+
+test('validate_export drives every shorts branch from injected readiness', async () => {
+  const noPlansIdeas = await catalogWithReadiness(makeReadiness()).execute('validate_export', { kind: 'shortsIdeas' });
+  assert.deepEqual(noPlansIdeas.data, {
+    valid: false,
+    kind: 'shortsIdeas',
+    issues: [{ severity: 'error', code: 'NO_SHORTS_PLANS', message: 'Create Shorts plans first.' }],
+  });
+  const ideasReady = await catalogWithReadiness(makeReadiness({ shortsPlanCount: 2 })).execute('validate_export', { kind: 'shortsIdeas' });
+  assert.deepEqual(ideasReady.data, { valid: true, kind: 'shortsIdeas', issues: [] });
+
+  // Native parity: NO_SHORTS_PLANS appends first, then the media guard adds
+  // SOURCE_MEDIA_MISSING and early-returns with BOTH issues accumulated.
+  const videosNoPlans = await catalogWithReadiness(makeReadiness({ sourceVideoPath: null })).execute('validate_export', { kind: 'shortsVideos' });
+  assert.deepEqual(videosNoPlans.data, {
+    valid: false,
+    kind: 'shortsVideos',
+    issues: [
+      { severity: 'error', code: 'NO_SHORTS_PLANS', message: 'Create Shorts plans first.' },
+      { severity: 'error', code: 'SOURCE_MEDIA_MISSING', message: 'Original source video is unavailable.' },
+    ],
+  });
+
+  // Native early return: SOURCE_MEDIA_MISSING alone short-circuits video checks.
+  const mediaMissing = await catalogWithReadiness(makeReadiness({ shortsPlanCount: 1, sourceVideoPath: null }))
+    .execute('validate_export', { kind: 'shortsVideos' });
+  assert.deepEqual(mediaMissing.data, {
+    valid: false,
+    kind: 'shortsVideos',
+    issues: [{ severity: 'error', code: 'SOURCE_MEDIA_MISSING', message: 'Original source video is unavailable.' }],
+  });
+
+  // Audio source media fails VIDEO_REQUIRED; every native container passes.
+  const audioSource = await catalogWithReadiness(makeReadiness({ shortsPlanCount: 1, sourceVideoPath: '/private/interview.mp3' }))
+    .execute('validate_export', { kind: 'shortsVideos' });
+  assert.deepEqual(audioSource.data, {
+    valid: false,
+    kind: 'shortsVideos',
+    issues: [{ severity: 'error', code: 'VIDEO_REQUIRED', message: 'Shorts video export requires video source media.' }],
+  });
+  for (const extension of ['.mp4', '.mov', '.webm', '.mkv', '.m4v']) {
+    const ready = await catalogWithReadiness(makeReadiness({
+      shortsPlanCount: 1,
+      sourceVideoPath: `/private/clip${extension.toUpperCase()}`,
+    })).execute('validate_export', { kind: 'shortsVideos' });
+    assert.deepEqual(ready.data, { valid: true, kind: 'shortsVideos', issues: [] }, extension);
+  }
+
+  // Empty-string paths count as missing media, matching native !!source truthiness.
+  const emptyPath = await catalogWithReadiness(makeReadiness({ shortsPlanCount: 1, sourceVideoPath: '' }))
+    .execute('validate_export', { kind: 'shortsVideos' });
+  assert.equal(emptyPath.data.valid, false);
+  assert.equal(emptyPath.data.issues[0].code, 'SOURCE_MEDIA_MISSING');
+
+  // Main-process existence truth: a vanished video fails closed even with a
+  // video extension, exactly like a null or empty path.
+  const vanishedMedia = await catalogWithReadiness(makeReadiness({ shortsPlanCount: 1, sourceVideoExists: false }))
+    .execute('validate_export', { kind: 'shortsVideos' });
+  assert.deepEqual(vanishedMedia.data, {
+    valid: false,
+    kind: 'shortsVideos',
+    issues: [{ severity: 'error', code: 'SOURCE_MEDIA_MISSING', message: 'Original source video is unavailable.' }],
+  });
+
+  // Snapshots without the existence field (legacy fake readers) fail closed.
+  const legacySnapshot = makeReadiness({ shortsPlanCount: 1 });
+  delete legacySnapshot.sourceVideoExists;
+  const noExistenceField = await catalogWithReadiness(legacySnapshot)
+    .execute('validate_export', { kind: 'shortsVideos' });
+  assert.equal(noExistenceField.data.valid, false);
+  assert.equal(noExistenceField.data.issues[0].code, 'SOURCE_MEDIA_MISSING');
+  assert.equal(noExistenceField.data.issues[0].message, 'Original source video is unavailable.');
+});
+
+test('missing exportReadiness dependency fails typed CAPABILITY_UNAVAILABLE for both export reads', async () => {
+  const catalog = createReadCatalog({ projectId: 'project-1', projectRevision: 'revision-1' });
+  for (const [tool, args] of [['list_export_options', {}], ['validate_export', { kind: 'transcript' }]]) {
+    await assert.rejects(() => catalog.execute(tool, args), (error) => {
+      assert.ok(error instanceof ReadCatalogError);
+      assert.equal(error.mcpCode, 'MCP_CAPABILITY_UNAVAILABLE');
+      return true;
+    }, tool);
+  }
+});
+
+test('export reads keep the read envelope and native data shapes over the loopback socket', async (t) => {
+  const fixture = makeFixture();
+  await fixture.server.start();
+  t.after(() => fixture.server.stop());
+
+  const optionsResponse = await requestJson(fixture.server, {
+    jsonrpc: '2.0',
+    id: 'options-1',
+    method: 'tools/call',
+    params: { name: 'list_export_options', arguments: {} },
+    projectId: 'project-1',
+    projectRevision: 'revision-1',
+  }, { token: fixture.issued.token });
+  assert.equal(optionsResponse.status, 200);
+  assert.equal(optionsResponse.body.result.tool, 'list_export_options');
+  assert.equal(optionsResponse.body.result.scope, 'read');
+  assert.equal(optionsResponse.body.result.risk, 'read');
+  assert.equal(optionsResponse.body.result.projectId, 'project-1');
+  assert.equal(optionsResponse.body.result.projectRevision, 'revision-1');
+  assert.equal(optionsResponse.body.result.data.transcript.available, true);
+  assert.equal(optionsResponse.body.result.data.shortsVideos.available, true);
+
+  const validateResponse = await requestJson(fixture.server, {
+    jsonrpc: '2.0',
+    id: 'validate-1',
+    method: 'tools/call',
+    params: { name: 'validate_export', arguments: { kind: 'transcript' } },
+    projectId: 'project-1',
+    projectRevision: 'revision-1',
+  }, { token: fixture.issued.token });
+  assert.equal(validateResponse.status, 200);
+  assert.deepEqual(validateResponse.body.result.data, { valid: true, kind: 'transcript', issues: [] });
+});
+
+test('export reads surface typed errors over the loopback socket', async (t) => {
+  const catalog = catalogWithReadiness(null);
+  const server = new McpServer({
+    host: '127.0.0.1',
+    port: 0,
+    vault: new MemoryVault(),
+    readCatalog: catalog,
+  });
+  const issued = server.rotateToken();
+  await server.start();
+  t.after(() => server.stop());
+
+  const response = await requestJson(server, {
+    jsonrpc: '2.0',
+    id: 'closed-1',
+    method: 'tools/call',
+    params: { name: 'validate_export', arguments: { kind: 'transcript' } },
+  }, { token: issued.token });
+  assert.equal(response.status, 404);
+  assert.equal(response.body.error.code, MCP_ERROR_CODES.NOT_FOUND);
+  assert.equal(response.body.error.message, 'NO_ACTIVE_PROJECT: No project is open');
 });

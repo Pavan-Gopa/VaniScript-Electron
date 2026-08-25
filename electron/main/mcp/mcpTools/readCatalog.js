@@ -11,6 +11,7 @@
  */
 
 const fs = require('node:fs');
+const path = require('node:path');
 
 // Single shared multi-language implementation (P3E.D2): every read
 // normalizes a clone through it so published state is canonical and the
@@ -585,6 +586,85 @@ function safeSettings(options) {
   return safeClone(options.settings || {}) || {};
 }
 
+// Native parity for list_export_options / validate_export lives in
+// WorkflowStore.mcpExportOptions / mcpValidateExport.  Session truth arrives
+// as an injected async readiness snapshot so both tools stay pure projections
+// over the same envelope as every other read handler.
+const EXPORT_VIDEO_EXTENSIONS = Object.freeze(['.mp4', '.mov', '.webm', '.mkv', '.m4v']);
+const EXPORT_DESTINATION_POLICY = 'Files are written only to VaniScript/MCP Exports and returned by exportId.';
+
+function snapshotCount(value) {
+  return Number.isFinite(value) ? value : 0;
+}
+
+function exportSourceVideoPath(readiness) {
+  return typeof readiness.sourceVideoPath === 'string' && readiness.sourceVideoPath.length > 0 ? readiness.sourceVideoPath : null;
+}
+
+async function exportReadiness(options) {
+  if (typeof options.exportReadiness !== 'function') {
+    throw new ReadCatalogError('Export readiness is unavailable; inject an options.exportReadiness reader.', 'MCP_CAPABILITY_UNAVAILABLE');
+  }
+  return options.exportReadiness();
+}
+
+/** Nested native option shape; a missing/null snapshot publishes only unavailable groups. */
+function exportOptionsData(snapshot) {
+  const readiness = asObject(snapshot);
+  const hasPlans = snapshotCount(readiness.shortsPlanCount) > 0;
+  const sourceVideoPath = exportSourceVideoPath(readiness);
+  return {
+    transcript: {
+      available: readiness.sessionAvailable === true,
+      sides: ['original', 'translated'],
+      formats: ['txt', 'markdown', 'srt', 'vtt'],
+    },
+    shortsIdeas: { available: hasPlans, languages: ['source', 'target'] },
+    shortsVideos: {
+      available: hasPlans && sourceVideoPath !== null,
+      formats: ['mp4', 'mov'],
+      resolutions: ['source', '1080p', '720p'],
+      frameRates: ['source', '30', '25', '24'],
+    },
+    destinationPolicy: EXPORT_DESTINATION_POLICY,
+  };
+}
+
+/**
+ * Export preflight mirroring mcpValidateExport: unknown kinds fail typed
+ * INVALID_REQUEST (native -2), a closed session fails typed NOT_FOUND with
+ * the native -1 message, and SOURCE_MEDIA_MISSING short-circuits the video
+ * checks exactly like the native early return.
+ */
+function validateExportData(kind, snapshot) {
+  const readiness = asObject(snapshot);
+  if (readiness.sessionAvailable !== true) {
+    throw new ReadCatalogError('NO_ACTIVE_PROJECT: No project is open', 'MCP_NOT_FOUND');
+  }
+  const issues = [];
+  if (kind === 'transcript') {
+    if (snapshotCount(readiness.chunkCount) === 0) issues.push({ severity: 'error', code: 'NO_CHUNKS', message: 'The project has no segments.' });
+    if (snapshotCount(readiness.originalNonEmptyCount) === 0) issues.push({ severity: 'error', code: 'EMPTY_TRANSCRIPT', message: 'The project has no transcript text.' });
+  } else if (kind === 'shortsIdeas' || kind === 'shortsVideos') {
+    if (snapshotCount(readiness.shortsPlanCount) === 0) issues.push({ severity: 'error', code: 'NO_SHORTS_PLANS', message: 'Create Shorts plans first.' });
+    if (kind === 'shortsVideos') {
+      const sourceVideoPath = exportSourceVideoPath(readiness);
+      // Main computes sourceVideoExists via fs.existsSync after the renderer
+      // publishes the path string; absent or false both fail closed.
+      if (sourceVideoPath === null || readiness.sourceVideoExists !== true) {
+        issues.push({ severity: 'error', code: 'SOURCE_MEDIA_MISSING', message: 'Original source video is unavailable.' });
+        return { valid: false, kind, issues };
+      }
+      if (!EXPORT_VIDEO_EXTENSIONS.includes(path.extname(sourceVideoPath).toLowerCase())) {
+        issues.push({ severity: 'error', code: 'VIDEO_REQUIRED', message: 'Shorts video export requires video source media.' });
+      }
+    }
+  } else {
+    throw new ReadCatalogError('kind must be transcript, shortsIdeas, or shortsVideos');
+  }
+  return { valid: !issues.some((issue) => issue.severity === 'error'), kind, issues };
+}
+
 function callReader(options, toolName, args, context, fallback) {
   const reader = findReader(options, toolName);
   if (!reader) return Promise.resolve(fallback());
@@ -988,8 +1068,8 @@ function createReadCatalog(options = {}) {
   handlers.list_rejected_shorts_plans = handlerFor('list_rejected_shorts_plans', () => ({ plans: Array.isArray(settings.rejectedShortsPlans) ? settings.rejectedShortsPlans.map((plan) => safeClone(plan)).filter(Boolean) : [], count: Array.isArray(settings.rejectedShortsPlans) ? settings.rejectedShortsPlans.length : 0 }));
   handlers.validate_shorts_plan = handlerFor('validate_shorts_plan', (args, context) => ({ planId: args.planId || null, valid: true, issues: [] }));
   handlers.get_playback_state = handlerFor('get_playback_state', () => safeClone(settings.playbackState || { playing: false, positionSec: 0, durationSec: 0, selectedChunkId: null }));
-  handlers.list_export_options = handlerFor('list_export_options', () => ({ transcriptFormats: ['txt', 'markdown', 'srt', 'vtt'], shortsIdeas: true, shortsVideos: true }));
-  handlers.validate_export = handlerFor('validate_export', (args) => ({ kind: args.kind || null, valid: true, issues: [] }));
+  handlers.list_export_options = handlerFor('list_export_options', async () => exportOptionsData(await exportReadiness(settings)));
+  handlers.validate_export = handlerFor('validate_export', async (args) => validateExportData(args.kind, await exportReadiness(settings)));
   handlers.get_visual_editor_state = handlerFor('get_visual_editor_state', (args) => ({ planId: args.planId || null, state: safeClone(settings.visualEditorState || null) }));
   handlers.get_safe_settings = handlerFor('get_safe_settings', () => safeSettings(settings));
   handlers.list_providers = handlerFor('list_providers', () => ({ providers: Array.isArray(settings.providers) ? settings.providers.map((provider) => safeClone(provider)).filter(Boolean) : [] }));

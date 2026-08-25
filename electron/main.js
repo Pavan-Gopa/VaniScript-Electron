@@ -22,11 +22,17 @@ const {
   resolveSessionCurrentIndex,
   resolveSessionReviewProgressIndex,
 } = require('./project-session');
+const {
+  createStreamingBundleService,
+} = require('./main/projects/streamingBundle');
 const windowManager = require('./main/windows/window-manager');
 const { handleMigrateLegacy } = require('./main/storage/migrationHandler');
 const { invokeProvider } = require('./main/providers/router');
 const { manageModels, MODELS_MANAGE_CHANNEL } = require('./main/models/modelManager.js');
 const { registerAppLifecycle } = require('./main/bootstrap/app-lifecycle');
+const { createMcpExportStore } = require('./main/projects/mcpExportStore');
+const { createExportCatalog } = require('./main/mcp/mcpTools/exportCatalog');
+const { createReadCatalog } = require('./main/mcp/mcpTools/readCatalog');
 
 for (const stream of [process.stdout, process.stderr]) {
   stream?.on?.('error', (error) => {
@@ -247,6 +253,164 @@ function projectJsonPath(projectId) {
   return path.join(projectDir(projectId), 'project.json');
 }
 
+// Single hardened bundle service for the whole process: every project/library
+// export and import IPC route goes through this one instance.
+const streamingBundleService = createStreamingBundleService({
+  projectsRootDir,
+  newProjectId,
+});
+
+// ─── MCP Exports composition (P3E.D3-S4-C) ──────────────────────────────────
+// Production wiring for the protected MCP Exports lane: one store, one file
+// export catalogue, and one export-preflight read catalogue, built exactly
+// once at startup. Renderer-side compute (transcript artifacts, active
+// project, readiness snapshot) arrives over three request/response IPC
+// bridges that mirror the pendingMcpRequests round-trip used by the
+// mcp:call-tool forwarding path.
+const mcpExportStore = createMcpExportStore({
+  exportsRoot: () => path.join(app.getPath('userData'), 'MCP Exports'),
+});
+
+const pendingMcpBridgeRequests = new Map(); // requestId -> { resolve, reject }
+
+// Renderer rejections cross the IPC boundary as plain strings; the machine-
+// prefixed failures below are retyped as their MCP codes here.
+function rejectMcpBridgeError(message) {
+  const error = new Error(typeof message === 'string' ? message : String(message ?? ''));
+  if (error.message.startsWith('NO_ACTIVE_PROJECT')) {
+    error.code = 'MCP_NOT_FOUND';
+    error.mcpCode = 'MCP_NOT_FOUND';
+  }
+  if (error.message.startsWith('NO_TRANSLATION_LANGUAGE')) {
+    error.code = 'MCP_INVALID_REQUEST';
+    error.mcpCode = 'MCP_INVALID_REQUEST';
+  }
+  return error;
+}
+
+function settleMcpBridgeReply(payload = {}) {
+  const requestId = String(payload.requestId ?? '');
+  const pending = pendingMcpBridgeRequests.get(requestId);
+  if (!pending) return;
+  pendingMcpBridgeRequests.delete(requestId);
+  if (payload.success) {
+    pending.resolve(payload.result);
+  } else {
+    pending.reject(rejectMcpBridgeError(payload.error));
+  }
+}
+
+for (const bridgeReplyChannel of [
+  'mcp:build-transcript-artifact-response',
+  'mcp:get-active-project-response',
+  'mcp:get-export-readiness-response',
+]) {
+  ipcMain.handle(bridgeReplyChannel, (_event, payload) => settleMcpBridgeReply(payload));
+}
+
+function requestRendererForMcpExport(eventChannel, args = {}) {
+  const win = windowManager.getMainWindow();
+  if (!win || win.isDestroyed()) {
+    return Promise.reject(new Error('VaniScript main window is not active.'));
+  }
+  const requestId = crypto.randomUUID();
+  return new Promise((resolve, reject) => {
+    pendingMcpBridgeRequests.set(requestId, { resolve, reject });
+    win.webContents.send(eventChannel, { requestId, arguments: args });
+  }).finally(() => pendingMcpBridgeRequests.delete(requestId));
+}
+
+const rendererBridge = {
+  buildTranscriptArtifact: (args) => requestRendererForMcpExport('mcp:build-transcript-artifact', args),
+  // Explicit id resolves from the project store; no id asks the renderer for
+  // the active project. Unknown ids collapse to null so the catalogue raises
+  // its own typed NOT_FOUND.
+  resolveProject: async (projectId) => {
+    let resolvedId = projectId;
+    if (resolvedId === undefined || resolvedId === null || resolvedId === '') {
+      const activeId = await requestRendererForMcpExport('mcp:get-active-project');
+      if (typeof activeId !== 'string' || activeId.length === 0) return null;
+      resolvedId = activeId;
+    }
+    try {
+      return readProject(resolvedId);
+    } catch {
+      return null;
+    }
+  },
+  // Existence is main-process truth: the renderer publishes only the path
+  // string, and the store-side preflight consumes the boolean verdict.
+  readiness: async () => {
+    const snapshot = await requestRendererForMcpExport('mcp:get-export-readiness');
+    const sourceVideoPath = snapshot && typeof snapshot.sourceVideoPath === 'string' && snapshot.sourceVideoPath.length > 0
+      ? snapshot.sourceVideoPath
+      : null;
+    return {
+      ...snapshot,
+      sourceVideoExists: sourceVideoPath !== null ? fs.existsSync(sourceVideoPath) : null,
+    };
+  },
+};
+
+const exportCatalog = createExportCatalog({
+  filePermissionEnabled: true,
+  createExportDirectory: (label) => mcpExportStore.makeDirectory(label),
+  writeFile: (filePath, content) => mcpExportStore.writeFile(filePath, content),
+  registerFiles: (id, files) => mcpExportStore.register(id, files),
+  revealRecord: (id) => mcpExportStore.reveal(id),
+  shellReveal: (p) => { shell.showItemInFolder(p); },
+  buildTranscriptArtifact: (args) => rendererBridge.buildTranscriptArtifact(args),
+  resolveProject: (projectId) => rendererBridge.resolveProject(projectId),
+  bundleWriter: (project, destPath) => streamingBundleService.writeProjectBundle(project, destPath),
+});
+
+const exportPreflightCatalog = createReadCatalog({
+  exportReadiness: () => rendererBridge.readiness(),
+});
+
+const MCP_PREFLIGHT_TOOL_NAMES = Object.freeze(['list_export_options', 'validate_export']);
+const MCP_EXPORT_TOOL_NAMES = Object.freeze([...exportCatalog.names, ...MCP_PREFLIGHT_TOOL_NAMES]);
+// The five tools/list entries reuse the catalogues' own definition objects.
+const MCP_MAIN_TOOL_DEFINITIONS = Object.freeze([
+  ...exportCatalog.tools,
+  ...exportPreflightCatalog.tools.filter((tool) => MCP_PREFLIGHT_TOOL_NAMES.includes(tool.name)),
+]);
+
+// Typed catalogue failures map onto deterministic JSON-RPC codes; messages are
+// stripped of known absolute roots so no filesystem layout reaches a client.
+const MCP_EXPORT_RPC_CODES = Object.freeze({
+  MCP_INVALID_REQUEST: -32602,
+  MCP_NOT_FOUND: -32001,
+  MCP_PERMISSION_DENIED: -32002,
+  MCP_CAPABILITY_UNAVAILABLE: -32003,
+});
+
+function redactKnownRoots(message) {
+  let text = String(message ?? '');
+  for (const root of [app.getPath('userData'), app.getPath('home'), app.getPath('temp'), app.getPath('documents')]) {
+    if (root && root.length > 1) text = text.split(root).join('[path]');
+  }
+  return text;
+}
+
+function mcpToolRpcError(error) {
+  // ExportCatalogError sets .code/.mcpCode; ReadCatalogError sets .mcpCode only.
+  const typedCode = error && typeof error.mcpCode === 'string'
+    ? error.mcpCode
+    : error && typeof error.code === 'string' ? error.code : '';
+  const rpcCode = MCP_EXPORT_RPC_CODES[typedCode];
+  if (rpcCode !== undefined) {
+    return { code: rpcCode, message: redactKnownRoots(error.message) };
+  }
+  return { code: -32603, message: 'MCP tool call failed.' };
+}
+
+function dispatchedMcpToolCatalog(name) {
+  if (exportCatalog.names.includes(name)) return exportCatalog;
+  if (MCP_PREFLIGHT_TOOL_NAMES.includes(name)) return exportPreflightCatalog;
+  return null;
+}
+
 function copyProjectAsset(projectId, sourcePath, folder, fallbackName) {
   if (!sourcePath || !fs.existsSync(sourcePath)) return sourcePath || '';
   const root = projectDir(projectId);
@@ -335,410 +499,6 @@ function saveProjectRecord(input) {
   };
   fs.writeFileSync(projectJsonPath(id), JSON.stringify(project, null, 2), 'utf8');
   return project;
-}
-
-// Two project assets frequently duplicate bytes already bundled elsewhere:
-// for a video import, `originalVideoPath` is the source video (the same file as
-// `sourceFile`), and `wavPath` is an extracted uncompressed intermediate whose
-// audio is already fully covered by the per-chunk WAVs. Including both inflates
-// exported bundles ~3-4x. We drop `wavPath` entirely and skip `originalVideoPath`
-// when it is a byte-duplicate of `sourceFile`.
-function isDuplicateMedia(candidatePath, referencePath) {
-  if (!candidatePath || !referencePath) return false;
-  try {
-    const candidate = fs.statSync(candidatePath);
-    const reference = fs.statSync(referencePath);
-    return candidate.size > 0 && candidate.size === reference.size;
-  } catch {
-    return false;
-  }
-}
-
-function collectProjectAssets(project) {
-  const seen = new Set();
-  const assets = [];
-  const add = (key, filePath) => {
-    if (!filePath || seen.has(key) || !fs.existsSync(filePath)) return;
-    seen.add(key);
-    assets.push({
-      key,
-      name: path.basename(filePath),
-      dataBase64: fs.readFileSync(filePath).toString('base64'),
-    });
-  };
-  add('sourceFile', project.session?.sourceFile);
-  add('originalVideoPath', project.session?.originalVideoPath);
-  add('wavPath', project.session?.wavPath);
-  (project.session?.chunks || []).forEach((chunk, index) => add(`chunk:${index}`, chunk.filePath));
-  return assets;
-}
-
-function writeProjectBundle(project, filePath) {
-  const assets = [];
-  const add = (key, fp) => {
-    if (!fp || !fs.existsSync(fp)) return;
-    assets.push({ key, name: path.basename(fp), filePath: fp, size: fs.statSync(fp).size });
-  };
-  const sourceFilePath = project.session?.sourceFile;
-  add('sourceFile', sourceFilePath);
-  // Skip originalVideoPath when it byte-duplicates sourceFile (typical video import).
-  if (!isDuplicateMedia(project.session?.originalVideoPath, sourceFilePath)) {
-    add('originalVideoPath', project.session?.originalVideoPath);
-  }
-  // wavPath intentionally excluded: it is a derived intermediate whose audio is
-  // already fully contained in the chunk WAVs, and import never re-transcribes.
-  (project.session?.chunks || []).forEach((chunk, index) => add(`chunk:${index}`, chunk.filePath));
-
-  const fd = fs.openSync(filePath, 'w');
-
-  // 1. Write magic header
-  fs.writeSync(fd, 'VANISCRIPT_BUNDLE_V2\n');
-
-  // 2. Write metadata JSON
-  const metadata = {
-    format: 'vaniscript-project-v2',
-    schemaVersion: 3,
-    exportedAt: new Date().toISOString(),
-    project,
-    assetMeta: assets.map(a => ({ key: a.key, name: a.name, size: a.size }))
-  };
-  const jsonStr = JSON.stringify(metadata, null, 2);
-  const jsonBuffer = Buffer.from(jsonStr, 'utf8');
-
-  // Write JSON length padded to 12 chars
-  const lenStr = String(jsonBuffer.length).padStart(12, '0') + '\n';
-  fs.writeSync(fd, lenStr);
-  fs.writeSync(fd, jsonBuffer);
-
-  // 3. Write each asset
-  const buffer = Buffer.alloc(1024 * 1024); // 1 MB copy buffer
-  for (const asset of assets) {
-    fs.writeSync(fd, 'START_ASSET\n');
-    fs.writeSync(fd, `${asset.key}\n`);
-    fs.writeSync(fd, `${asset.name}\n`);
-    fs.writeSync(fd, `${asset.size}\n`);
-
-    const inFd = fs.openSync(asset.filePath, 'r');
-    let remaining = asset.size;
-    let inOffset = 0;
-    while (remaining > 0) {
-      const toRead = Math.min(remaining, buffer.length);
-      const bytesRead = fs.readSync(inFd, buffer, 0, toRead, inOffset);
-      if (bytesRead === 0) break;
-      fs.writeSync(fd, buffer, 0, bytesRead);
-      inOffset += bytesRead;
-      remaining -= bytesRead;
-    }
-    fs.closeSync(inFd);
-
-    fs.writeSync(fd, 'END_ASSET\n');
-  }
-
-  fs.closeSync(fd);
-}
-
-function importProjectBundle(filePath) {
-  const fd = fs.openSync(filePath, 'r');
-
-  // Read first 21 bytes to check format
-  const magicBuf = Buffer.alloc(21);
-  const bytesRead = fs.readSync(fd, magicBuf, 0, 21, 0);
-  const headerStr = magicBuf.toString('utf8');
-
-  if (headerStr === 'VANISCRIPT_BUNDLE_V2\n') {
-    // ─── Format V2 (Chunk-by-chunk stream copy) ───
-    let offset = 21;
-    const readLine = () => {
-      let line = '';
-      const buf = Buffer.alloc(1);
-      while (true) {
-        const bytes = fs.readSync(fd, buf, 0, 1, offset);
-        if (bytes === 0) break;
-        offset += 1;
-        const char = buf.toString('utf8');
-        if (char === '\n') break;
-        line += char;
-      }
-      return line.trim();
-    };
-
-    // Read JSON length
-    const jsonLenStr = readLine();
-    const jsonLen = parseInt(jsonLenStr, 10);
-
-    // Read JSON metadata
-    const jsonBuf = Buffer.alloc(jsonLen);
-    fs.readSync(fd, jsonBuf, 0, jsonLen, offset);
-    offset += jsonLen;
-    const metadata = JSON.parse(jsonBuf.toString('utf8'));
-
-    const id = newProjectId();
-    const dir = projectDir(id);
-    const project = {
-      ...metadata.project,
-      id,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    const assetMap = new Map();
-    const buffer = Buffer.alloc(1024 * 1024); // 1 MB copy buffer
-
-    while (true) {
-      const marker = readLine();
-      if (!marker || marker !== 'START_ASSET') {
-        break;
-      }
-
-      const key = readLine();
-      const name = readLine();
-      const sizeStr = readLine();
-      const size = parseInt(sizeStr, 10);
-
-      const targetDir = key.startsWith('chunk:') ? path.join(dir, 'chunks') : path.join(dir, 'audio');
-      fs.mkdirSync(targetDir, { recursive: true });
-      const dest = path.join(targetDir, safeName(name || key, 'asset'));
-
-      const outFd = fs.openSync(dest, 'w');
-      let remaining = size;
-      while (remaining > 0) {
-        const toRead = Math.min(remaining, buffer.length);
-        const read = fs.readSync(fd, buffer, 0, toRead, offset);
-        if (read === 0) {
-          fs.closeSync(outFd);
-          fs.closeSync(fd);
-          throw new Error('Unexpected EOF while reading asset data');
-        }
-        fs.writeSync(outFd, buffer, 0, read);
-        offset += read;
-        remaining -= read;
-      }
-      fs.closeSync(outFd);
-      assetMap.set(key, dest);
-
-      readLine(); // Consume END_ASSET line
-    }
-
-    fs.closeSync(fd);
-
-    project.session = normalizeImportedProjectSession(project.session, { projectId: id, assetMap });
-    fs.writeFileSync(projectJsonPath(id), JSON.stringify(project, null, 2), 'utf8');
-    return project;
-  } else {
-    // ─── Format V1 (Legacy Base64 JSON) ───
-    fs.closeSync(fd);
-    const bundle = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    if (bundle.format !== 'vaniscript-project-v1' || !bundle.project) {
-      throw new Error('This is not a VaniScript project bundle.');
-    }
-    const id = newProjectId();
-    const dir = projectDir(id);
-    const project = {
-      ...bundle.project,
-      id,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    const assetMap = new Map();
-    for (const asset of bundle.assets || []) {
-      const targetDir = asset.key?.startsWith('chunk:') ? path.join(dir, 'chunks') : path.join(dir, 'audio');
-      fs.mkdirSync(targetDir, { recursive: true });
-      const dest = path.join(targetDir, safeName(asset.name || asset.key, 'asset'));
-      fs.writeFileSync(dest, Buffer.from(asset.dataBase64 || '', 'base64'));
-      assetMap.set(asset.key, dest);
-    }
-    project.session = normalizeImportedProjectSession(project.session, { projectId: id, assetMap });
-    fs.writeFileSync(projectJsonPath(id), JSON.stringify(project, null, 2), 'utf8');
-    return project;
-  }
-}
-
-function writeLibraryBundle(projects, filePath) {
-  const bundles = [];
-  for (const project of projects) {
-    const assets = [];
-    const add = (key, fp) => {
-      if (!fp || !fs.existsSync(fp)) return;
-      assets.push({ key, name: path.basename(fp), filePath: fp, size: fs.statSync(fp).size });
-    };
-    const sourceFilePath = project.session?.sourceFile;
-    add('sourceFile', sourceFilePath);
-    if (!isDuplicateMedia(project.session?.originalVideoPath, sourceFilePath)) {
-      add('originalVideoPath', project.session?.originalVideoPath);
-    }
-    // wavPath intentionally excluded (see writeProjectBundle).
-    (project.session?.chunks || []).forEach((chunk, index) => add(`chunk:${index}`, chunk.filePath));
-
-    bundles.push({
-      project,
-      assets
-    });
-  }
-
-  const fd = fs.openSync(filePath, 'w');
-
-  // 1. Write magic header
-  fs.writeSync(fd, 'VANISCRIPT_LIBRARY_V2\n');
-
-  // 2. Write metadata JSON
-  const metadata = {
-    format: 'vaniscript-library-v2',
-    schemaVersion: 3,
-    exportedAt: new Date().toISOString(),
-    bundles: bundles.map((b, pIdx) => ({
-      project: b.project,
-      assetMeta: b.assets.map(a => ({ key: a.key, name: a.name, size: a.size }))
-    }))
-  };
-  const jsonStr = JSON.stringify(metadata, null, 2);
-  const jsonBuffer = Buffer.from(jsonStr, 'utf8');
-
-  // Write JSON length padded to 12 chars
-  const lenStr = String(jsonBuffer.length).padStart(12, '0') + '\n';
-  fs.writeSync(fd, lenStr);
-  fs.writeSync(fd, jsonBuffer);
-
-  // 3. Write each asset for each project
-  const buffer = Buffer.alloc(1024 * 1024); // 1 MB copy buffer
-  for (let pIdx = 0; pIdx < bundles.length; pIdx++) {
-    const b = bundles[pIdx];
-    for (const asset of b.assets) {
-      fs.writeSync(fd, 'START_ASSET\n');
-      fs.writeSync(fd, `${pIdx}\n`);
-      fs.writeSync(fd, `${asset.key}\n`);
-      fs.writeSync(fd, `${asset.name}\n`);
-      fs.writeSync(fd, `${asset.size}\n`);
-
-      const inFd = fs.openSync(asset.filePath, 'r');
-      let remaining = asset.size;
-      let inOffset = 0;
-      while (remaining > 0) {
-        const toRead = Math.min(remaining, buffer.length);
-        const bytesRead = fs.readSync(inFd, buffer, 0, toRead, inOffset);
-        if (bytesRead === 0) break;
-        fs.writeSync(fd, buffer, 0, bytesRead);
-        inOffset += bytesRead;
-        remaining -= bytesRead;
-      }
-      fs.closeSync(inFd);
-
-      fs.writeSync(fd, 'END_ASSET\n');
-    }
-  }
-
-  fs.closeSync(fd);
-}
-
-function importLibraryBundle(filePath) {
-  const fd = fs.openSync(filePath, 'r');
-
-  // Read first 21 bytes to check format
-  const magicBuf = Buffer.alloc(21);
-  const bytesRead = fs.readSync(fd, magicBuf, 0, 21, 0);
-  const headerStr = magicBuf.toString('utf8');
-  if (headerStr !== 'VANISCRIPT_LIBRARY_V2\n') {
-    fs.closeSync(fd);
-    throw new Error('Not a valid VaniScript library bundle V2');
-  }
-
-  let offset = 21;
-  const readLine = () => {
-    let line = '';
-    const buf = Buffer.alloc(1);
-    while (true) {
-      const bytes = fs.readSync(fd, buf, 0, 1, offset);
-      if (bytes === 0) break;
-      offset += 1;
-      const char = buf.toString('utf8');
-      if (char === '\n') break;
-      line += char;
-    }
-    return line.trim();
-  };
-
-  // Read JSON length
-  const jsonLenStr = readLine();
-  const jsonLen = parseInt(jsonLenStr, 10);
-
-  // Read JSON metadata
-  const jsonBuf = Buffer.alloc(jsonLen);
-  fs.readSync(fd, jsonBuf, 0, jsonLen, offset);
-  offset += jsonLen;
-  const metadata = JSON.parse(jsonBuf.toString('utf8'));
-
-  const importedProjects = [];
-  const projectDirs = [];
-  const projectAssetMaps = [];
-
-  for (let i = 0; i < metadata.bundles.length; i++) {
-    const id = newProjectId();
-    const dir = projectDir(id);
-    const projMeta = metadata.bundles[i].project;
-    const project = {
-      ...projMeta,
-      id,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    importedProjects.push(project);
-    projectDirs.push(dir);
-    projectAssetMaps.push(new Map());
-  }
-
-  const buffer = Buffer.alloc(1024 * 1024);
-
-  while (true) {
-    const marker = readLine();
-    if (!marker || marker !== 'START_ASSET') {
-      break;
-    }
-
-    const pIdxStr = readLine();
-    const pIdx = parseInt(pIdxStr, 10);
-    const key = readLine();
-    const name = readLine();
-    const sizeStr = readLine();
-    const size = parseInt(sizeStr, 10);
-
-    const dir = projectDirs[pIdx];
-    const assetMap = projectAssetMaps[pIdx];
-
-    const targetDir = key.startsWith('chunk:') ? path.join(dir, 'chunks') : path.join(dir, 'audio');
-    fs.mkdirSync(targetDir, { recursive: true });
-    const dest = path.join(targetDir, safeName(name || key, 'asset'));
-
-    const outFd = fs.openSync(dest, 'w');
-    let remaining = size;
-    while (remaining > 0) {
-      const toRead = Math.min(remaining, buffer.length);
-      const read = fs.readSync(fd, buffer, 0, toRead, offset);
-      if (read === 0) {
-        fs.closeSync(outFd);
-        fs.closeSync(fd);
-        throw new Error('Unexpected EOF while reading library asset data');
-      }
-      fs.writeSync(outFd, buffer, 0, read);
-      offset += read;
-      remaining -= read;
-    }
-    fs.closeSync(outFd);
-    assetMap.set(key, dest);
-
-    readLine(); // Consume END_ASSET line
-  }
-
-  fs.closeSync(fd);
-
-  for (let i = 0; i < importedProjects.length; i++) {
-    const project = importedProjects[i];
-    const id = project.id;
-    const assetMap = projectAssetMaps[i];
-
-    project.session = normalizeImportedProjectSession(project.session, { projectId: id, assetMap });
-    fs.writeFileSync(projectJsonPath(id), JSON.stringify(project, null, 2), 'utf8');
-  }
-
-  return importedProjects;
 }
 
 function summarizeParakeetModel(modelId) {
@@ -2494,7 +2254,7 @@ ipcMain.handle('project:export', async (_event, { id }) => {
       filters: [{ name: 'VaniScript Project', extensions: ['vaniscript'] }],
     });
     if (result.canceled || !result.filePath) return { ok: false, error: 'Export cancelled' };
-    writeProjectBundle(project, result.filePath);
+    await streamingBundleService.writeProjectBundle(project, result.filePath);
     return { ok: true, filePath: result.filePath };
   } catch (error) {
     return { ok: false, error: error.message || String(error) };
@@ -2509,7 +2269,7 @@ ipcMain.handle('project:exportAll', async () => {
       filters: [{ name: 'VaniScript Library', extensions: ['vaniscript-library'] }],
     });
     if (result.canceled || !result.filePath) return { ok: false, error: 'Export cancelled' };
-    writeLibraryBundle(projects, result.filePath);
+    await streamingBundleService.writeLibraryBundle(projects, result.filePath);
     return { ok: true, filePath: result.filePath };
   } catch (error) {
     return { ok: false, error: error.message || String(error) };
@@ -2528,47 +2288,9 @@ ipcMain.handle('project:import', async () => {
     if (result.canceled || !result.filePaths[0]) return { ok: false, error: 'Import cancelled' };
     const filePath = result.filePaths[0];
 
-    // Read the first 21 bytes to check format
-    const fd = fs.openSync(filePath, 'r');
-    const magicBuf = Buffer.alloc(21);
-    let bytesRead = 0;
-    try {
-      bytesRead = fs.readSync(fd, magicBuf, 0, 21, 0);
-    } finally {
-      fs.closeSync(fd);
-    }
-    const headerStr = magicBuf.toString('utf8');
-
-    if (headerStr === 'VANISCRIPT_BUNDLE_V2\n') {
-      const project = importProjectBundle(filePath);
-      return { ok: true, project };
-    } else if (headerStr === 'VANISCRIPT_LIBRARY_V2\n') {
-      const imported = await importLibraryBundle(filePath);
-      return { ok: true, project: imported[0] || null };
-    } else {
-      // Check file size before reading the whole file to prevent crashes
-      const size = fs.statSync(filePath).size;
-      if (size > 50 * 1024 * 1024) {
-        throw new Error(`File is too large (${(size / (1024 * 1024)).toFixed(1)} MB) and does not have a valid streaming header.`);
-      }
-
-      const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-      if (raw.format === 'vaniscript-library-v1') {
-        const imported = [];
-        for (const item of raw.bundles || []) {
-          const tmp = path.join(app.getPath('temp'), `${newProjectId()}.vaniscript`);
-          fs.writeFileSync(tmp, JSON.stringify({ format: 'vaniscript-project-v1', project: item.project, assets: item.assets }), 'utf8');
-          imported.push(importProjectBundle(tmp));
-          try { fs.unlinkSync(tmp); } catch {}
-        }
-        return { ok: true, project: imported[0] || null };
-      } else if (raw.format === 'vaniscript-project-v1') {
-        const project = importProjectBundle(filePath);
-        return { ok: true, project };
-      } else {
-        throw new Error('Unsupported or corrupted VaniScript file format.');
-      }
-    }
+    // One hardened service call routes all four supported formats by content.
+    const importedProjects = await streamingBundleService.importBundle(filePath);
+    return { ok: true, project: importedProjects[0] || null };
   } catch (error) {
     return { ok: false, error: error.message || String(error) };
   }
@@ -2987,7 +2709,7 @@ function startMcpServer() {
                       required: ['planIndex']
                     }
                   }
-                ]
+                ].concat(MCP_MAIN_TOOL_DEFINITIONS)
               }
             };
             sseResponse.write(`event: message\ndata: ${JSON.stringify(response)}\n\n`);
@@ -2996,6 +2718,38 @@ function startMcpServer() {
 
           if (rpc.method === 'tools/call') {
             const { name, arguments: args } = rpc.params || {};
+
+            // S4-C: the file-export and preflight tools execute entirely in
+            // Main, ahead of the window-active guard and the legacy renderer
+            // forwarding path (which stays untouched for its nine tools).
+            const mainToolCatalog = typeof name === 'string' ? dispatchedMcpToolCatalog(name) : null;
+            if (mainToolCatalog) {
+              let response;
+              try {
+                const result = await mainToolCatalog.execute(
+                  name,
+                  args && typeof args === 'object' && !Array.isArray(args) ? args : {},
+                );
+                response = {
+                  jsonrpc: '2.0',
+                  id: rpc.id,
+                  result: {
+                    content: [
+                      { type: 'text', text: JSON.stringify(result, null, 2) }
+                    ]
+                  }
+                };
+              } catch (error) {
+                log.error(`MCP tool "${name}" failed in Main:`, error.message || String(error));
+                response = {
+                  jsonrpc: '2.0',
+                  id: rpc.id,
+                  error: mcpToolRpcError(error)
+                };
+              }
+              sseResponse.write(`event: message\ndata: ${JSON.stringify(response)}\n\n`);
+              return;
+            }
             if (!windowManager.getMainWindow()) {
               const errResponse = {
                 jsonrpc: '2.0',

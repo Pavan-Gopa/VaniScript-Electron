@@ -392,6 +392,12 @@ declare global {
       openExternal: (url: string) => Promise<void>;
       onMcpCallTool?: (callback: (payload: { name: string; arguments: any; requestId: string }) => void) => () => void;
       mcpToolResponse?: (payload: { requestId: string; success: boolean; result?: any; error?: string }) => Promise<any>;
+      onMcpBuildTranscriptArtifact?: (callback: (payload: { requestId: string; arguments: { side?: string; format?: string; language?: string | null } }) => void) => () => void;
+      mcpBuildTranscriptArtifactResponse?: (payload: { requestId: string; success: boolean; result?: TranscriptArtifactProjection; error?: string }) => Promise<void>;
+      onMcpGetActiveProject?: (callback: (payload: { requestId: string }) => void) => () => void;
+      mcpGetActiveProjectResponse?: (payload: { requestId: string; success: boolean; result?: string | null; error?: string }) => Promise<void>;
+      onMcpGetExportReadiness?: (callback: (payload: { requestId: string }) => void) => () => void;
+      mcpGetExportReadinessResponse?: (payload: { requestId: string; success: boolean; result?: McpExportReadiness; error?: string }) => Promise<void>;
       grokChat?: (payload: { messages: Array<{ role: string; text: string }>; systemPrompt?: string; model?: string }) => Promise<{ ok: boolean; error?: string }>;
       onGrokChunk?: (callback: (payload: { text: string }) => void) => () => void;
       onGrokError?: (callback: (payload: { error: string; message?: string }) => void) => () => void;
@@ -403,6 +409,22 @@ declare global {
     };
   }
 }
+
+// Renderer-built transcript artifact returned over the S4-C compute bridge.
+export interface TranscriptArtifactProjection {
+  content: string;
+  fileName: string;
+}
+
+// Session snapshot consumed by the MCP list_export_options / validate_export
+// preflight projections. Field names mirror the native readiness envelope.
+export type McpExportReadiness = {
+  sessionAvailable: boolean;
+  chunkCount: number;
+  originalNonEmptyCount: number;
+  shortsPlanCount: number;
+  sourceVideoPath: string | null;
+};
 
 export interface SourceMediaInfo {
   originalURL?: string;

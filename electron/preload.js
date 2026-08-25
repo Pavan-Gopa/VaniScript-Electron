@@ -115,6 +115,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   mcpToolResponse: (payload) => ipcRenderer.invoke('mcp:tool-response', payload),
 
+  // ─── MCP Exports compute bridges (S4-C) ──────────────────────────────────
+  onMcpBuildTranscriptArtifact: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('mcp:build-transcript-artifact', handler);
+    return () => ipcRenderer.removeListener('mcp:build-transcript-artifact', handler);
+  },
+  mcpBuildTranscriptArtifactResponse: (payload) => ipcRenderer.invoke('mcp:build-transcript-artifact-response', payload),
+  onMcpGetActiveProject: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('mcp:get-active-project', handler);
+    return () => ipcRenderer.removeListener('mcp:get-active-project', handler);
+  },
+  mcpGetActiveProjectResponse: (payload) => ipcRenderer.invoke('mcp:get-active-project-response', payload),
+  onMcpGetExportReadiness: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('mcp:get-export-readiness', handler);
+    return () => ipcRenderer.removeListener('mcp:get-export-readiness', handler);
+  },
+  mcpGetExportReadinessResponse: (payload) => ipcRenderer.invoke('mcp:get-export-readiness-response', payload),
+
   // ─── Embedded Grok chat (headless CLI) ──────────────────────────────────
   grokChat: (payload) => ipcRenderer.invoke('grok:chat', payload),
   onGrokChunk: (callback) => {
