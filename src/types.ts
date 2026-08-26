@@ -1,4 +1,23 @@
 import type { PromptSettingsMap } from './lib/prompt-presets';
+import type {
+  ShortsExportEvent,
+  ShortsExportSnapshot,
+  ShortsExportTerminalEvent,
+} from './lib/shorts-export-contract';
+export type HyperFramesExportStartFailure = Readonly<{
+  success: false;
+  error?: string;
+  errorCode?: string;
+  message?: string;
+}>;
+export type HyperFramesExportStartResult = ShortsExportTerminalEvent | HyperFramesExportStartFailure;
+export type HyperFramesExportCancelResult = Readonly<{
+  success: boolean;
+  accepted: boolean;
+  state?: 'running' | 'cancelling' | 'succeeded' | 'failed' | 'cancelled' | 'not_found';
+  errorCode?: string;
+  error?: string;
+}>;
 
 export type AppScreen = 'workspace' | 'review' | 'export';
 export type OutputFormat = 'TXT' | 'SRT' | 'VTT' | 'Markdown';
@@ -278,22 +297,9 @@ declare global {
         crf?: number;
         format?: 'mp4' | 'mov';
       }) => Promise<{ success: boolean; outputPath?: string; error?: string; stderr?: string }>;
-      hyperframesExportShortClip: (opts: {
-        jobId?: string;
-        project: any;
-        inputVideoPath: string;
-        outputPath: string;
-        format?: 'mp4' | 'mov';
-        qualityPreset?: 'compact' | 'balanced' | 'high';
-      }) => Promise<{ success: boolean; outputPath?: string; error?: string; stderr?: string; cancelled?: boolean }>;
-      hyperframesCancelExport: (opts: { jobId: string }) => Promise<{ success: boolean; error?: string }>;
-      onHyperframesExportProgress: (callback: (payload: {
-        jobId?: string;
-        status?: string;
-        progress?: number;
-        stage?: string;
-        message?: string;
-      }) => void) => () => void;
+      hyperframesExportShorts: (snapshot: ShortsExportSnapshot) => Promise<HyperFramesExportStartResult>;
+      hyperframesCancelExport: (opts: { jobId: string }) => Promise<HyperFramesExportCancelResult>;
+      onHyperframesExportProgress: (callback: (payload: ShortsExportEvent) => void) => () => void;
 	      localInstallAsrModel: (opts: { modelId: string }) => Promise<{ ok: boolean; id: string; path?: string | null; error?: string }>;
 	      localRemoveAsrModel: (opts: { modelId: string }) => Promise<{ ok: boolean; id: string; error?: string }>;
 	      localTranscribeChunk: (opts: {

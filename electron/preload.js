@@ -46,7 +46,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ffmpegExtractWaveformPeaks: (opts) => ipcRenderer.invoke('ffmpeg:extractWaveformPeaks', opts),
   ffmpegRenderShortPreviewFrame: (opts) => ipcRenderer.invoke('ffmpeg:renderShortPreviewFrame', opts),
   ffmpegExportShortClip: (opts) => ipcRenderer.invoke('ffmpeg:exportShortClip', opts),
-  hyperframesExportShortClip: (opts) => ipcRenderer.invoke('hyperframes:exportShortClip', opts),
+  hyperframesExportShorts: (snapshot) => ipcRenderer.invoke('hyperframes:exportShorts', snapshot),
   hyperframesCancelExport: (opts) => ipcRenderer.invoke('hyperframes:cancelExport', opts),
   onHyperframesExportProgress: (callback) => {
     const handler = (_event, payload) => callback(payload);

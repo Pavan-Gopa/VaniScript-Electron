@@ -163,15 +163,15 @@
 - [x] [P3E.D2] Review/multi-language parity: variants/stale/reprocess
 - [x] [P3E.D3] Export/project parity: formats/bundles/naming
 - [x] [P3E.D4] Shorts plan/state parity: persisted plans/languages
-- [ ] [P3E.D5] Visual render contract: immutable render plan/cancel
+- [x] [P3E.D5] Visual render contract: immutable render plan/cancel
 
 ### Objective gates
-- [ ] [P3E.O1] Existing media E2E and review tests pass after extraction
-- [ ] [P3E.O2] Golden exports and shorts plan fixture tests pass
+- [x] [P3E.O1] Existing media E2E and review tests pass after extraction
+- [x] [P3E.O2] Golden exports and shorts plan fixture tests pass
 
 ### Judgment gates
-- [ ] [P3E.J1] Extraction preserves observable media behavior (parity)
-- [ ] [P3E.J2] Render plans immutable once started; cancel is safe
+- [x] [P3E.J1] Extraction preserves observable media behavior (parity)
+- [x] [P3E.J2] Render plans immutable once started; cancel is safe
 
 ## P4 — Integration/hardening
 

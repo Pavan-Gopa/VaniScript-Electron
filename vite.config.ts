@@ -14,7 +14,7 @@ export default defineConfig(({ mode }) => {
       // CommonJS module the renderer imports by name ([\\/] keeps the
       // pattern separator-safe on Windows).
       commonjsOptions: {
-        include: [/node_modules/, /[\\/]shared[\\/]media-translations\.js$/, /[\\/]shared[\\/]shorts-state\.js$/],
+        include: [/node_modules/, /[\\/]shared[\\/]media-translations\.js$/, /[\\/]shared[\\/]shorts-state\.js$/, /[\\/]shared[\\/]shorts-export-contract\.js$/],
       },
     },
     define: {

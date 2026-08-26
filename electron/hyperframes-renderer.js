@@ -343,7 +343,24 @@ function copyProjectLayerAssets(project, assetsDir) {
 }
 
 function isAbortError(error) {
-  return error?.name === 'AbortError' || error?.message === 'render_cancelled' || error?.message === 'Export cancelled';
+  return error?.code === 'EXPORT_CANCELLED'
+    || error?.code === 'CANCELLED'
+    || error?.name === 'AbortError'
+    || error?.name === 'RenderCancelledError'
+    || error?.message === 'render_cancelled'
+    || error?.message === 'Export cancelled';
+}
+
+function createRenderError(code, message, cause) {
+  const error = new Error(message);
+  error.code = code;
+  error.errorCode = code;
+  if (cause) error.cause = cause;
+  return error;
+}
+
+function throwIfAborted(abortSignal) {
+  if (abortSignal?.aborted) throw new Error('render_cancelled');
 }
 
 function runFfmpeg(ffmpegPath, args, log, abortSignal) {
@@ -1229,14 +1246,23 @@ async function renderShortClipWithHyperFrames({
   log,
   abortSignal,
   onProgress,
+  runtimeDir,
+  runtimeChildDir,
 }) {
-  if (abortSignal?.aborted) throw new Error('render_cancelled');
+  throwIfAborted(abortSignal);
   const totalStartedAt = Date.now();
   const sourcePath = path.resolve(inputVideoPath);
   const normalizedProject = normalizeProject(project);
-  const runtimeRoot = ensureDir(path.join(app.getPath('userData'), 'HyperFramesRuntime'));
+  const sessionRuntimeDir = runtimeChildDir || runtimeDir || ensureDir(path.join(app.getPath('userData'), 'HyperFramesRuntime'));
+  if (typeof sessionRuntimeDir !== 'string' || !path.isAbsolute(sessionRuntimeDir)) {
+    throw createRenderError('RUNTIME_DIR_REQUIRED', 'Main-owned HyperFrames runtime directory is required.');
+  }
+  ensureDir(sessionRuntimeDir);
   const proxyCacheDir = ensureDir(path.join(app.getPath('userData'), 'HyperFramesProxyCache'));
-  const projectDir = ensureDir(path.join(runtimeRoot, `${Date.now()}_${toSafeFilePart(normalizedProject.id || normalizedProject.title)}`));
+  const projectDir = ensureDir(path.join(
+    path.resolve(sessionRuntimeDir),
+    `${Date.now()}_${toSafeFilePart(normalizedProject.id || normalizedProject.title)}`,
+  ));
   const assetsDir = ensureDir(path.join(projectDir, 'assets'));
   const proxyStartedAt = Date.now();
   const browserSafeSourcePath = await createBrowserSafeProxy({
@@ -1248,6 +1274,7 @@ async function renderShortClipWithHyperFrames({
     log,
     abortSignal,
   });
+  throwIfAborted(abortSignal);
   log.info('HyperFrames proxy prepared:', {
     ms: Date.now() - proxyStartedAt,
     browserSafeSourcePath,
@@ -1288,6 +1315,7 @@ async function renderShortClipWithHyperFrames({
       outputSize: `${normalizedProject.width}x${normalizedProject.height}`,
     });
   }
+  throwIfAborted(abortSignal);
 
   const hasIntro = !!(normalizedProject.intro && !normalizedProject.intro.hidden && introDuration > 0);
   const hasOutro = !!(normalizedProject.outro && !normalizedProject.outro.hidden && outroDuration > 0);
@@ -1297,6 +1325,13 @@ async function renderShortClipWithHyperFrames({
     try {
       const introBgPath = path.join(assetsDir, 'intro-bg.jpg');
       const outroBgPath = path.join(assetsDir, 'outro-bg.jpg');
+      const extractRequiredFrame = async (label, args, framePath) => {
+        await runFfmpeg(ffmpegPath, args, log, abortSignal);
+        const frameStat = safeStat(framePath);
+        if (!frameStat || frameStat.size <= 0) {
+          throw createRenderError('STATIC_FRAME_FAILED', `Required ${label} static frame was not created.`);
+        }
+      };
 
       if (hasIntro) {
         // Extract first frame of active video region (at t=0 in proxy)
@@ -1306,10 +1341,10 @@ async function renderShortClipWithHyperFrames({
           '-i', blurBackgroundPath || browserSafeSourcePath,
           '-vframes', '1',
           '-q:v', '2',
-          introBgPath
+          introBgPath,
         ];
         log.info('Extracting static background frame for intro:', introArgs.join(' '));
-        await runFfmpeg(ffmpegPath, introArgs, log, abortSignal);
+        await extractRequiredFrame('intro', introArgs, introBgPath);
       }
 
       if (hasOutro) {
@@ -1321,13 +1356,17 @@ async function renderShortClipWithHyperFrames({
           '-i', blurBackgroundPath || browserSafeSourcePath,
           '-vframes', '1',
           '-q:v', '2',
-          outroBgPath
+          outroBgPath,
         ];
         log.info('Extracting static background frame for outro:', outroArgs.join(' '));
-        await runFfmpeg(ffmpegPath, outroArgs, log, abortSignal);
+        await extractRequiredFrame('outro', outroArgs, outroBgPath);
       }
     } catch (err) {
+      if (isAbortError(err)) throw err;
       log.error('Failed to extract static background frames for intro/outro:', err);
+      throw err?.code === 'STATIC_FRAME_FAILED'
+        ? err
+        : createRenderError('STATIC_FRAME_FAILED', `Failed to extract required static background frame: ${err?.message || String(err)}`, err);
     } finally {
       log.info('HyperFrames static backgrounds prepared:', {
         ms: Date.now() - staticStartedAt,
@@ -1336,6 +1375,7 @@ async function renderShortClipWithHyperFrames({
       });
     }
   }
+  throwIfAborted(abortSignal);
 
   const renderProject = {
     ...copyProjectLayerAssets(normalizedProject, assetsDir),
@@ -1371,6 +1411,7 @@ async function renderShortClipWithHyperFrames({
   process.env.PATH = `${path.dirname(ffmpegPath)}${path.delimiter}${previousPath}`;
 
   try {
+    throwIfAborted(abortSignal);
     const { createRenderJob, executeRenderJob } = await import('@hyperframes/producer');
     const quality = mapQualityPreset(qualityPreset);
     const renderFps = Math.max(1, Math.round(renderProject.fps || 30));

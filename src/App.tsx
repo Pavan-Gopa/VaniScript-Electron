@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Settings, Download, RefreshCw, Play, Pause, FolderOpen, Share2, Trash2, Upload, Archive, ChevronDown, ChevronRight, ArrowLeft, Search, HelpCircle, Film, FileAudio, Info, Sparkles } from 'lucide-react';
-import { AppSettings, GlossaryEntry, McpExportReadiness, ProjectSummary, SessionConfig, SourceMediaInfo, TranscriptCue, UsageStats } from './types';
+import { AppSettings, ChunkData, GlossaryEntry, McpExportReadiness, ProjectSummary, SessionConfig, SourceMediaInfo, TranscriptCue, UsageStats } from './types';
 import { loadSettings, saveSettings, loadUsage, applyTheme, trackUsage } from './services/storage';
 import { transcribeChunkGemini, transcribeChunkOpenAI, fileToBase64 } from './services/transcription';
 import { prepareMediaSession, PreparedMediaSession } from './services/media-processing-coordinator';
@@ -40,14 +40,21 @@ import { appendNonOverlappingShortsPlans, attachShortsPlanActiveTranslation, bui
 import { renderPrompt } from './lib/prompt-presets';
 import { toggleSync, copyMotionFrom, findLinkedPartnerIndex, resolveClipLanguageRole, buildSyncPatch } from './lib/ClipSyncManager';
 import {
-  buildShortsAssSubtitle,
-  buildVerticalVideoFilter,
-  buildVerticalVideoFilterGraph,
-  extensionForShortsFormat,
   fpsForShortsFrameRate,
   resolveShortsSubtitleStyle,
   verticalResolutionForPreset,
 } from './lib/shorts-render';
+import {
+  createShortsExportEventGate,
+  deepCloneDeepFreeze,
+  isShortsExportTerminalEvent,
+  materializeShortsExportSnapshot,
+  type ShortsExportEvent,
+  type ShortsExportEventGate,
+  type ShortsExportOptions,
+  type ShortsExportSnapshotSeed,
+  type ShortsExportTerminalEvent,
+} from './lib/shorts-export-contract';
 import { buildShortsRenderProject } from './render-engine/RenderPipeline';
 import { alignedSegmentsToCues, AlignedSubtitleSegment } from './lib/subtitle-alignment';
 import { currentBuildId } from './lib/build-info';
@@ -89,14 +96,22 @@ type ShortsExportProgress = {
   label: string;
   stage: string;
   cancelling: boolean;
+  outputDirectory?: string;
+  terminal?: ShortsExportTerminalEvent;
+  terminalReady: boolean;
 };
 
-function normalizeExportProgressFraction(progress: number | undefined): number {
-  const raw = Number(progress ?? 0);
-  if (!Number.isFinite(raw)) return 0;
-  const fraction = raw > 1 ? raw / 100 : raw;
-  return Math.min(Math.max(fraction, 0), 1);
-}
+type ShortsExportCapturedClip = {
+  stableID: string;
+  language: 'source' | 'target';
+  title: string;
+  plan: ShortsClipPlan;
+};
+
+type ShortsExportCapturedSeed = Omit<ShortsExportSnapshotSeed, 'clips'> & {
+  clips: readonly ShortsExportCapturedClip[];
+  renderSettings: ShortsSettings;
+};
 
 type GlossaryDraft = {
   mode: 'existing' | 'new';
@@ -153,6 +168,7 @@ const DEFAULT_SHORTS_SETTINGS: ShortsSettings = {
 function shortsSubtitleStyleFromSettings(settings: ShortsSettings) {
   return resolveShortsSubtitleStyle({
     fontFamily: settings.subtitleFontFamily,
+
     fontSize: settings.subtitleFontSize,
     bold: settings.subtitleBold,
     textTransform: settings.subtitleTextTransform,
@@ -176,6 +192,103 @@ function shortsSubtitleStyleFromSettings(settings: ShortsSettings) {
     shadowAngle: settings.subtitleShadowAngle ?? 90,
     subtitleBottomMargin: settings.subtitleBottomMargin,
   });
+}
+type ShortsExportCue = { startSec: number; endSec: number; text: string };
+
+function splitShortsCueForExport(
+  cue: ShortsExportCue,
+  settings: ShortsSettings,
+  subtitleMaxCharsPerLine: number,
+  subtitleMaxLines: number,
+): ShortsExportCue[] {
+  if (!settings.subtitleUseCharsPerLine) return [{ ...cue, text: cue.text.trim() }];
+  const maxLines = settings.subtitleUseLinesPerCue ? subtitleMaxLines : 1;
+  const maxChars = Math.max(12, subtitleMaxCharsPerLine * maxLines);
+  const words = cue.text.trim().match(/\S+/g) || [];
+  if (words.length === 0) return [];
+  const chunks: string[] = [];
+  let current = '';
+  words.forEach((word) => {
+    const next = current ? `${current} ${word}` : word;
+    if (current && next.length > maxChars) {
+      chunks.push(current);
+      current = word;
+    } else {
+      current = next;
+    }
+  });
+  if (current) chunks.push(current);
+  if (chunks.length <= 1) return [{ ...cue, text: chunks[0] || cue.text }];
+
+  const totalWords = chunks.reduce((sum, chunk) => sum + (chunk.match(/\S+/g) || []).length, 0);
+  const duration = Math.max(0.5, cue.endSec - cue.startSec);
+  let cursor = cue.startSec;
+  return chunks.map((text, index) => {
+    const ratio = (text.match(/\S+/g) || []).length / Math.max(1, totalWords);
+    const isLast = index === chunks.length - 1;
+    const endSec = isLast ? cue.endSec : Math.min(cue.endSec, cursor + Math.max(0.8, duration * ratio));
+    const result = { startSec: cursor, endSec: Math.max(cursor + 0.5, endSec), text };
+    cursor = result.endSec;
+    return result;
+  });
+}
+
+function buildShortsExportCues(
+  plan: ShortsClipPlan,
+  language: 'source' | 'target',
+  chunks: readonly ChunkData[],
+  activeTranslationLanguage: string | undefined,
+  settings: ShortsSettings,
+  subtitleMaxCharsPerLine: number,
+  subtitleMaxLines: number,
+): ShortsExportCue[] {
+  const parsedStart = parseShortsTimestamp(plan.start);
+  const parsedEnd = parseShortsTimestamp(plan.end);
+  if (!parsedStart.ok || !parsedEnd.ok || parsedStart.seconds === null || parsedEnd.seconds === null) return [];
+  const clipStartSec = parsedStart.seconds;
+  const clipEndSec = parsedEnd.seconds;
+  const projection = selectShortsPlanProjection(plan, language, activeTranslationLanguage);
+  if (language === 'target' && (plan.languageMode === 'target' || plan.languageMode === 'bilingual') && !projection.available) return [];
+
+  const manualSegments = language === 'source' ? plan.sourceAlignment : plan.targetAlignment;
+  if (manualSegments?.length && (language === 'source' || shortsAlignmentMatchesCaption(manualSegments, projection.captionText))) {
+    return alignedSegmentsToCues(manualSegments).flatMap((cue) => splitShortsCueForExport(cue, settings, subtitleMaxCharsPerLine, subtitleMaxLines));
+  }
+  const customCaptionText = projection.captionText;
+  if (customCaptionText.trim()) {
+    const customLines = parseKaraokeLines(customCaptionText, clipStartSec, clipEndSec)
+      .filter((line) => line.kind === 'timed')
+      .map((line) => ({
+        startSec: Math.max(0, line.startSec - clipStartSec),
+        endSec: Math.max(0.5, Math.min(clipEndSec, line.endSec) - clipStartSec),
+        text: line.text,
+      }))
+      .filter((cue) => cue.text.trim());
+    if (customLines.length > 0) return customLines.flatMap((cue) => splitShortsCueForExport(cue, settings, subtitleMaxCharsPerLine, subtitleMaxLines));
+    return [{
+      startSec: 0,
+      endSec: Math.max(1, clipEndSec - clipStartSec),
+      text: customCaptionText.trim(),
+    }].flatMap((cue) => splitShortsCueForExport(cue, settings, subtitleMaxCharsPerLine, subtitleMaxLines));
+  }
+  const lines = buildShortsCuesForClip(chunks as ChunkData[], language, clipStartSec, clipEndSec);
+  if (lines.length > 0) return lines.flatMap((cue) => splitShortsCueForExport(cue, settings, subtitleMaxCharsPerLine, subtitleMaxLines));
+  return [{
+    startSec: 0,
+    endSec: Math.max(1, clipEndSec - clipStartSec),
+    text: projection.hook || projection.title,
+  }].flatMap((cue) => splitShortsCueForExport(cue, settings, subtitleMaxCharsPerLine, subtitleMaxLines));
+}
+
+function shortsTitleForLanguage(
+  plan: ShortsClipPlan,
+  language: 'source' | 'target',
+  activeTranslationLanguage: string | undefined,
+): string {
+  const projection = language === 'source'
+    ? selectShortsSourceProjection(plan)
+    : selectShortsTargetProjection(plan, activeTranslationLanguage);
+  return projection.title;
 }
 
 const SHORTS_DEFAULTS_KEY = 'vs_shorts_defaults_v1';
@@ -323,14 +436,6 @@ function personalizeShortsPlanSpeaker(plan: ShortsClipPlan, sourceSpeaker: strin
   };
 }
 
-function safeExportPart(value: string, fallback = 'clip'): string {
-  return (value || fallback)
-    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
-    .replace(/[^\p{L}\p{N}_ -]/gu, '')
-    .replace(/\s+/g, '_')
-    .replace(/_+/g, '_')
-    .slice(0, 80) || fallback;
-}
 
 function localizedMetadataPrefix(cfg: SessionConfig, includeMetadata: boolean, targetLang: string): string {
   if (!includeMetadata) return '';
@@ -474,10 +579,11 @@ export default function App() {
   const isTranscribing = useRef(false);
   const autosaveTimerRef = useRef<number | null>(null);
   const autosaveSnapshotRef = useRef('');
-  const shortsExportCancelRef = useRef(false);
   const shortsExportJobIdRef = useRef('');
-  const shortsExportCompletedRef = useRef(0);
-  const shortsExportTotalRef = useRef(0);
+  const shortsExportActiveRef = useRef(false);
+  const shortsExportAcceptedRef = useRef(false);
+  const shortsExportCancelRequestedRef = useRef(false);
+  const shortsExportEventGateRef = useRef<ShortsExportEventGate | null>(null);
   const keyRepeatRef = useRef<Record<string, number>>({});
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
@@ -560,22 +666,43 @@ export default function App() {
     return () => { cancelled = true; };
   }, [session?.originalVideoPath]);
 
-  useEffect(() => {
-    if (!window.electronAPI?.onHyperframesExportProgress) return;
-    return window.electronAPI.onHyperframesExportProgress((payload) => {
-      if (!payload?.jobId || payload.jobId !== shortsExportJobIdRef.current) return;
-      const total = Math.max(1, shortsExportTotalRef.current || 1);
-      const completed = Math.max(0, shortsExportCompletedRef.current || 0);
-      const currentProgress = normalizeExportProgressFraction(payload.progress);
-      const overall = ((completed + currentProgress) / total) * 100;
+  const acceptShortsExportEvent = useCallback((payload: ShortsExportEvent) => {
+    if (!payload || shortsExportJobIdRef.current !== payload.jobId) return;
+    const accepted = shortsExportEventGateRef.current?.accept(payload);
+    if (!accepted) return;
+    const { event, percent } = accepted;
+    if (isShortsExportTerminalEvent(event)) {
       setShortsExportProgress((prev) => prev ? {
         ...prev,
-        percent: overall,
-        stage: payload.stage || prev.stage,
-        label: payload.message || prev.label,
+        completed: event.completed,
+        current: event.completed >= event.total ? event.total : Math.max(1, event.failedClipIndex === undefined ? event.completed + 1 : event.failedClipIndex + 1),
+        total: event.total,
+        percent: percent * 100,
+        label: event.state === 'succeeded'
+          ? `Exported ${event.outputs.length} clip${event.outputs.length === 1 ? '' : 's'}`
+          : event.message || `Export ${event.state}`,
+        stage: event.state,
+        cancelling: false,
+        terminal: event,
+        terminalReady: false,
       } : prev);
-    });
+      return;
+    }
+    setShortsExportProgress((prev) => prev && !prev.terminal ? {
+      ...prev,
+      completed: event.completed,
+      current: event.current,
+      total: event.total,
+      percent: percent * 100,
+      stage: event.stage,
+      label: event.message || prev.label,
+    } : prev);
   }, []);
+
+  useEffect(() => {
+    if (!window.electronAPI?.onHyperframesExportProgress) return;
+    return window.electronAPI.onHyperframesExportProgress(acceptShortsExportEvent);
+  }, [acceptShortsExportEvent]);
 
   useEffect(() => {
     if (!session) return;
@@ -2339,33 +2466,6 @@ export default function App() {
     };
   }, [session]);
 
-  const writeShortsAssFile = useCallback(async (plan: ShortsClipPlan, outputSize: { width: number; height: number }, language: 'source' | 'target') => {
-    if (!window.electronAPI?.writeTempTextFile) throw new Error('Could not write subtitle file in this runtime.');
-    const style = resolveShortsSubtitleStyle(plan.subtitleStyle);
-    const ass = buildShortsAssSubtitle({
-      cues: buildShortsCues(plan, language),
-      width: outputSize.width,
-      height: outputSize.height,
-      bottomMargin: style.subtitleBottomMargin ?? shortsSettings.subtitleBottomMargin,
-      maxLines: shortsSettings.subtitleUseLinesPerCue ? subtitleMaxLines : 8,
-      maxCharsPerLine: shortsSettings.subtitleUseCharsPerLine ? subtitleMaxCharsPerLine : undefined,
-      style,
-    });
-    const result = await window.electronAPI.writeTempTextFile({
-      fileName: `shorts_${Date.now()}.ass`,
-      content: ass,
-    });
-    if (!result.success || !result.filePath) throw new Error(result.error || 'Could not write subtitle file.');
-    return result.filePath;
-  }, [buildShortsCues, shortsSettings, subtitleMaxCharsPerLine, subtitleMaxLines]);
-
-
-  const shortsTitleForLanguage = (plan: ShortsClipPlan, language: 'source' | 'target'): string => {
-    const projection = language === 'source'
-      ? selectShortsSourceProjection(plan)
-      : selectShortsTargetProjection(plan, session?.activeTranslationLanguage);
-    return projection.title;
-  };
   const handleExportShortsIdeas = useCallback(async () => {
     if (!session || !window.electronAPI || shortsPlans.length === 0) return;
     const selected = shortsPlans.filter((plan) => {
@@ -2404,191 +2504,338 @@ export default function App() {
   }, [selectedShortsPlanKeys, session, shortsPlans]);
 
   const handleCancelShortsExport = useCallback(async () => {
-    shortsExportCancelRef.current = true;
-    setShortsExportProgress((prev) => prev ? { ...prev, cancelling: true, label: 'Cancelling export…' } : prev);
+    if (
+      !shortsExportAcceptedRef.current
+      || shortsExportEventGateRef.current?.state.terminal
+      || shortsExportCancelRequestedRef.current
+    ) return;
     const jobId = shortsExportJobIdRef.current;
-    if (jobId && window.electronAPI?.hyperframesCancelExport) {
-      await window.electronAPI.hyperframesCancelExport({ jobId }).catch(() => undefined);
-    }
+    const api = window.electronAPI;
+    if (!jobId || !api?.hyperframesCancelExport) return;
+    shortsExportCancelRequestedRef.current = true;
+    setShortsExportProgress((prev) => prev && !prev.terminal ? {
+      ...prev,
+      cancelling: true,
+      label: 'Cancelling export…',
+    } : prev);
+    await api.hyperframesCancelExport({ jobId }).catch(() => undefined);
   }, []);
+
   const handleExportSelectedShortsVideos = useCallback(async () => {
-    if (!session?.originalVideoPath || !window.electronAPI) return;
-    const jobs = sortShortsSelectionKeys(selectedShortsPlanKeys).flatMap((key) => {
-      const separator = key.lastIndexOf(':');
-      const stableID = key.slice(0, separator);
-      const language = key.slice(separator + 1) as 'source' | 'target';
-      const plan = shortsPlans.find((item) => item.stableID === stableID);
-      if (!plan || !shortsPlanExportLanguages(plan).includes(language)) return [];
-      return [{ stableID, plan, language }];
+    const api = window.electronAPI;
+    const currentSession = sessionRef.current;
+    if (
+      shortsBusy
+      || shortsExportActiveRef.current
+      || shortsExportJobIdRef.current
+      || !api
+      || !currentSession?.originalVideoPath
+    ) return;
+
+    const selectedKeys = sortShortsSelectionKeys(selectedShortsPlanKeys);
+    if (selectedKeys.length === 0) return;
+    const selectedTotal = selectedKeys.length;
+    const exportJobId = crypto.randomUUID();
+    const eventGate = shortsExportEventGateRef.current ?? createShortsExportEventGate({ jobId: exportJobId });
+    eventGate.reset({ jobId: exportJobId });
+    shortsExportEventGateRef.current = eventGate;
+    shortsExportActiveRef.current = true;
+    shortsExportAcceptedRef.current = false;
+    shortsExportCancelRequestedRef.current = false;
+    shortsExportJobIdRef.current = exportJobId;
+    setShortsExportProgress(null);
+    setShortsBusy(true);
+    setShortsBusyLabel(`Preparing ${selectedTotal} video${selectedTotal === 1 ? '' : 's'}...`);
+
+    const localFailure = (error: unknown, fallbackCode = 'EXPORT_FAILED'): ShortsExportTerminalEvent => {
+      const failureRecord = error && typeof error === 'object'
+        ? error as { message?: unknown; error?: unknown }
+        : null;
+      const message = error instanceof Error
+        ? error.message
+        : String(failureRecord?.message || failureRecord?.error || error);
+      return {
+        jobId: exportJobId,
+        sequence: Math.max(1, (shortsExportEventGateRef.current?.state.sequence ?? 0) + 1),
+        kind: 'terminal',
+        state: 'failed',
+        progress: 0,
+        total: selectedTotal,
+        completed: 0,
+        outputs: [],
+        errorCode: error instanceof ShortsValidationError ? error.code : fallbackCode,
+        message,
+        cleanupComplete: true,
+      };
+    };
+    setShortsExportProgress({
+      jobId: exportJobId,
+      total: selectedTotal,
+      completed: 0,
+      current: 1,
+      percent: 0,
+      label: 'Preparing export…',
+      stage: 'prepare',
+      cancelling: false,
+      terminalReady: false,
     });
-    if (jobs.length === 0) return;
-    const exportSourceInfo = shortsVideoSourceInfo ?? { width: 1920, height: 1080, durationSec: 0, fps: undefined as number | undefined };
-    let probedSourceInfo = exportSourceInfo;
-    let exportStarted = false;
-    const exported: string[] = [];
-    let outputDir = '';
-    let currentOutputPath = '';
-    const exportJobId = `shorts_export_${Date.now()}`;
+
+    let capturedSeed!: ShortsExportCapturedSeed;
+    let outputDirectory = '';
+    let ipcStarted = false;
     try {
-      if (window.electronAPI.ffmpegGetVideoInfo) {
-        const probedInfo = await window.electronAPI.ffmpegGetVideoInfo({ inputPath: session.originalVideoPath });
+      const capturedSession = deepCloneDeepFreeze({
+        ...currentSession,
+        chunks: currentSession.chunks,
+        shortsPlans,
+      }) as unknown as Session;
+      const capturedSettings = deepCloneDeepFreeze(shortsSettings) as unknown as ShortsSettings;
+      const capturedSubtitleMaxCharsPerLine = subtitleMaxCharsPerLine;
+      const capturedSubtitleMaxLines = subtitleMaxLines;
+      const activeTranslationLanguage = currentSession.activeTranslationLanguage ?? currentSession.targetLang;
+      const knownInfo = currentSession.sourceMediaInfo;
+      const knownSourceInfo = {
+        ...(shortsVideoSourceInfo ? {
+          width: shortsVideoSourceInfo.width,
+          height: shortsVideoSourceInfo.height,
+          durationSec: shortsVideoSourceInfo.durationSec,
+          fps: shortsVideoSourceInfo.fps ?? null,
+        } : {}),
+        ...(knownInfo ? {
+          width: shortsVideoSourceInfo?.width ?? knownInfo.width,
+          height: shortsVideoSourceInfo?.height ?? knownInfo.height,
+          durationSec: shortsVideoSourceInfo?.durationSec ?? knownInfo.durationSec,
+          fps: shortsVideoSourceInfo?.fps ?? knownInfo.frameRate ?? null,
+        } : {}),
+      };
+      const capturedPlans = capturedSession.shortsPlans as unknown as ShortsClipPlan[];
+      const capturedJobs = selectedKeys.flatMap((key) => {
+        const separator = key.lastIndexOf(':');
+        const stableID = key.slice(0, separator);
+        const language = key.slice(separator + 1) as 'source' | 'target';
+        const plan = capturedPlans.find((item) => item.stableID === stableID);
+        if (!plan || !shortsPlanExportLanguages(plan).includes(language)) return [];
+        return [{
+          stableID,
+          language,
+          title: shortsTitleForLanguage(plan, language, activeTranslationLanguage),
+          plan,
+        }];
+      });
+      if (capturedJobs.length === 0) return;
+
+      capturedSeed = deepCloneDeepFreeze({
+        jobId: exportJobId,
+        source: {
+          inputVideoPath: currentSession.originalVideoPath,
+          inputVideoSrc: shortsVideoSrc,
+          sourceFileName: currentSession.sourceFileName,
+          info: knownSourceInfo,
+        },
+        options: {
+          format: capturedSettings.videoFormat,
+          resolutionPreset: capturedSettings.resolutionPreset,
+          frameRatePreset: capturedSettings.frameRate,
+          qualityPreset: capturedSettings.videoQuality,
+          subtitleBottomMargin: capturedSettings.subtitleBottomMargin,
+          subtitleUseCharsPerLine: capturedSettings.subtitleUseCharsPerLine,
+          subtitleUseLinesPerCue: capturedSettings.subtitleUseLinesPerCue,
+          subtitleMaxCharsPerLine: capturedSubtitleMaxCharsPerLine,
+          subtitleMaxLines: capturedSubtitleMaxLines,
+        } satisfies ShortsExportOptions,
+        clips: capturedJobs.map((job) => ({
+          stableID: job.stableID,
+          language: job.language,
+          title: job.title,
+          plan: job.plan,
+          renderSeed: {
+            plan: job.plan,
+            settings: capturedSettings,
+            transcriptCueInputs: capturedSession.chunks,
+            activeTranslationLanguage,
+          },
+          selectedUnit: { stableID: job.stableID, language: job.language },
+        })),
+        selectedUnits: capturedJobs.map(({ stableID, language }) => ({ stableID, language })),
+        transcriptCueInputs: capturedSession.chunks,
+        activeTranslationLanguage,
+        renderSettings: capturedSettings,
+      }) as unknown as ShortsExportCapturedSeed;
+
+      let probedSourceInfo = {
+        width: Number(capturedSeed.source.info?.width) || 1920,
+        height: Number(capturedSeed.source.info?.height) || 1080,
+        durationSec: Number(capturedSeed.source.info?.durationSec) || 0,
+        fps: capturedSeed.source.info?.fps ?? null,
+      };
+      if (api.ffmpegGetVideoInfo) {
+        const probedInfo = await api.ffmpegGetVideoInfo({ inputPath: capturedSeed.source.inputVideoPath });
         if (probedInfo.success && probedInfo.width && probedInfo.height) {
           probedSourceInfo = {
             width: probedInfo.width,
             height: probedInfo.height,
             durationSec: probedInfo.durationSec || 0,
-            fps: probedInfo.fps,
+            fps: probedInfo.fps ?? null,
           };
-        } else if (shortsSettings.resolutionPreset === 'source' || shortsSettings.frameRate === 'source') {
+        } else if (
+          capturedSeed.options.resolutionPreset === 'source'
+          || capturedSeed.options.frameRatePreset === 'source'
+        ) {
           throw new Error(probedInfo.error || 'Could not read source video resolution/FPS for source-based export.');
         }
       }
+
       const preflight = validateShortsExportSelection(
-        jobs.map(({ plan, language }) => ({ plan, language })),
+        capturedSeed.clips.map(({ plan, language }) => ({ plan, language })),
         {
-          session,
-          sourceDurationSec: resolveShortsSourceDuration(session) ?? probedSourceInfo.durationSec,
+          session: capturedSession,
+          sourceDurationSec: resolveShortsSourceDuration(capturedSession) ?? probedSourceInfo.durationSec,
           minDurationSec: 10,
           maxDurationSec: 300,
-          activeLanguage: session.activeTranslationLanguage ?? session.targetLang,
-        }
+          activeLanguage: capturedSeed.activeTranslationLanguage ?? capturedSession.targetLang,
+        },
       );
       if (!preflight.valid) {
         const failed = preflight.results.find((result) => !result.valid);
         if (failed) throw new ShortsValidationError(failed);
         throw new Error('Shorts export preflight failed.');
       }
-      setShortsVideoSourceInfo(probedSourceInfo);
-      exportStarted = true;
-      setShortsBusy(true);
-      setShortsBusyLabel(`Exporting ${jobs.length} video${jobs.length === 1 ? '' : 's'}...`);
-      shortsExportCancelRef.current = false;
-      shortsExportJobIdRef.current = exportJobId;
-      shortsExportCompletedRef.current = 0;
-      shortsExportTotalRef.current = jobs.length;
-      outputDir = await window.electronAPI.openDirectory() || '';
-      if (!outputDir) return;
+
+      let inputVideoSrc = capturedSeed.source.inputVideoSrc;
+      if (!inputVideoSrc) {
+        const videoUrlResult = await api.pathToFileUrl({ filePath: capturedSeed.source.inputVideoPath });
+        if (!videoUrlResult.success || !videoUrlResult.url) {
+          throw new Error(videoUrlResult.error || 'Could not prepare source video for shorts export.');
+        }
+        inputVideoSrc = videoUrlResult.url;
+      }
+      outputDirectory = await api.openDirectory() || '';
+      if (!outputDirectory) return;
+      setShortsVideoSourceInfo({ ...probedSourceInfo, fps: probedSourceInfo.fps ?? undefined });
+
+      const outputSize = verticalResolutionForPreset(capturedSeed.options.resolutionPreset, probedSourceInfo);
+      const snapshotSeed: ShortsExportSnapshotSeed = {
+        ...capturedSeed,
+        source: {
+          ...capturedSeed.source,
+          inputVideoSrc,
+        },
+        clips: capturedSeed.clips.map((clip, index) => {
+          const validation = preflight.results[index];
+          if (!validation || !validation.valid || validation.startSec === null || validation.endSec === null) {
+            throw new Error(`Shorts export validation failed for plan ${clip.stableID}.`);
+          }
+          const plan = clip.plan;
+          const style = resolveShortsSubtitleStyle(plan.subtitleStyle);
+          const project = buildShortsRenderProject({
+            id: `${capturedSeed.source.sourceFileName}_${clip.stableID}_${clip.language}`,
+            title: clip.title,
+            inputVideoSrc,
+            sourceWidth: probedSourceInfo.width,
+            sourceHeight: probedSourceInfo.height,
+            clipStartSec: validation.startSec,
+            clipEndSec: validation.endSec,
+            outputWidth: outputSize.width,
+            outputHeight: outputSize.height,
+            fps: fpsForShortsFrameRate(capturedSeed.options.frameRatePreset, probedSourceInfo.fps ?? undefined),
+            cues: buildShortsExportCues(
+              plan,
+              clip.language,
+              capturedSeed.transcriptCueInputs as unknown as readonly ChunkData[],
+              capturedSeed.activeTranslationLanguage ?? undefined,
+              capturedSeed.renderSettings,
+              capturedSeed.options.subtitleMaxCharsPerLine,
+              capturedSeed.options.subtitleMaxLines,
+            ),
+            frameKeyframes: clip.language === 'source' ? plan.sourceFrameKeyframes : plan.targetFrameKeyframes,
+            subtitleBottomMargin: style.subtitleBottomMargin ?? capturedSeed.options.subtitleBottomMargin,
+            style,
+            timelineCuts: plan.timelineCuts,
+            timelineTrim: plan.timelineTrim,
+            backgroundSettings: plan.backgroundSettings,
+            logo: clip.language === 'source' ? plan.sourceLogo || plan.logo : plan.targetLogo || plan.logo,
+            textTracks: clip.language === 'source' ? plan.sourceTextTracks || plan.textTracks || [] : plan.targetTextTracks || plan.textTracks || [],
+            audioTracks: clip.language === 'source' ? plan.sourceAudioTracks || plan.audioTracks || [] : plan.targetAudioTracks || plan.audioTracks || [],
+            intro: clip.language === 'source' ? plan.sourceIntro || plan.intro : plan.targetIntro || plan.intro,
+            outro: clip.language === 'source' ? plan.sourceOutro || plan.outro : plan.targetOutro || plan.outro,
+          });
+          return {
+            stableID: clip.stableID,
+            language: clip.language,
+            title: clip.title,
+            project,
+          };
+        }),
+      };
+      const snapshot = materializeShortsExportSnapshot(snapshotSeed, probedSourceInfo, outputDirectory);
+      const total = snapshot.clips.length;
+      shortsExportAcceptedRef.current = true;
       setShortsExportProgress({
         jobId: exportJobId,
-        total: jobs.length,
+        total,
         completed: 0,
         current: 1,
         percent: 0,
         label: 'Preparing export…',
         stage: 'prepare',
         cancelling: false,
+        outputDirectory,
+        terminalReady: false,
       });
-      const outputSize = verticalResolutionForPreset(shortsSettings.resolutionPreset, probedSourceInfo);
-      const extension = extensionForShortsFormat(shortsSettings.videoFormat);
-      const videoUrlResult = await window.electronAPI.pathToFileUrl({ filePath: session.originalVideoPath });
-      if (!videoUrlResult.success || !videoUrlResult.url) {
-        throw new Error(videoUrlResult.error || 'Could not prepare source video for shorts export.');
+      setShortsBusyLabel(`Exporting ${total} video${total === 1 ? '' : 's'}...`);
+      ipcStarted = true;
+      const result = await api.hyperframesExportShorts(snapshot);
+      if (isShortsExportTerminalEvent(result)) acceptShortsExportEvent(result);
+      else if (!shortsExportEventGateRef.current?.state.terminal) {
+        acceptShortsExportEvent(localFailure(result, result?.errorCode || 'EXPORT_REJECTED'));
       }
-
-      for (let i = 0; i < jobs.length; i += 1) {
-        if (shortsExportCancelRef.current) {
-          const cancelled = new Error('Export cancelled');
-          cancelled.name = 'ExportCancelled';
-          throw cancelled;
-        }
-        const { stableID, plan, language } = jobs[i];
-        shortsExportCompletedRef.current = i;
-        setShortsBusyLabel(`Exporting ${i + 1}/${jobs.length}...`);
-        setShortsExportProgress((prev) => ({
-          jobId: exportJobId,
-          total: jobs.length,
-          completed: i,
-          current: i + 1,
-          percent: (i / jobs.length) * 100,
-          label: `Rendering ${language === 'source' ? 'source' : 'target'} clip ${i + 1}/${jobs.length}`,
-          stage: 'render',
-          cancelling: prev?.cancelling ?? false,
-        }));
-        const frameKeyframes = language === 'source' ? plan.sourceFrameKeyframes : plan.targetFrameKeyframes;
-        const validation = preflight.results[i];
-        if (!validation || !validation.valid || validation.startSec === null || validation.endSec === null) {
-          throw new Error(`Shorts export validation failed for plan ${stableID}.`);
-        }
-        const startSec = validation.startSec;
-        const endSec = validation.endSec;
-        const outputPath = `${outputDir}/${String(i + 1).padStart(2, '0')}_${language}_${safeExportPart(shortsTitleForLanguage(plan, language))}${extension}`;
-        currentOutputPath = outputPath;
-        const style = resolveShortsSubtitleStyle(plan.subtitleStyle);
-        const project = buildShortsRenderProject({
-          id: `${session.sourceFileName}_${stableID}_${language}`,
-          title: shortsTitleForLanguage(plan, language),
-          inputVideoSrc: videoUrlResult.url,
-          sourceWidth: probedSourceInfo.width,
-          sourceHeight: probedSourceInfo.height,
-          clipStartSec: startSec,
-          clipEndSec: endSec,
-          outputWidth: outputSize.width,
-          outputHeight: outputSize.height,
-          fps: fpsForShortsFrameRate(shortsSettings.frameRate || 'source', probedSourceInfo.fps),
-          cues: buildShortsCues(plan, language),
-          frameKeyframes,
-          subtitleBottomMargin: style.subtitleBottomMargin ?? shortsSettings.subtitleBottomMargin,
-          style,
-          timelineCuts: plan.timelineCuts,
-          timelineTrim: plan.timelineTrim,
-          backgroundSettings: plan.backgroundSettings,
-          logo: language === 'source' ? plan.sourceLogo || plan.logo : plan.targetLogo || plan.logo,
-          textTracks: language === 'source' ? plan.sourceTextTracks || plan.textTracks || [] : plan.targetTextTracks || plan.textTracks || [],
-          audioTracks: language === 'source' ? plan.sourceAudioTracks || plan.audioTracks || [] : plan.targetAudioTracks || plan.audioTracks || [],
-          intro: language === 'source' ? plan.sourceIntro || plan.intro : plan.targetIntro || plan.intro,
-          outro: language === 'source' ? plan.sourceOutro || plan.outro : plan.targetOutro || plan.outro,
-        });
-        if (!window.electronAPI.hyperframesExportShortClip) {
-          throw new Error('HyperFrames export is not available in this build.');
-        }
-        const result = await window.electronAPI.hyperframesExportShortClip({
-          jobId: exportJobId,
-          project,
-          inputVideoPath: session.originalVideoPath,
-          outputPath,
-          format: shortsSettings.videoFormat,
-          qualityPreset: shortsSettings.videoQuality,
-        });
-        if (result.cancelled || shortsExportCancelRef.current) {
-          const cancelled = new Error('Export cancelled');
-          cancelled.name = 'ExportCancelled';
-          throw cancelled;
-        }
-        if (!result.success) throw new Error(result.error || `Could not export plan ${stableID}.`);
-        exported.push(result.outputPath || outputPath);
-        shortsExportCompletedRef.current = i + 1;
-      }
-
-      setShortsExportProgress((prev) => prev ? { ...prev, completed: jobs.length, current: jobs.length, percent: 100, label: 'Export complete', stage: 'done' } : prev);
-      window.setTimeout(() => setShortsExportProgress(null), 700);
-      alert(`Exported ${exported.length} clip${exported.length === 1 ? '' : 's'}:\n${outputDir}`);
     } catch (error) {
-      const cancelled = shortsExportCancelRef.current || (error instanceof Error && error.name === 'ExportCancelled');
-      if (cancelled) {
-        const cleanup = Array.from(new Set([...exported, currentOutputPath].filter(Boolean)));
-        if (cleanup.length > 0) {
-          await window.electronAPI.deleteFiles?.({ filePaths: cleanup }).catch(() => undefined);
-        }
-        setShortsExportProgress((prev) => prev ? { ...prev, percent: 0, label: 'Export cancelled. Partial files removed.', stage: 'cancelled', cancelling: false } : prev);
-        window.setTimeout(() => setShortsExportProgress(null), 900);
-        return;
+      if (!shortsExportEventGateRef.current?.state.terminal) {
+        acceptShortsExportEvent(localFailure(error));
       }
-      console.error('Shorts/Reels export failed.', error);
-      const failureMessage = error instanceof ShortsValidationError
-        ? `${error.code}: ${error.message}`
-        : error instanceof Error ? error.message : String(error);
-      alert(`Shorts/Reels export failed: ${failureMessage}`);
     } finally {
-      shortsExportCancelRef.current = false;
-      shortsExportJobIdRef.current = '';
-      shortsExportCompletedRef.current = 0;
-      shortsExportTotalRef.current = 0;
-      if (exportStarted) {
+      if (shortsExportJobIdRef.current === exportJobId) {
+        shortsExportActiveRef.current = false;
+        shortsExportAcceptedRef.current = false;
+        shortsExportJobIdRef.current = '';
         setShortsBusy(false);
         setShortsBusyLabel('');
+        setShortsExportProgress((prev) => {
+          if (!prev) return prev;
+          if (!ipcStarted && !prev.terminal) return null;
+          return { ...prev, terminalReady: Boolean(prev.terminal) };
+        });
       }
     }
-  }, [selectedShortsPlanKeys, session, shortsPlans, shortsSettings, shortsVideoSourceInfo, writeShortsAssFile]);
+  }, [
+    acceptShortsExportEvent,
+    selectedShortsPlanKeys,
+    sessionRef,
+    shortsBusy,
+    shortsPlans,
+    shortsSettings,
+    shortsVideoSourceInfo,
+    shortsVideoSrc,
+    subtitleMaxCharsPerLine,
+    subtitleMaxLines,
+  ]);
+
+  const handleCloseShortsExport = useCallback(() => {
+    if (!shortsExportProgress?.terminal || !shortsExportProgress.terminalReady) return;
+    shortsExportCancelRequestedRef.current = false;
+    shortsExportEventGateRef.current?.reset({ jobId: '' });
+    setShortsExportProgress(null);
+  }, [shortsExportProgress]);
+
+  const handleRetryShortsExport = useCallback(() => {
+    const terminal = shortsExportProgress?.terminal;
+    if (
+      !terminal
+      || !shortsExportProgress?.terminalReady
+      || (terminal.state !== 'failed' && terminal.state !== 'cancelled')
+    ) return;
+    void handleExportSelectedShortsVideos();
+  }, [handleExportSelectedShortsVideos, shortsExportProgress]);
 
   const handleExportDownload = (which: 'original' | 'translated', format: OutputFormat) => {
     if (!session) return;
@@ -3678,36 +3925,81 @@ export default function App() {
           store={assistantStore}
         />
 
-        {shortsExportProgress && (
-          <div className="shorts-export-modal-backdrop">
-            <div className="shorts-export-modal" role="dialog" aria-modal="true" aria-label="Shorts export progress">
-              <div className="shorts-export-orbits" aria-hidden="true">
-                <span />
-                <span />
-              </div>
-              <div>
-                <h3>Exporting Shorts/Reels</h3>
-                <p>{shortsExportProgress.label}</p>
-              </div>
-              <div className="shorts-export-progress-meta">
-                <span>Clip {Math.min(shortsExportProgress.current, shortsExportProgress.total)} / {shortsExportProgress.total}</span>
-                <span>{Math.round(shortsExportProgress.percent)}%</span>
-              </div>
-              <div className="shorts-export-progress-bar">
-                <div style={{ width: `${Math.min(Math.max(shortsExportProgress.percent, 0), 100)}%` }} />
-              </div>
-              <div className="shorts-export-stage">{shortsExportProgress.stage}</div>
-              <button
-                type="button"
-                className="btn-cancel shorts-export-cancel"
-                disabled={shortsExportProgress.cancelling}
-                onClick={handleCancelShortsExport}
+        {shortsExportProgress && (() => {
+          const terminal = shortsExportProgress.terminal;
+          const title = terminal
+            ? terminal.state === 'succeeded'
+              ? 'Export complete'
+              : terminal.state === 'cancelled' ? 'Export cancelled' : 'Export failed'
+            : 'Exporting Shorts/Reels';
+          const failedClip = terminal?.failedStableID
+            ? `Clip ${(terminal.failedClipIndex ?? 0) + 1} · ${terminal.failedStableID}`
+            : '';
+          return (
+            <div className="shorts-export-modal-backdrop">
+              <div
+                className={`shorts-export-modal${terminal ? ` is-terminal is-${terminal.state}` : ''}`}
+                role="dialog"
+                aria-modal="true"
+                aria-label={title}
               >
-                {shortsExportProgress.cancelling ? 'Cancelling…' : 'Cancel'}
-              </button>
+                {!terminal && (
+                  <div className="shorts-export-orbits" aria-hidden="true">
+                    <span />
+                    <span />
+                  </div>
+                )}
+                <div>
+                  <h3>{title}</h3>
+                  <p>{terminal?.message || shortsExportProgress.label}</p>
+                </div>
+                <div className="shorts-export-progress-meta">
+                  <span>Clip {Math.min(shortsExportProgress.current, shortsExportProgress.total)} / {shortsExportProgress.total}</span>
+                  <span>{Math.round(shortsExportProgress.percent)}%</span>
+                </div>
+                <div className="shorts-export-progress-bar">
+                  <div style={{ width: `${Math.min(Math.max(shortsExportProgress.percent, 0), 100)}%` }} />
+                </div>
+                <div className="shorts-export-stage">{shortsExportProgress.stage}</div>
+                {terminal && (
+                  <div className="shorts-export-terminal-status" role="status">
+                    {terminal.state === 'succeeded'
+                      ? `Saved ${terminal.outputs.length} clip${terminal.outputs.length === 1 ? '' : 's'}${shortsExportProgress.outputDirectory ? ` to ${shortsExportProgress.outputDirectory}` : ''}.`
+                      : `${terminal.errorCode ? `${terminal.errorCode}: ` : ''}${failedClip ? `${failedClip}. ` : ''}${terminal.cleanupComplete ? 'Cleanup complete.' : 'Cleanup incomplete.'}`}
+                  </div>
+                )}
+                <div className="shorts-export-modal-actions">
+                  {terminal ? (
+                    <>
+                      {(terminal.state === 'failed' || terminal.state === 'cancelled') && (
+                        <button
+                          type="button"
+                          className="btn-ghost-sm"
+                          disabled={!shortsExportProgress.terminalReady}
+                          onClick={handleRetryShortsExport}
+                        >
+                          Retry
+                        </button>
+                      )}
+                      <button type="button" className="btn-save" onClick={handleCloseShortsExport}>
+                        Close
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn-cancel shorts-export-cancel"
+                      disabled={shortsExportProgress.cancelling || !shortsExportAcceptedRef.current}
+                      onClick={handleCancelShortsExport}
+                    >
+                      {shortsExportProgress.cancelling ? 'Cancelling…' : 'Cancel'}
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {pane.projectSidebarOpen && (
           <div className={`project-sidebar-backdrop ${pane.projectSidebarClosing ? 'closing' : ''}`} onMouseDown={closeProjectSidebar}>

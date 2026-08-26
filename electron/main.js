@@ -15,6 +15,9 @@ const {
 const {
   renderShortClipWithHyperFrames,
 } = require('./hyperframes-renderer');
+const {
+  createHyperFramesExportSession,
+} = require('./hyperframes-export-session');
 const { modelsDir, resolveModelsRoot } = require('../shared/localModelsRoot');
 const { scanLocalModels } = require('../shared/scanLocalModels');
 const {
@@ -47,9 +50,17 @@ log.transports.file.level = 'info';
 log.transports.console.level = 'debug';
 log.info('VaniScript starting up...');
 
-const hyperframesRenderControllers = new Map();
 const recordingSessions = new Map();
 const linkImportJobs = new Map();
+const hyperframesExportSession = createHyperFramesExportSession({
+  app,
+  renderShortClip: renderShortClipWithHyperFrames,
+  getFfmpegPath,
+  log,
+  sendEvent: (payload) => {
+    windowManager.getMainWindow()?.webContents.send('hyperframes:export-progress', payload);
+  },
+});
 
 // ─── FFmpeg path ─────────────────────────────────────────────────────────────
 function getFfmpegPath() {
@@ -1993,66 +2004,14 @@ ipcMain.handle('ffmpeg:exportShortClip', async (_, {
   }
 });
 
-ipcMain.handle('hyperframes:exportShortClip', async (_, {
-  jobId,
-  project,
-  inputVideoPath,
-  outputPath,
-  format,
-  qualityPreset,
-}) => {
-  const renderJobId = String(jobId || `hyperframes_${Date.now()}`);
-  const abortController = new AbortController();
-  hyperframesRenderControllers.set(renderJobId, abortController);
-  try {
-    if (!project || !outputPath || !inputVideoPath) {
-      return { success: false, error: 'Missing HyperFrames render project, output path, or input video path.' };
-    }
-    const ffmpegPath = getFfmpegPath();
-    windowManager.getMainWindow()?.webContents.send('hyperframes:export-progress', {
-      jobId: renderJobId,
-      status: 'starting',
-      progress: 0,
-      stage: 'prepare',
-      message: 'Preparing render job',
-    });
-    return await renderShortClipWithHyperFrames({
-      app,
-      project,
-      inputVideoPath,
-      outputPath,
-      format,
-      qualityPreset,
-      ffmpegPath,
-      log,
-      abortSignal: abortController.signal,
-      onProgress: (payload) => {
-        windowManager.getMainWindow()?.webContents.send('hyperframes:export-progress', {
-          jobId: renderJobId,
-          ...payload,
-        });
-      },
-    });
-  } catch (e) {
-    if (abortController.signal.aborted || e?.name === 'RenderCancelledError' || e?.message === 'render_cancelled') {
-      try { if (outputPath && fs.existsSync(outputPath)) fs.rmSync(outputPath, { force: true }); } catch {}
-      return { success: false, cancelled: true, error: 'Export cancelled' };
-    }
-    log.error('hyperframes:exportShortClip failed:', e);
-    return { success: false, error: e.message || String(e) };
-  } finally {
-    hyperframesRenderControllers.delete(renderJobId);
-  }
-});
 
-ipcMain.handle('hyperframes:cancelExport', async (_, { jobId }) => {
-  const renderJobId = String(jobId || '');
-  const controller = hyperframesRenderControllers.get(renderJobId);
-  if (!controller) return { success: false, error: 'No active HyperFrames export job.' };
-  controller.abort(new Error('Export cancelled'));
-  hyperframesRenderControllers.delete(renderJobId);
-  return { success: true };
-});
+ipcMain.handle('hyperframes:exportShorts', async (_, snapshot) => (
+  hyperframesExportSession.start(snapshot)
+));
+
+ipcMain.handle('hyperframes:cancelExport', async (_, payload) => (
+  hyperframesExportSession.cancel(payload)
+));
 
 async function getSourceMediaInfoHelper(inputPath, originalURL, title, durationSec) {
   if (!inputPath || !fs.existsSync(inputPath)) {

@@ -2,12 +2,16 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const {
   buildCompositionHtml,
   buildMediaSegmentsFilter,
   recommendedWorkers,
   proxyVideoRateForProject,
   shouldUsePrecomputedBlurProxy,
+  renderShortClipWithHyperFrames,
 } = require('./hyperframes-renderer');
 
 test('buildCompositionHtml emits the HyperFrames producer contract', () => {
@@ -209,7 +213,176 @@ test('proxyVideoRateForProject keeps 4K browser-safe proxies visually usable', (
 });
 
 test('precomputed blur proxy is disabled for standard and high fidelity exports', () => {
+
   assert.equal(shouldUsePrecomputedBlurProxy('standard'), false);
   assert.equal(shouldUsePrecomputedBlurProxy('high'), false);
   assert.equal(shouldUsePrecomputedBlurProxy('compact'), true);
+});
+test('required static-frame extraction surfaces STATIC_FRAME_FAILED for Main cleanup', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vaniscript-renderer-s4-'));
+  const userData = path.join(root, 'user-data');
+  const runtimeChildDir = path.join(root, 'runtime-child');
+  const sourcePath = path.join(root, 'source.mp4');
+  const ffmpegPath = path.join(root, 'fake-ffmpeg.js');
+  const progress = [];
+  fs.mkdirSync(userData, { recursive: true });
+  fs.writeFileSync(sourcePath, 'source placeholder');
+  fs.writeFileSync(ffmpegPath, `#!/usr/bin/env node
+const fs = require('fs');
+const path = require('path');
+const output = process.argv.at(-1);
+if (output.endsWith('intro-bg.jpg') || output.endsWith('outro-bg.jpg')) {
+  process.stderr.write('intentional static frame failure');
+  process.exit(7);
+}
+fs.mkdirSync(path.dirname(output), { recursive: true });
+fs.writeFileSync(output, Buffer.alloc(2048, 7));
+`);
+  fs.chmodSync(ffmpegPath, 0o755);
+
+  try {
+    await assert.rejects(
+      renderShortClipWithHyperFrames({
+        app: { getPath: () => userData },
+        project: {
+          id: 'static-frame-required',
+          title: 'Static frame required',
+          inputVideoSrc: 'file:///fixture-assets/source.mp4',
+          sourceWidth: 1920,
+          sourceHeight: 1080,
+          width: 1080,
+          height: 1920,
+          fps: 30,
+          clipStartSec: 0,
+          clipEndSec: 4,
+          durationSec: 4,
+          durationInFrames: 120,
+          subtitles: [],
+          captionStyle: {},
+          subtitleBottomMargin: 96,
+          frameKeyframes: [],
+          mediaSegments: [],
+          backgroundSettings: {
+            blurEnabled: true,
+            effectReferenceHeight: 960,
+          },
+          intro: {
+            id: 'intro',
+            duration: 1,
+            hidden: false,
+          },
+          outro: {
+            id: 'outro',
+            duration: 1,
+            hidden: true,
+          },
+        },
+        inputVideoPath: sourcePath,
+        outputPath: path.join(root, 'output.partial.mp4'),
+        format: 'mp4',
+        qualityPreset: 'balanced',
+        ffmpegPath,
+        log: { info() {}, warn() {}, error() {} },
+        abortSignal: new AbortController().signal,
+        onProgress: (event) => progress.push(event),
+        runtimeChildDir,
+      }),
+      (error) => {
+        assert.equal(error.code, 'STATIC_FRAME_FAILED');
+        assert.equal(error.errorCode, 'STATIC_FRAME_FAILED');
+        return true;
+      },
+    );
+
+    assert.equal(progress.some((event) => event.stage === 'proxy'), true);
+    assert.equal(fs.existsSync(runtimeChildDir), true);
+    assert.equal(fs.readdirSync(runtimeChildDir).length > 0, true);
+    assert.equal(fs.existsSync(path.join(userData, 'HyperFramesRuntime')), false);
+
+    // Main owns the settle boundary: the renderer leaves the child available
+    // for the coordinator's injected cleanup seam.
+    fs.rmSync(runtimeChildDir, { recursive: true, force: true });
+    assert.equal(fs.existsSync(runtimeChildDir), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+test('empty required static-frame output surfaces STATIC_FRAME_FAILED', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vaniscript-renderer-s4-empty-'));
+  const userData = path.join(root, 'user-data');
+  const runtimeChildDir = path.join(root, 'runtime-child');
+  const sourcePath = path.join(root, 'source.mp4');
+  const ffmpegPath = path.join(root, 'fake-ffmpeg-empty.js');
+  const progress = [];
+  fs.mkdirSync(userData, { recursive: true });
+  fs.writeFileSync(sourcePath, 'source placeholder');
+  fs.writeFileSync(ffmpegPath, `#!/usr/bin/env node
+const fs = require('fs');
+const path = require('path');
+const output = process.argv.at(-1);
+fs.mkdirSync(path.dirname(output), { recursive: true });
+if (output.endsWith('intro-bg.jpg') || output.endsWith('outro-bg.jpg')) {
+  fs.writeFileSync(output, Buffer.alloc(0));
+} else {
+  fs.writeFileSync(output, Buffer.alloc(2048, 7));
+}
+`);
+  fs.chmodSync(ffmpegPath, 0o755);
+
+  try {
+    await assert.rejects(
+      renderShortClipWithHyperFrames({
+        app: { getPath: () => userData },
+        project: {
+          id: 'empty-static-frame',
+          title: 'Empty static frame',
+          inputVideoSrc: 'file:///fixture-assets/source.mp4',
+          sourceWidth: 1920,
+          sourceHeight: 1080,
+          width: 1080,
+          height: 1920,
+          fps: 30,
+          clipStartSec: 0,
+          clipEndSec: 4,
+          durationSec: 4,
+          durationInFrames: 120,
+          subtitles: [],
+          captionStyle: {},
+          subtitleBottomMargin: 96,
+          frameKeyframes: [],
+          mediaSegments: [],
+          backgroundSettings: {
+            blurEnabled: true,
+            effectReferenceHeight: 960,
+          },
+          intro: {
+            id: 'intro',
+            duration: 1,
+            hidden: false,
+          },
+        },
+        inputVideoPath: sourcePath,
+        outputPath: path.join(root, 'output.partial.mp4'),
+        format: 'mp4',
+        qualityPreset: 'balanced',
+        ffmpegPath,
+        log: { info() {}, warn() {}, error() {} },
+        abortSignal: new AbortController().signal,
+        onProgress: (event) => progress.push(event),
+        runtimeChildDir,
+      }),
+      (error) => {
+        assert.equal(error.code, 'STATIC_FRAME_FAILED');
+        assert.equal(error.errorCode, 'STATIC_FRAME_FAILED');
+        assert.match(error.message, /not created/);
+        return true;
+      },
+    );
+
+    assert.equal(fs.existsSync(runtimeChildDir), true);
+    assert.equal(fs.readdirSync(runtimeChildDir).length > 0, true);
+    assert.equal(progress.some((event) => event.stage === 'proxy'), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

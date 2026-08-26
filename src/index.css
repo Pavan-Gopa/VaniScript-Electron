@@ -2085,6 +2085,42 @@ html, body, #root {
   justify-content: center;
   width: 100%;
 }
+.shorts-export-modal.is-terminal {
+  gap: 12px;
+}
+.shorts-export-modal.is-succeeded {
+  border-color: rgba(104, 220, 155, 0.42);
+}
+.shorts-export-modal.is-failed {
+  border-color: rgba(255, 116, 116, 0.42);
+}
+.shorts-export-modal.is-cancelled {
+  border-color: rgba(255, 194, 92, 0.42);
+}
+.shorts-export-terminal-status {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.06);
+  color: var(--text-1);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.shorts-export-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.shorts-export-modal-actions > button {
+  min-width: 104px;
+  justify-content: center;
+}
+@media (prefers-reduced-motion: reduce) {
+  .shorts-export-orbits span,
+  .shorts-export-progress-bar div {
+    animation: none;
+    transition: none;
+  }
+}
 .shorts-finder-grid label,
 .shorts-style-grid label,
 .shorts-export-row label {
