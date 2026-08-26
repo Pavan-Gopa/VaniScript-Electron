@@ -7,6 +7,7 @@ const path = require('path');
 // eager projection). Main and the renderer both use this module — no
 // duplicate normalization here.
 const mediaTranslations = require('../shared/media-translations');
+const { normalizeShortsSessionState } = require('../shared/shorts-state');
 
 const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'm4a', 'flac', 'ogg', 'aac', 'wma']);
 const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'mkv', 'webm']);
@@ -169,7 +170,7 @@ function normalizeImportedProjectSession(session, options = {}) {
     if (!mediaTranslations.isRealTranslationLanguage(config.targetLang)) config.targetLang = 'same';
     normalized.config = config;
   }
-  return normalized;
+  return normalizeShortsSessionState(normalized);
 }
 
 module.exports = {

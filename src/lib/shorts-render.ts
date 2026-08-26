@@ -107,6 +107,7 @@ export type ShortsSubtitleStyle = {
   shadowBlur?: number;
   shadowDistance?: number;
   shadowAngle?: number;
+  subtitleBottomMargin?: number;
 };
 
 export type AssSubtitleOptions = {
@@ -226,6 +227,21 @@ export const SHORTS_SUBTITLE_PRESETS: Record<string, ShortsSubtitleStyle> = {
     shadow: 4,
   },
 };
+
+export const DEFAULT_SHORTS_SUBTITLE_STYLE: ShortsSubtitleStyle = Object.freeze({
+  ...SHORTS_SUBTITLE_PRESETS.orangeImpact,
+  subtitleBottomMargin: 560,
+});
+
+export function defaultShortsSubtitleStyle(): ShortsSubtitleStyle {
+  return { ...DEFAULT_SHORTS_SUBTITLE_STYLE };
+}
+
+export function resolveShortsSubtitleStyle(
+  style?: Partial<ShortsSubtitleStyle>
+): ShortsSubtitleStyle {
+  return { ...DEFAULT_SHORTS_SUBTITLE_STYLE, ...(style ?? {}) };
+}
 
 function ffmpegColor(hex: string | undefined): string {
   const clean = (hex || '#000000').replace('#', '').padEnd(6, '0').slice(0, 6);
@@ -374,7 +390,6 @@ export function fpsForShortsQuality(quality: ShortsVideoQuality, sourceFps?: num
   if (quality === 'compact') return 24;
   return 30;
 }
-
 export function fpsForShortsFrameRate(preset: ShortsFrameRatePreset, sourceFps?: number): number {
   if (preset === 'source') {
     return sourceFps && Number.isFinite(sourceFps) && sourceFps > 0
@@ -389,7 +404,7 @@ export function extensionForShortsFormat(format: ShortsVideoFormat): '.mp4' | '.
 }
 
 export function buildShortsAssSubtitle(opts: AssSubtitleOptions): string {
-  const style = opts.style;
+  const style = resolveShortsSubtitleStyle(opts.style);
   const scaleX = opts.width / SHORTS_STYLE_BASE_WIDTH;
   const scaleYOutput = opts.height / SHORTS_STYLE_BASE_HEIGHT;
   const styleScale = Math.min(scaleX, scaleYOutput);

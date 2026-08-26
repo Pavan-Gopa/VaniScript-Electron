@@ -17,6 +17,10 @@ const path = require('node:path');
 // normalizes a clone through it so published state is canonical and the
 // caller's session object is never touched.
 const mediaTranslations = require('../../../../shared/media-translations.js');
+// Shared Shorts normalizer/projections/validator keep Main reads byte-for-byte
+// aligned with the renderer while the response sanitizers below enforce the
+// MCP trust boundary.
+const shortsState = require('../../../../shared/shorts-state.js');
 
 const READ_SCOPE = 'read';
 const READ_RISK = 'read';
@@ -208,13 +212,12 @@ const READ_TOOL_DEFINITIONS = Object.freeze([
   definition('get_onboarding_checklist', 'Read the complete first-use workflow checklist.', objectSchema({
     language: string('Optional BCP-47 language tag.'),
   })),
-  // These additional read-only projections are part of the established
-  // canonical catalogue and remain harmless empty projections until their
-  // corresponding Electron domain adapters are supplied by Main.
+  // Shorts reads are resolved by the Main-side disk catalogue below. They
+  // intentionally share the public read definitions with renderer callers.
   definition('get_subtitle_style', 'Get active subtitle style settings.', emptySchema),
   definition('get_shorts_plans', 'List vertical shorts plans in the active project.', objectSchema({ projectId: projectIdSchema })),
   definition('get_shorts_plan', 'Get one shorts plan by stable plan identifier.', objectSchema({ planId: string(), projectId: projectIdSchema }, ['planId'])),
-  definition('list_rejected_shorts_plans', 'List rejected shorts plans without modifying them.', emptySchema),
+  definition('list_rejected_shorts_plans', 'List rejected shorts plans without modifying them.', objectSchema({ projectId: projectIdSchema })),
   definition('validate_shorts_plan', 'Validate one shorts plan without changing it.', objectSchema({ planId: string(), projectId: projectIdSchema }, ['planId'])),
   definition('get_playback_state', 'Get bounded review playback state.', emptySchema),
   definition('list_export_options', 'List available transcript and shorts export options.', emptySchema),
@@ -429,6 +432,268 @@ function projectView(project) {
   const clone = JSON.parse(JSON.stringify(project));
   if (isObject(clone.session)) clone.session = normalizeSessionView(clone.session);
   return clone;
+}
+function projectRecordID(project, fallbackId = null) {
+  const raw = asObject(project);
+  return typeof raw.id === 'string' && raw.id.length > 0
+    ? raw.id
+    : typeof raw.projectId === 'string' && raw.projectId.length > 0
+      ? raw.projectId
+      : fallbackId;
+}
+
+function projectRecordMatches(project, projectId) {
+  return Boolean(project && projectId && projectRecordID(project) === projectId);
+}
+
+function shortsPathField(key) {
+  return /^(?:src|previewSrc|sourceFile|sourcePath|filePath|wavPath|originalVideoPath|assetPath|absolutePath|path)$/i.test(key);
+}
+
+function shortsSafeClone(value, key = '') {
+  if (/(?:pass(word)?|secret|token|api.?key|credential)/i.test(key) || shortsPathField(key)) return undefined;
+  if (typeof value === 'string') {
+    return path.isAbsolute(value) || path.win32.isAbsolute(value) || /^file:\/\//iu.test(value) ? undefined : value;
+  }
+  if (Array.isArray(value)) return value.map((item) => shortsSafeClone(item, key));
+  if (!isObject(value)) return value;
+  const out = {};
+  for (const [field, child] of Object.entries(value)) {
+    const cleaned = shortsSafeClone(child, field);
+    if (cleaned !== undefined) out[field] = cleaned;
+  }
+  return out;
+}
+function shortsProjectSession(project) {
+  const raw = asObject(project);
+  const stored = asObject(raw.session || raw.mediaState || raw.state);
+  const session = { ...stored };
+  if (!Object.prototype.hasOwnProperty.call(session, 'sourceMediaInfo') && isObject(raw.sourceMediaInfo)) {
+    session.sourceMediaInfo = raw.sourceMediaInfo;
+  }
+  if (!Object.prototype.hasOwnProperty.call(session, 'durationSec') && Number.isFinite(raw.durationSec)) {
+    session.durationSec = raw.durationSec;
+  }
+  return shortsState.normalizeShortsSessionState(session);
+}
+
+async function resolveShortsProject(options, args, handlerContext) {
+  const params = asObject(args);
+  const context = asObject(handlerContext);
+  const explicitId = typeof params.projectId === 'string' && params.projectId.trim().length > 0
+    ? params.projectId.trim()
+    : null;
+  const contextId = !explicitId && typeof context.projectId === 'string' && context.projectId.trim().length > 0
+    ? context.projectId.trim()
+    : null;
+  const requestedId = explicitId || contextId;
+  let project = null;
+
+  if (typeof options.resolveShortsProject === 'function') {
+    try {
+      project = await options.resolveShortsProject(requestedId || undefined);
+    } catch {
+      project = null;
+    }
+  } else if (requestedId) {
+    if (projectRecordMatches(options.project, requestedId)) project = options.project;
+    else if (projectRecordMatches(options.activeProject, requestedId)) project = options.activeProject;
+    else if (Array.isArray(options.projects)) project = options.projects.find((candidate) => projectRecordMatches(candidate, requestedId)) || null;
+    else {
+      project = loadProject({ ...options, project: null, activeProject: null }, requestedId);
+    }
+  } else if (isObject(options.project)) {
+    project = options.project;
+  } else if (isObject(options.activeProject)) {
+    project = options.activeProject;
+  }
+  if (project && requestedId && projectRecordID(project) !== requestedId) {
+    project = null;
+  }
+  const projectId = projectRecordID(project, requestedId);
+  if (!project || !projectId) {
+    throw new ReadCatalogError(
+      requestedId ? `ENTITY_NOT_FOUND: Unknown projectId ${requestedId}` : 'NO_ACTIVE_PROJECT: No project is open',
+      'MCP_NOT_FOUND',
+    );
+  }
+  return { project, projectId, session: shortsProjectSession(project) };
+}
+
+function shortsPlanProjectionForSession(plan, session) {
+  return plan?.languageMode === 'target' || plan?.languageMode === 'bilingual'
+    ? shortsState.activeShortsPlanProjection(plan, session.activeTranslationLanguage)
+    : shortsState.sourceShortsPlanProjection(plan);
+}
+
+function shortsPlanRange(plan) {
+  const start = shortsState.parseShortsTimestamp(plan?.start);
+  const end = shortsState.parseShortsTimestamp(plan?.end);
+  return {
+    startSec: start.ok ? start.seconds : null,
+    endSec: end.ok ? end.seconds : null,
+  };
+}
+
+function shortsVisualSummary(plan) {
+  return {
+    cutCount: Array.isArray(plan?.timelineCuts) ? plan.timelineCuts.length : 0,
+    sourceSubtitleCount: Array.isArray(plan?.sourceAlignment) ? plan.sourceAlignment.length : 0,
+    targetSubtitleCount: Array.isArray(plan?.targetAlignment) ? plan.targetAlignment.length : 0,
+    sourceTextTrackCount: Array.isArray(plan?.sourceTextTracks) ? plan.sourceTextTracks.length : 0,
+    targetTextTrackCount: Array.isArray(plan?.targetTextTracks) ? plan.targetTextTracks.length : 0,
+    sourceAudioTrackCount: Array.isArray(plan?.sourceAudioTracks) ? plan.sourceAudioTracks.length : 0,
+    targetAudioTrackCount: Array.isArray(plan?.targetAudioTracks) ? plan.targetAudioTracks.length : 0,
+    syncEnabled: plan?.syncEnabled !== false,
+  };
+}
+
+function shortsPlanSummary(plan, index, session, rejected = false) {
+  const projection = shortsPlanProjectionForSession(plan, session);
+  const range = shortsPlanRange(plan);
+  const archive = isObject(plan?.translationsByLanguage) ? plan.translationsByLanguage : {};
+  const translationLanguages = Object.values(archive)
+    .map((variant) => variant?.language)
+    .filter((language) => typeof language === 'string' && language.trim().length > 0)
+    .sort();
+  return shortsSafeClone({
+    id: plan?.stableID || null,
+    displayNumber: index + 1,
+    arrayIndex: index,
+    rejected,
+    start: plan?.start || '',
+    end: plan?.end || '',
+    startSec: range.startSec,
+    endSec: range.endSec,
+    title: projection.available ? projection.title : '',
+    summary: projection.available ? projection.summary : '',
+    hook: projection.available ? projection.hook : '',
+    category: projection.available ? projection.category : '',
+    captionText: projection.available ? projection.captionText : '',
+    languageMode: plan?.languageMode || '',
+    translationLanguages,
+    visualEditor: shortsVisualSummary(plan),
+  });
+}
+
+function shortsSubtitleSegments(segments) {
+  return (Array.isArray(segments) ? segments : []).map((segment, index) => ({
+    segmentId: segment?.id || segment?.stableID || `segment-${index}`,
+    startSec: Number.isFinite(segment?.startSec) ? segment.startSec : Number.isFinite(segment?.start) ? segment.start : 0,
+    endSec: Number.isFinite(segment?.endSec) ? segment.endSec : Number.isFinite(segment?.end) ? segment.end : 0,
+    text: typeof segment?.text === 'string' ? segment.text : '',
+  }));
+}
+
+function shortsFrameKeyframes(keyframes) {
+  return (Array.isArray(keyframes) ? keyframes : []).map((frame, index) => ({
+    keyframeId: frame?.id || frame?.stableID || `frame-${index}`,
+    timeSec: Number.isFinite(frame?.timeSec) ? frame.timeSec : Number.isFinite(frame?.time) ? frame.time : 0,
+    x: Number.isFinite(frame?.x) ? frame.x : 0,
+    y: Number.isFinite(frame?.y) ? frame.y : 0,
+    zoom: Number.isFinite(frame?.zoom) ? frame.zoom : 1,
+    backgroundColor: typeof frame?.backgroundColor === 'string' ? frame.backgroundColor : '',
+  }));
+}
+
+function shortsLogoState(logo) {
+  if (!isObject(logo)) return { present: false };
+  return {
+    present: true,
+    logoId: logo.id || logo.stableID || '',
+    name: logo.name || '',
+    size: logo.size ?? 0,
+    opacity: logo.opacity ?? 0,
+    position: logo.position || '',
+    hidden: logo.hidden === true,
+  };
+}
+
+function shortsTextTracks(tracks) {
+  return (Array.isArray(tracks) ? tracks : []).map((track, index) => ({
+    trackId: track?.id || track?.stableID || `track-${index}`,
+    name: track?.name || '',
+    hidden: track?.hidden === true,
+    muted: track?.muted === true,
+    blocks: (Array.isArray(track?.blocks) ? track.blocks : []).map((block, blockIndex) => ({
+      blockId: block?.id || block?.stableID || `block-${blockIndex}`,
+      startSec: Number.isFinite(block?.startSec) ? block.startSec : 0,
+      endSec: Number.isFinite(block?.endSec) ? block.endSec : 0,
+      text: typeof block?.text === 'string' ? block.text : '',
+      hidden: block?.hidden === true,
+    })),
+  }));
+}
+
+function shortsAudioTracks(tracks) {
+  return (Array.isArray(tracks) ? tracks : []).map((track, index) => ({
+    audioTrackId: track?.id || track?.stableID || `audio-${index}`,
+    name: track?.name || '',
+    startSec: Number.isFinite(track?.startSec) ? track.startSec : 0,
+    trimStartSec: Number.isFinite(track?.trimStartSec) ? track.trimStartSec : 0,
+    trimEndSec: Number.isFinite(track?.trimEndSec) ? track.trimEndSec : 0,
+    volume: Number.isFinite(track?.volume) ? track.volume : 1,
+    fadeInSec: Number.isFinite(track?.fadeInSec) ? track.fadeInSec : 0,
+    fadeOutSec: Number.isFinite(track?.fadeOutSec) ? track.fadeOutSec : 0,
+    muted: track?.muted === true,
+    assetDurationSec: Number.isFinite(track?.assetDurationSec) ? track.assetDurationSec : 0,
+  }));
+}
+
+function shortsOverlayState(overlay) {
+  if (!isObject(overlay)) return { present: false };
+  return {
+    present: true,
+    overlayId: overlay.id || overlay.stableID || '',
+    name: overlay.name || '',
+    duration: overlay.duration ?? 0,
+    x: overlay.x ?? 0,
+    y: overlay.y ?? 0,
+    scale: overlay.scale ?? 1,
+    animation: overlay.animation || 'none',
+    hidden: overlay.hidden === true,
+    speed: overlay.speed ?? 1,
+    transitionSec: overlay.transitionSec ?? 0,
+  };
+}
+
+function shortsVisualLanguageState(plan, language) {
+  const source = language === 'source';
+  return {
+    subtitleSegments: shortsSubtitleSegments(source ? plan?.sourceAlignment : plan?.targetAlignment),
+    frameKeyframes: shortsFrameKeyframes(source ? plan?.sourceFrameKeyframes : plan?.targetFrameKeyframes),
+    logo: shortsLogoState(source ? plan?.sourceLogo || plan?.logo : plan?.targetLogo || plan?.logo),
+    textTracks: shortsTextTracks(source ? plan?.sourceTextTracks || plan?.textTracks : plan?.targetTextTracks || plan?.textTracks),
+    audioTracks: shortsAudioTracks(source ? plan?.sourceAudioTracks || plan?.audioTracks : plan?.targetAudioTracks || plan?.audioTracks),
+    intro: shortsOverlayState(source ? plan?.sourceIntro || plan?.intro : plan?.targetIntro || plan?.intro),
+    outro: shortsOverlayState(source ? plan?.sourceOutro || plan?.outro : plan?.targetOutro || plan?.outro),
+  };
+}
+
+function shortsVisualEditorState(plan, index, session) {
+  const range = shortsPlanRange(plan);
+  const duration = range.startSec !== null && range.endSec !== null ? Math.max(0, range.endSec - range.startSec) : 0;
+  return shortsSafeClone({
+    plan: shortsPlanSummary(plan, index, session, false),
+    clipDurationSec: duration,
+    timeline: {
+      cuts: (Array.isArray(plan?.timelineCuts) ? plan.timelineCuts : []).map((cut, cutIndex) => ({
+        cutId: cut?.stableID || `cut-${cutIndex}`,
+        startSec: cut?.startSec ?? 0,
+        endSec: cut?.endSec ?? 0,
+      })),
+      trim: {
+        trimStartSec: plan?.timelineTrim?.trimStartSec ?? 0,
+        trimEndSec: plan?.timelineTrim?.trimEndSec ?? 0,
+      },
+    },
+    source: shortsVisualLanguageState(plan, 'source'),
+    target: shortsVisualLanguageState(plan, 'target'),
+    background: shortsSafeClone(plan?.backgroundSettings || {}),
+    subtitleStyle: shortsSafeClone(plan?.subtitleStyle || {}),
+    syncEnabled: plan?.syncEnabled ?? (plan?.languageMode === 'bilingual'),
+    assetPolicy: 'MCP never accepts source paths. Add image, video, or audio assets through the Visual Editor file picker, then address the returned existing asset ID here.',
+  });
 }
 
 /**
@@ -695,6 +960,23 @@ function createReadCatalog(options = {}) {
     return makeEnvelope(toolName, data, context);
   };
 
+  // Shorts reads are a single Main-side path. Renderer reader injections and
+  // options.session are deliberately bypassed so project isolation cannot be
+  // overridden by global or stale state.
+  const shortsHandlerFor = (toolName, fallback) => async (args = {}, handlerContext = {}) => {
+    const params = asObject(args);
+    const suppliedContext = asObject(handlerContext);
+    const context = {
+      projectId: typeof params.projectId === 'string' && params.projectId.trim().length > 0
+        ? params.projectId.trim()
+        : typeof suppliedContext.projectId === 'string' && suppliedContext.projectId.trim().length > 0
+          ? suppliedContext.projectId.trim()
+          : null,
+      projectRevision: suppliedContext.projectRevision ?? settings.projectRevision ?? settings.revision ?? null,
+    };
+    const data = await fallback(params, context);
+    return makeEnvelope(toolName, data, context);
+  };
   handlers.list_projects = handlerFor('list_projects', (args) => {
     const all = listStoredProjects(settings)
       .map((project) => projectSummary(project))
@@ -1055,22 +1337,53 @@ function createReadCatalog(options = {}) {
   }));
 
   handlers.get_subtitle_style = handlerFor('get_subtitle_style', () => safeClone(settings.subtitleStyle || settings.style || {}));
-  handlers.get_shorts_plans = handlerFor('get_shorts_plans', (args, context) => {
-    const project = loadProject(settings, args.projectId || context.projectId);
-    const session = sourceSession(settings, project);
-    const plans = Array.isArray(settings.shortsPlans) ? settings.shortsPlans : Array.isArray(session.shortsPlans) ? session.shortsPlans : [];
-    return { plans: plans.map((plan) => safeClone(plan)).filter(Boolean), count: plans.length };
+  handlers.get_shorts_plans = shortsHandlerFor('get_shorts_plans', async (args, context) => {
+    const resolved = await resolveShortsProject(settings, args, context);
+    context.projectId = resolved.projectId;
+    const plans = resolved.session.shortsPlans;
+    return {
+      plans: plans.map((plan, index) => shortsPlanSummary(plan, index, resolved.session, false)),
+      count: plans.length,
+    };
   });
-  handlers.get_shorts_plan = handlerFor('get_shorts_plan', (args, context) => {
-    const all = handlers.get_shorts_plans(args, context);
-    return Promise.resolve(all).then((data) => ({ plan: data.data?.plans?.find((plan) => plan.id === args.planId) || null }));
+  handlers.get_shorts_plan = shortsHandlerFor('get_shorts_plan', async (args, context) => {
+    const resolved = await resolveShortsProject(settings, args, context);
+    context.projectId = resolved.projectId;
+    const index = resolved.session.shortsPlans.findIndex((plan) => plan.stableID === args.planId);
+    if (index < 0) throw new ReadCatalogError(`ENTITY_NOT_FOUND: Unknown planId ${args.planId || ''}`, 'MCP_NOT_FOUND');
+    return { plan: shortsPlanSummary(resolved.session.shortsPlans[index], index, resolved.session, false) };
   });
-  handlers.list_rejected_shorts_plans = handlerFor('list_rejected_shorts_plans', () => ({ plans: Array.isArray(settings.rejectedShortsPlans) ? settings.rejectedShortsPlans.map((plan) => safeClone(plan)).filter(Boolean) : [], count: Array.isArray(settings.rejectedShortsPlans) ? settings.rejectedShortsPlans.length : 0 }));
-  handlers.validate_shorts_plan = handlerFor('validate_shorts_plan', (args, context) => ({ planId: args.planId || null, valid: true, issues: [] }));
+  handlers.list_rejected_shorts_plans = shortsHandlerFor('list_rejected_shorts_plans', async (args, context) => {
+    const resolved = await resolveShortsProject(settings, args, context);
+    context.projectId = resolved.projectId;
+    const plans = resolved.session.shortsRejectedPlans;
+    return {
+      plans: plans.map((plan, index) => shortsPlanSummary(plan, index, resolved.session, true)),
+      count: plans.length,
+    };
+  });
+  handlers.validate_shorts_plan = shortsHandlerFor('validate_shorts_plan', async (args, context) => {
+    const resolved = await resolveShortsProject(settings, args, context);
+    context.projectId = resolved.projectId;
+    const plan = resolved.session.shortsPlans.find((candidate) => candidate.stableID === args.planId);
+    if (!plan) throw new ReadCatalogError(`ENTITY_NOT_FOUND: Unknown planId ${args.planId || ''}`, 'MCP_NOT_FOUND');
+    return shortsState.validateShortsPlan(plan, {
+      session: resolved.session,
+      activePlans: resolved.session.shortsPlans,
+      rejectedPlans: resolved.session.shortsRejectedPlans,
+      excludePlanId: plan.stableID,
+    });
+  });
   handlers.get_playback_state = handlerFor('get_playback_state', () => safeClone(settings.playbackState || { playing: false, positionSec: 0, durationSec: 0, selectedChunkId: null }));
   handlers.list_export_options = handlerFor('list_export_options', async () => exportOptionsData(await exportReadiness(settings)));
   handlers.validate_export = handlerFor('validate_export', async (args) => validateExportData(args.kind, await exportReadiness(settings)));
-  handlers.get_visual_editor_state = handlerFor('get_visual_editor_state', (args) => ({ planId: args.planId || null, state: safeClone(settings.visualEditorState || null) }));
+  handlers.get_visual_editor_state = shortsHandlerFor('get_visual_editor_state', async (args, context) => {
+    const resolved = await resolveShortsProject(settings, args, context);
+    context.projectId = resolved.projectId;
+    const index = resolved.session.shortsPlans.findIndex((plan) => plan.stableID === args.planId);
+    if (index < 0) throw new ReadCatalogError(`ENTITY_NOT_FOUND: Unknown planId ${args.planId || ''}`, 'MCP_NOT_FOUND');
+    return shortsVisualEditorState(resolved.session.shortsPlans[index], index, resolved.session);
+  });
   handlers.get_safe_settings = handlerFor('get_safe_settings', () => safeSettings(settings));
   handlers.list_providers = handlerFor('list_providers', () => ({ providers: Array.isArray(settings.providers) ? settings.providers.map((provider) => safeClone(provider)).filter(Boolean) : [] }));
   handlers.list_prompt_presets = handlerFor('list_prompt_presets', () => ({ presets: Array.isArray(settings.promptPresets) ? settings.promptPresets.map((preset) => safeClone(preset)).filter(Boolean) : [] }));

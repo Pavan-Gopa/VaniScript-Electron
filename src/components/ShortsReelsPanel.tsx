@@ -6,10 +6,16 @@ import {
   ExtraAudioTrack,
   IntroOutroOverlaySettings,
   LogoOverlaySettings,
-  parseTimestampToSeconds,
+  parseShortsTimestamp,
+  selectShortsSourceProjection,
+  selectShortsTargetProjection,
   ShortsClipPlan,
+  ShortsMutationResult,
   ShortsPlanLanguageMode,
+  ShortsSelectionKey,
   TextOverlayTrack,
+  shortsPlanExportLanguages,
+  shortsSelectionKey,
 } from '../lib/shorts-reels';
 import { defaultBackgroundSettings, ShortsFrameRatePreset, ShortsResolutionPreset, ShortsTextTransform, ShortsVideoFormat, ShortsVideoQuality } from '../lib/shorts-render';
 import { SubtitleAlignmentEditor } from './subtitle-alignment/SubtitleAlignmentEditor';
@@ -62,12 +68,14 @@ type Props = {
   hasVideo: boolean;
   hasTranslation: boolean;
   targetLang: string;
+  activeTranslationLanguage: string;
   settings: ShortsSettings;
   plans: ShortsClipPlan[];
+  rejectedPlans: ShortsClipPlan[];
   isBusy: boolean;
   busyLabel?: string;
-  selectedPlanIndex: number | null;
-  selectedPlanIndexes: number[];
+  focusedPlanID: string | null;
+  selectedPlanKeys: Set<ShortsSelectionKey>;
   planningProviders: ProviderOption[];
   planningProvider: string;
   onPlanningProviderChange: (providerId: string) => void;
@@ -82,48 +90,53 @@ type Props = {
   onChange: (settings: ShortsSettings) => void;
   onSubtitleLayoutChange: (next: { maxCharsPerLine: number; maxLines: number }) => void;
   onFindMoments: (mode: ShortsPlanLanguageMode) => void;
-  onFocusPlan: (index: number) => void;
-  onTogglePlan: (index: number) => void;
-  onUpdatePlan: (index: number, patch: Partial<ShortsClipPlan>) => void;
-  onRemovePlan: (index: number) => void;
-  onSavePlanAlignment: (index: number, language: ShortsDisplayLanguage, segments: ShortsClipPlan['sourceAlignment']) => void;
-  onSavePlanFrameKeyframes: (index: number, language: ShortsDisplayLanguage, keyframes: ShortsClipPlan['sourceFrameKeyframes']) => void;
-  onSavePlanLogo?: (index: number, language: ShortsDisplayLanguage, logo?: LogoOverlaySettings) => void;
-  onSavePlanTextTracks?: (index: number, language: ShortsDisplayLanguage, tracks: TextOverlayTrack[]) => void;
-  onSavePlanAudioTracks?: (index: number, language: ShortsDisplayLanguage, tracks: ExtraAudioTrack[]) => void;
-  onSavePlanIntro?: (index: number, language: ShortsDisplayLanguage, intro?: IntroOutroOverlaySettings) => void;
-  onSavePlanOutro?: (index: number, language: ShortsDisplayLanguage, outro?: IntroOutroOverlaySettings) => void;
+  onFocusPlan: (stableID: string) => void;
+  onTogglePlan: (stableID: string) => void;
+  onUpdatePlan: (stableID: string, patch: Partial<ShortsClipPlan>, language?: ShortsDisplayLanguage) => void;
+  onRemovePlan: (stableID: string) => void;
+  onRestorePlan: (stableID: string) => void;
+  onSavePlanAlignment: (stableID: string, language: ShortsDisplayLanguage, segments: ShortsClipPlan['sourceAlignment']) => void;
+  onSavePlanFrameKeyframes: (stableID: string, language: ShortsDisplayLanguage, keyframes: ShortsClipPlan['sourceFrameKeyframes']) => void;
+  onSavePlanLogo?: (stableID: string, language: ShortsDisplayLanguage, logo?: LogoOverlaySettings) => void;
+  onSavePlanTextTracks?: (stableID: string, language: ShortsDisplayLanguage, tracks: TextOverlayTrack[]) => void;
+  onSavePlanAudioTracks?: (stableID: string, language: ShortsDisplayLanguage, tracks: ExtraAudioTrack[]) => void;
+  onSavePlanIntro?: (stableID: string, language: ShortsDisplayLanguage, intro?: IntroOutroOverlaySettings) => void;
+  onSavePlanOutro?: (stableID: string, language: ShortsDisplayLanguage, outro?: IntroOutroOverlaySettings) => void;
   getPlanCues: (plan: ShortsClipPlan, language?: ShortsDisplayLanguage) => { startSec: number; endSec: number; text: string }[];
   getPlanDetailText: (plan: ShortsClipPlan) => { source: string; target: string };
   onExportIdeas: () => void;
   onExportSelected: () => void;
+  onTranslateMetadata: () => void;
+  isTranslatingMetadata?: boolean;
   onSaveDefaults: () => void;
-  onReplacePlan?: (index: number, startTimestamp: string, endTimestamp: string) => void;
-  onToggleClipSync?: (index: number) => void;
-  onImportMotion?: (index: number) => void;
+  onReplacePlan?: (stableID: string, startTimestamp: string, endTimestamp: string) => ShortsMutationResult<ShortsClipPlan> | undefined;
+  onToggleClipSync?: (stableID: string) => void;
+  onImportMotion?: (stableID: string) => void;
 };
 
 function clipDurationLabel(plan: ShortsClipPlan): string {
-  const duration = Math.max(0, Math.round(parseTimestampToSeconds(plan.end) - parseTimestampToSeconds(plan.start)));
+  const start = parseShortsTimestamp(plan.start);
+  const end = parseShortsTimestamp(plan.end);
+  if (!start.ok || !end.ok || start.seconds === null || end.seconds === null) return '';
+  const duration = end.seconds - start.seconds;
   return duration > 0 ? `${duration}s` : '';
 }
 
 type ShortsDisplayLanguage = 'source' | 'target';
 
-function displayedPlanText(plan: ShortsClipPlan, language: ShortsDisplayLanguage) {
-  if (language === 'source') {
-    return {
-      title: plan.sourceTitle || (plan.languageMode === 'source' ? plan.title : plan.title),
-      summary: plan.sourceSummary || (plan.languageMode === 'source' ? plan.summary : plan.summary),
-      hook: plan.sourceHook || (plan.languageMode === 'source' ? plan.hook : plan.hook),
-      category: plan.sourceCategory || plan.category || 'clip',
-    };
-  }
+function displayedPlanText(
+  plan: ShortsClipPlan,
+  language: ShortsDisplayLanguage,
+  activeLanguage: string,
+) {
+  const projection = language === 'source'
+    ? selectShortsSourceProjection(plan)
+    : selectShortsTargetProjection(plan, activeLanguage);
   return {
-    title: plan.targetTitle || plan.title,
-    summary: plan.targetSummary || plan.summary,
-    hook: plan.targetHook || plan.hook,
-    category: plan.targetCategory || plan.category || 'clip',
+    title: projection.title,
+    summary: projection.summary,
+    hook: projection.hook,
+    category: projection.category || 'clip',
   };
 }
 
@@ -134,24 +147,25 @@ function bilingualPatch(language: ShortsDisplayLanguage, field: 'title' | 'summa
     if (field === 'hook') return { sourceHook: value };
     return { sourceCategory: value };
   }
-  if (field === 'title') return { title: value, targetTitle: value };
-  if (field === 'summary') return { summary: value, targetSummary: value };
-  if (field === 'hook') return { hook: value, targetHook: value };
-  return { category: value, targetCategory: value };
+  if (field === 'title') return { targetTitle: value };
+  if (field === 'summary') return { targetSummary: value };
+  if (field === 'hook') return { targetHook: value };
+  return { targetCategory: value };
 }
 
 function captionPatch(language: ShortsDisplayLanguage, value: string): Partial<ShortsClipPlan> {
-  if (language === 'source') return { sourceCaptionText: value };
-  return { captionText: value, targetCaptionText: value };
+  return language === 'source' ? { sourceCaptionText: value } : { targetCaptionText: value };
 }
 
-function captionTextForLanguage(plan: ShortsClipPlan, language: ShortsDisplayLanguage): string | undefined {
-  if (language === 'source') return plan.sourceCaptionText;
-  return plan.targetCaptionText || plan.captionText;
-}
-
-function exportUnitsForPlan(plan: ShortsClipPlan): number {
-  return plan.languageMode === 'bilingual' ? 2 : 1;
+function captionTextForLanguage(
+  plan: ShortsClipPlan,
+  language: ShortsDisplayLanguage,
+  activeLanguage: string,
+): string | undefined {
+  const projection = language === 'source'
+    ? selectShortsSourceProjection(plan)
+    : selectShortsTargetProjection(plan, activeLanguage);
+  return projection.captionText || undefined;
 }
 
 function renderProviderOptions(options: ProviderOption[]) {
@@ -177,11 +191,14 @@ export function ShortsReelsPanel({
   hasVideo,
   hasTranslation,
   targetLang,
+  activeTranslationLanguage,
   settings,
   plans,
+  rejectedPlans,
   isBusy,
   busyLabel,
-  selectedPlanIndexes,
+  focusedPlanID,
+  selectedPlanKeys,
   planningProviders,
   planningProvider,
   onPlanningProviderChange,
@@ -196,6 +213,7 @@ export function ShortsReelsPanel({
   onTogglePlan,
   onUpdatePlan,
   onRemovePlan,
+  onRestorePlan,
   onSavePlanAlignment,
   onSavePlanFrameKeyframes,
   onSavePlanLogo,
@@ -207,39 +225,55 @@ export function ShortsReelsPanel({
   getPlanDetailText,
   onExportIdeas,
   onExportSelected,
+  onTranslateMetadata,
+  isTranslatingMetadata,
   onSaveDefaults,
   onReplacePlan,
   onToggleClipSync,
   onImportMotion,
 }: Props) {
-  const [detailsIndex, setDetailsIndex] = useState<number | null>(null);
-  const [editorIndex, setEditorIndex] = useState<number | null>(null);
-  const [editorSnapshot, setEditorSnapshot] = useState<ShortsClipPlan | null>(null);
-  const [replaceIndex, setReplaceIndex] = useState<number | null>(null);
+  const [detailsPlanID, setDetailsPlanID] = useState<string | null>(null);
+  const [editorPlanID, setEditorPlanID] = useState<string | null>(null);
+  const [replacePlanID, setReplacePlanID] = useState<string | null>(null);
   const [displayLanguage, setDisplayLanguage] = useState<ShortsDisplayLanguage>('target');
   const [copiedKey, setCopiedKey] = useState<string>('');
   const patch = (partial: Partial<ShortsSettings>) => onChange({ ...settings, ...partial });
-  const selectedCount = selectedPlanIndexes.length;
-  const selectedExportCount = selectedPlanIndexes.reduce((sum, index) => sum + (plans[index] ? exportUnitsForPlan(plans[index]) : 0), 0);
-  const detailsPlan = detailsIndex === null ? null : plans[detailsIndex] || null;
-  const detailsDisplay = detailsPlan ? displayedPlanText(detailsPlan, displayLanguage) : null;
+  const selectedPlans = plans.filter((plan) => {
+    if (!plan.stableID) return false;
+    return shortsPlanExportLanguages(plan).some((language) => selectedPlanKeys.has(shortsSelectionKey(plan.stableID!, language)));
+  });
+  const selectedCount = selectedPlans.length;
+  const selectedExportCount = selectedPlans.reduce((sum, plan) => {
+    if (!plan.stableID) return sum;
+    return sum + shortsPlanExportLanguages(plan).filter((language) => selectedPlanKeys.has(shortsSelectionKey(plan.stableID!, language))).length;
+  }, 0);
+  const detailsPlan = detailsPlanID ? plans.find((plan) => plan.stableID === detailsPlanID) || null : null;
+  const detailsDisplay = detailsPlan ? displayedPlanText(detailsPlan, displayLanguage, activeTranslationLanguage) : null;
   const detailsText = detailsPlan ? getPlanDetailText(detailsPlan) : null;
   const detailsCues = detailsPlan ? getPlanCues(detailsPlan, displayLanguage) : [];
   const canUseTarget = hasTranslation;
   const canSwitchLanguage = plans.some((plan) => plan.languageMode === 'bilingual');
-  const editorPlan = editorIndex === null ? null : plans[editorIndex] || editorSnapshot;
+  const editorPlan = editorPlanID ? plans.find((plan) => plan.stableID === editorPlanID) || null : null;
+  const detailsStart = detailsPlan ? parseShortsTimestamp(detailsPlan.start) : null;
+  const editorStart = editorPlan ? parseShortsTimestamp(editorPlan.start) : null;
+  const editorEnd = editorPlan ? parseShortsTimestamp(editorPlan.end) : null;
+  const detailsStartSec = detailsStart && detailsStart.ok && detailsStart.seconds !== null
+    ? detailsStart.seconds
+    : null;
   const detailsCaptionText = detailsPlan
-    ? captionTextForLanguage(detailsPlan, displayLanguage) ?? detailsCues.map((cue) => `[${formatPlaybackClock(parseTimestampToSeconds(detailsPlan.start) + cue.startSec)}] ${cue.text}`).join('\n\n')
+    ? captionTextForLanguage(detailsPlan, displayLanguage, activeTranslationLanguage) ?? (
+        detailsStartSec !== null
+          ? detailsCues.map((cue) => `[${formatPlaybackClock(detailsStartSec + cue.startSec)}] ${cue.text}`).join('\n\n')
+          : ''
+      )
     : '';
 
-  const openEditor = (index: number) => {
-    setEditorIndex(index);
-    setEditorSnapshot(plans[index] || null);
+  const openEditor = (stableID: string) => {
+    setEditorPlanID(stableID);
   };
 
   const closeEditor = () => {
-    setEditorIndex(null);
-    setEditorSnapshot(null);
+    setEditorPlanID(null);
   };
 
   useEffect(() => {
@@ -248,10 +282,10 @@ export function ShortsReelsPanel({
   }, [plans.length, plans[0]?.languageMode]);
 
   useEffect(() => {
-    if (editorIndex === null) return;
-    const latest = plans[editorIndex];
-    if (latest) setEditorSnapshot(latest);
-  }, [editorIndex, plans]);
+    if (detailsPlanID && !plans.some((plan) => plan.stableID === detailsPlanID)) setDetailsPlanID(null);
+    if (editorPlanID && !plans.some((plan) => plan.stableID === editorPlanID)) setEditorPlanID(null);
+    if (replacePlanID && !plans.some((plan) => plan.stableID === replacePlanID)) setReplacePlanID(null);
+  }, [detailsPlanID, editorPlanID, plans, replacePlanID]);
 
   const copyText = async (key: string, value: string) => {
     try {
@@ -331,14 +365,18 @@ export function ShortsReelsPanel({
           <div className="shorts-plan-list">
             {plans.length === 0 && <div className="shorts-empty">Click “Find Moments” to create clip cards with title, timing, description, and category.</div>}
             {plans.map((plan, index) => {
-              const checked = selectedPlanIndexes.includes(index);
-              const display = displayedPlanText(plan, displayLanguage);
+              const checked = Boolean(plan.stableID) && shortsPlanExportLanguages(plan).some((language) => selectedPlanKeys.has(shortsSelectionKey(plan.stableID!, language)));
+              const display = displayedPlanText(plan, displayLanguage, activeTranslationLanguage);
               return (
-                <article key={`${plan.start}-${plan.end}-${index}`} className={`shorts-clip-card ${checked ? 'selected' : 'muted'}`}>
-                  <button type="button" className={`shorts-check ${checked ? 'on' : ''}`} onClick={() => onTogglePlan(index)} aria-label={checked ? 'Deselect clip' : 'Select clip'}>
+                <article key={plan.stableID || `${plan.start}-${plan.end}-${index}`} className={`shorts-clip-card ${checked ? 'selected' : 'muted'} ${focusedPlanID === plan.stableID ? 'focused' : ''}`}>
+                  <button type="button" className={`shorts-check ${checked ? 'on' : ''}`} onClick={() => plan.stableID && onTogglePlan(plan.stableID)} aria-label={checked ? 'Deselect clip' : 'Select clip'}>
                     {checked ? '✓' : ''}
                   </button>
-                  <button type="button" className="shorts-clip-body" onClick={() => { onFocusPlan(index); setDetailsIndex(index); }}>
+                  <button type="button" className="shorts-clip-body" onClick={() => {
+                    if (!plan.stableID) return;
+                    onFocusPlan(plan.stableID);
+                    setDetailsPlanID(plan.stableID);
+                  }}>
                     <strong>{display.title}</strong>
                     <span>{plan.start}{' -> '}{plan.end}{clipDurationLabel(plan) ? ` · ${clipDurationLabel(plan)}` : ''}</span>
                     <p>{display.summary}</p>
@@ -348,17 +386,22 @@ export function ShortsReelsPanel({
                     </div>
                   </button>
                   <div className="shorts-card-actions">
-                    <button type="button" onClick={() => { onFocusPlan(index); setDetailsIndex(index); }}>Details</button>
-                    <button type="button" onClick={() => setReplaceIndex(index)}>Replace</button>
-                    <button type="button" onClick={() => onRemovePlan(index)}>Delete</button>
+                    <button type="button" onClick={() => {
+                      if (!plan.stableID) return;
+                      onFocusPlan(plan.stableID);
+                      setDetailsPlanID(plan.stableID);
+                    }}>Details</button>
+                    <button type="button" onClick={() => plan.stableID && setReplacePlanID(plan.stableID)}>Replace</button>
+                    <button type="button" onClick={() => plan.stableID && onRemovePlan(plan.stableID)}>Delete</button>
                     <button
                       type="button"
                       className="shorts-edit-clip-button"
                       data-tour="shorts-edit-clip"
                       onClick={() => {
-                        if (!checked) onTogglePlan(index);
-                        onFocusPlan(index);
-                        openEditor(index);
+                        if (!plan.stableID) return;
+                        if (!checked) onTogglePlan(plan.stableID);
+                        onFocusPlan(plan.stableID);
+                        openEditor(plan.stableID);
                       }}
                       disabled={!hasVideo || !previewVideoSrc}
                     >
@@ -368,7 +411,23 @@ export function ShortsReelsPanel({
                 </article>
               );
             })}
-          </div>
+            {rejectedPlans.length > 0 && (
+              <div className="shorts-rejected-list">
+                <div className="shorts-step-head"><span>R</span><strong>Rejected clips</strong></div>
+                {rejectedPlans.map((plan, index) => (
+                  <article key={plan.stableID || `${plan.start}-${plan.end}-${index}`} className="shorts-clip-card muted">
+                    <div className="shorts-clip-body">
+                      <strong>{displayedPlanText(plan, displayLanguage, activeTranslationLanguage).title}</strong>
+                      <span>{plan.start}{' -> '}{plan.end}{clipDurationLabel(plan) ? ` · ${clipDurationLabel(plan)}` : ''}</span>
+                    </div>
+                    <div className="shorts-card-actions">
+                      <button type="button" onClick={() => plan.stableID && onRestorePlan(plan.stableID)}>Restore</button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+        </div>
         </div>
 
         <div className="shorts-card-section">
@@ -404,6 +463,14 @@ export function ShortsReelsPanel({
           </div>
           {!hasVideo && <p className="shorts-hint">Video export requires a video source. You can still export clip ideas.</p>}
           <div className="shorts-export-actions" data-tour="shorts-export-actions">
+            <button
+              type="button"
+              className="btn-dl btn-dl-secondary"
+              onClick={onTranslateMetadata}
+              disabled={!hasTranslation || !activeTranslationLanguage || activeTranslationLanguage === 'same' || plans.length === 0 || isBusy || isTranslatingMetadata}
+            >
+              {isTranslatingMetadata ? 'Translating metadata…' : `Translate metadata to ${activeTranslationLanguage || targetLang}`}
+            </button>
             <button type="button" className="btn-dl btn-dl-secondary" onClick={onExportIdeas} disabled={plans.length === 0 || isBusy}>Export ideas JSON/TXT</button>
             <button type="button" className="btn-dl btn-dl-primary" onClick={onExportSelected} disabled={!hasVideo || selectedCount === 0 || isBusy}>
               {isBusy ? (busyLabel || 'Exporting...') : `Export selected videos (${selectedExportCount})`}
@@ -416,14 +483,14 @@ export function ShortsReelsPanel({
       </div>
 
       {detailsPlan && detailsDisplay && detailsText && (
-        <div className="shorts-modal-backdrop" onMouseDown={() => setDetailsIndex(null)}>
+        <div className="shorts-modal-backdrop" onMouseDown={() => setDetailsPlanID(null)}>
           <div className="shorts-modal" onMouseDown={(event) => event.stopPropagation()}>
             <div className="shorts-modal-head">
               <div>
                 <h3>Clip details</h3>
                 <p>{detailsPlan.start} {' -> '} {detailsPlan.end} · {clipDurationLabel(detailsPlan)} · {detailsPlan.languageMode || 'target'}</p>
               </div>
-              <button type="button" onClick={() => setDetailsIndex(null)}>×</button>
+              <button type="button" onClick={() => setDetailsPlanID(null)}>×</button>
             </div>
             {detailsPlan.languageMode === 'bilingual' && (
               <div className="shorts-modal-language">
@@ -437,27 +504,27 @@ export function ShortsReelsPanel({
                   <span>Title</span>
                   <button type="button" onClick={() => copyText('title', detailsDisplay.title)}>{copiedKey === 'title' ? '✓' : 'Copy'}</button>
                 </div>
-                <input value={detailsDisplay.title} onChange={(event) => onUpdatePlan(detailsIndex!, bilingualPatch(displayLanguage, 'title', event.currentTarget.value))} />
+                <input value={detailsDisplay.title} onChange={(event) => onUpdatePlan(detailsPlanID!, bilingualPatch(displayLanguage, 'title', event.currentTarget.value), displayLanguage)} />
               </div>
               <div className="shorts-field">
                 <div className="shorts-field-head">
                   <span>Category</span>
                 </div>
-                <input value={detailsDisplay.category || ''} onChange={(event) => onUpdatePlan(detailsIndex!, bilingualPatch(displayLanguage, 'category', event.currentTarget.value))} />
+                <input value={detailsDisplay.category || ''} onChange={(event) => onUpdatePlan(detailsPlanID!, bilingualPatch(displayLanguage, 'category', event.currentTarget.value), displayLanguage)} />
               </div>
               <div className="shorts-field wide">
                 <div className="shorts-field-head">
                   <span>Description</span>
                   <button type="button" onClick={() => copyText('summary', detailsDisplay.summary)}>{copiedKey === 'summary' ? '✓' : 'Copy'}</button>
                 </div>
-                <textarea value={detailsDisplay.summary} onChange={(event) => onUpdatePlan(detailsIndex!, bilingualPatch(displayLanguage, 'summary', event.currentTarget.value))} />
+                <textarea value={detailsDisplay.summary} onChange={(event) => onUpdatePlan(detailsPlanID!, bilingualPatch(displayLanguage, 'summary', event.currentTarget.value), displayLanguage)} />
               </div>
               <div className="shorts-field wide">
                 <div className="shorts-field-head">
                   <span>Hook</span>
                   <button type="button" onClick={() => copyText('hook', detailsDisplay.hook)}>{copiedKey === 'hook' ? '✓' : 'Copy'}</button>
                 </div>
-                <textarea value={detailsDisplay.hook} onChange={(event) => onUpdatePlan(detailsIndex!, bilingualPatch(displayLanguage, 'hook', event.currentTarget.value))} />
+                <textarea value={detailsDisplay.hook} onChange={(event) => onUpdatePlan(detailsPlanID!, bilingualPatch(displayLanguage, 'hook', event.currentTarget.value), displayLanguage)} />
               </div>
             </div>
             <div className="shorts-modal-texts">
@@ -466,7 +533,7 @@ export function ShortsReelsPanel({
                 <textarea
                   className="shorts-caption-edit"
                   value={detailsCaptionText}
-                  onChange={(event) => onUpdatePlan(detailsIndex!, captionPatch(displayLanguage, event.currentTarget.value))}
+                  onChange={(event) => onUpdatePlan(detailsPlanID!, captionPatch(displayLanguage, event.currentTarget.value), displayLanguage)}
                 />
               </div>
               <div className="shorts-modal-transcripts">
@@ -484,16 +551,19 @@ export function ShortsReelsPanel({
             </div>
             <div className="shorts-modal-actions">
               <button type="button" className="btn-dl btn-dl-secondary" onClick={() => onFindMoments(detailsPlan.languageMode || 'target')}>Find alternatives</button>
-              <button type="button" className="btn-dl btn-dl-secondary" onClick={() => { onRemovePlan(detailsIndex!); setDetailsIndex(null); }}>Delete clip</button>
+              <button type="button" className="btn-dl btn-dl-secondary" onClick={() => { onRemovePlan(detailsPlanID!); setDetailsPlanID(null); }}>Delete clip</button>
               <button
                 type="button"
                 className="btn-dl btn-dl-secondary"
                 disabled={!hasVideo || !previewVideoSrc}
                 onClick={() => {
-                  if (detailsIndex !== null) {
-                    if (!selectedPlanIndexes.includes(detailsIndex)) onTogglePlan(detailsIndex);
-                    onFocusPlan(detailsIndex);
-                    openEditor(detailsIndex);
+                  if (detailsPlanID) {
+                    const selected = detailsPlan && detailsPlan.stableID
+                      ? shortsPlanExportLanguages(detailsPlan).some((language) => selectedPlanKeys.has(shortsSelectionKey(detailsPlan.stableID!, language)))
+                      : false;
+                    if (!selected) onTogglePlan(detailsPlanID);
+                    onFocusPlan(detailsPlanID);
+                    openEditor(detailsPlanID);
                   }
                 }}
               >
@@ -514,7 +584,7 @@ export function ShortsReelsPanel({
               >
                 Send to Assistant
               </button>
-              <button type="button" className="btn-dl btn-dl-primary" onClick={() => setDetailsIndex(null)}>Done</button>
+              <button type="button" className="btn-dl btn-dl-primary" onClick={() => setDetailsPlanID(null)}>Done</button>
             </div>
           </div>
         </div>
@@ -522,79 +592,73 @@ export function ShortsReelsPanel({
 
       {editorPlan && (
         <SubtitleAlignmentEditor
-          key={`editor-${editorIndex}`}
-          isOpen={editorIndex !== null}
-          title={displayedPlanText(editorPlan, displayLanguage).title || 'Clip editor'}
+          key={`editor-${editorPlanID}`}
+          isOpen={editorPlanID !== null}
+          title={displayedPlanText(editorPlan, displayLanguage, activeTranslationLanguage).title || 'Clip editor'}
           languageLabel={displayLanguage === 'source' ? 'Source captions' : 'Target captions'}
           videoSrc={previewVideoSrc}
           audioSrc={previewAudioSrc}
-          audioPath={previewAudioPath}
-          clipStartSec={parseTimestampToSeconds(editorPlan.start)}
-          clipEndSec={parseTimestampToSeconds(editorPlan.end)}
+          clipStartSec={editorStart?.ok && editorStart.seconds !== null ? editorStart.seconds : Number.NaN}
+          clipEndSec={editorEnd?.ok && editorEnd.seconds !== null ? editorEnd.seconds : Number.NaN}
           initialCues={getPlanCues(editorPlan, displayLanguage)}
           initialSegments={displayLanguage === 'source' ? editorPlan.sourceAlignment : editorPlan.targetAlignment}
           initialFrameKeyframes={displayLanguage === 'source' ? editorPlan.sourceFrameKeyframes : editorPlan.targetFrameKeyframes}
           initialCuts={editorPlan.timelineCuts}
           initialTrim={editorPlan.timelineTrim}
           initialBackgroundSettings={editorPlan.backgroundSettings}
-  initialLogo={displayLanguage === 'source' ? editorPlan.sourceLogo || editorPlan.logo : editorPlan.targetLogo || editorPlan.logo}
-  initialTextTracks={displayLanguage === 'source' ? editorPlan.sourceTextTracks || editorPlan.textTracks : editorPlan.targetTextTracks || editorPlan.textTracks}
-  initialAudioTracks={displayLanguage === 'source' ? editorPlan.sourceAudioTracks || editorPlan.audioTracks : editorPlan.targetAudioTracks || editorPlan.audioTracks}
-  initialIntro={displayLanguage === 'source' ? editorPlan.sourceIntro || editorPlan.intro : editorPlan.targetIntro || editorPlan.intro}
-  initialOutro={displayLanguage === 'source' ? editorPlan.sourceOutro || editorPlan.outro : editorPlan.targetOutro || editorPlan.outro}
+          initialLogo={displayLanguage === 'source' ? editorPlan.sourceLogo || editorPlan.logo : editorPlan.targetLogo || editorPlan.logo}
+          initialTextTracks={displayLanguage === 'source' ? editorPlan.sourceTextTracks || editorPlan.textTracks : editorPlan.targetTextTracks || editorPlan.textTracks}
+          initialAudioTracks={displayLanguage === 'source' ? editorPlan.sourceAudioTracks || editorPlan.audioTracks : editorPlan.targetAudioTracks || editorPlan.audioTracks}
+          initialIntro={displayLanguage === 'source' ? editorPlan.sourceIntro || editorPlan.intro : editorPlan.targetIntro || editorPlan.intro}
+          initialOutro={displayLanguage === 'source' ? editorPlan.sourceOutro || editorPlan.outro : editorPlan.targetOutro || editorPlan.outro}
           settings={settings}
           subtitleMaxCharsPerLine={subtitleMaxCharsPerLine}
           subtitleMaxLines={subtitleMaxLines}
           onClose={closeEditor}
           onSave={(segments) => {
-            if (editorIndex !== null) {
-              onSavePlanAlignment(editorIndex, displayLanguage, segments);
-              if (!selectedPlanIndexes.includes(editorIndex)) onTogglePlan(editorIndex);
+            if (editorPlanID) {
+              onSavePlanAlignment(editorPlanID, displayLanguage, segments);
+              const selected = shortsPlanExportLanguages(editorPlan).some((language) => selectedPlanKeys.has(shortsSelectionKey(editorPlanID, language)));
+              if (!selected) onTogglePlan(editorPlanID);
             }
           }}
           onDraftChange={(segments) => {
-            if (editorIndex !== null) {
-              onSavePlanAlignment(editorIndex, displayLanguage, segments);
-            }
+            if (editorPlanID) onSavePlanAlignment(editorPlanID, displayLanguage, segments);
           }}
           onSaveFrameKeyframes={(keyframes) => {
-            if (editorIndex !== null) {
-              onSavePlanFrameKeyframes(editorIndex, displayLanguage, keyframes);
-            }
+            if (editorPlanID) onSavePlanFrameKeyframes(editorPlanID, displayLanguage, keyframes);
           }}
           onDraftFrameKeyframes={(keyframes) => {
-            if (editorIndex !== null) {
-              onSavePlanFrameKeyframes(editorIndex, displayLanguage, keyframes);
-            }
+            if (editorPlanID) onSavePlanFrameKeyframes(editorPlanID, displayLanguage, keyframes);
           }}
           onSaveCuts={(cuts) => {
-            if (editorIndex !== null) onUpdatePlan(editorIndex, { timelineCuts: cuts });
+            if (editorPlanID) onUpdatePlan(editorPlanID, { timelineCuts: cuts });
           }}
           onSaveTrim={(trim) => {
-            if (editorIndex !== null) onUpdatePlan(editorIndex, { timelineTrim: trim });
+            if (editorPlanID) onUpdatePlan(editorPlanID, { timelineTrim: trim });
           }}
           onSaveBackgroundSettings={(bg) => {
-            if (editorIndex !== null) onUpdatePlan(editorIndex, { backgroundSettings: bg });
+            if (editorPlanID) onUpdatePlan(editorPlanID, { backgroundSettings: bg });
           }}
           onSaveLogo={(logo) => {
-            if (editorIndex !== null) onSavePlanLogo?.(editorIndex, displayLanguage, logo);
+            if (editorPlanID) onSavePlanLogo?.(editorPlanID, displayLanguage, logo);
           }}
           onSaveTextTracks={(tracks) => {
-            if (editorIndex !== null) onSavePlanTextTracks?.(editorIndex, displayLanguage, tracks);
+            if (editorPlanID) onSavePlanTextTracks?.(editorPlanID, displayLanguage, tracks);
           }}
           onSaveAudioTracks={(tracks) => {
-            if (editorIndex !== null) onSavePlanAudioTracks?.(editorIndex, displayLanguage, tracks);
+            if (editorPlanID) onSavePlanAudioTracks?.(editorPlanID, displayLanguage, tracks);
           }}
           onSaveIntro={(intro) => {
-            if (editorIndex !== null) onSavePlanIntro?.(editorIndex, displayLanguage, intro);
+            if (editorPlanID) onSavePlanIntro?.(editorPlanID, displayLanguage, intro);
           }}
           onSaveOutro={(outro) => {
-            if (editorIndex !== null) onSavePlanOutro?.(editorIndex, displayLanguage, outro);
+            if (editorPlanID) onSavePlanOutro?.(editorPlanID, displayLanguage, outro);
           }}
           onSettingsChange={onChange}
           onResetAll={() => {
-            if (editorIndex !== null) {
-              onUpdatePlan(editorIndex, {
+            if (editorPlanID) {
+              onUpdatePlan(editorPlanID, {
                 sourceAlignment: undefined,
                 targetAlignment: undefined,
                 sourceFrameKeyframes: [],
@@ -615,10 +679,10 @@ export function ShortsReelsPanel({
               });
             }
           }}
-          syncEnabled={editorIndex !== null ? plans[editorIndex]?.syncEnabled : false}
-          hasLinkedPartner={editorIndex !== null ? !!plans[editorIndex]?.linkedClipGroupId : false}
-          onToggleSync={() => { if (editorIndex !== null) onToggleClipSync?.(editorIndex); }}
-          onImportMotion={() => { if (editorIndex !== null) onImportMotion?.(editorIndex); }}
+          syncEnabled={Boolean(editorPlan.syncEnabled)}
+          hasLinkedPartner={Boolean(editorPlan.linkedClipGroupId)}
+          onToggleSync={() => { if (editorPlanID) onToggleClipSync?.(editorPlanID); }}
+          onImportMotion={() => { if (editorPlanID) onImportMotion?.(editorPlanID); }}
           currentLanguage={displayLanguage}
           onSwitchLanguage={(lang) => {
             setDisplayLanguage(lang);
@@ -627,14 +691,18 @@ export function ShortsReelsPanel({
       )}
 
       <ReplaceClipModal
-        isOpen={replaceIndex !== null}
-        plan={replaceIndex !== null ? plans[replaceIndex] || null : null}
+        isOpen={replacePlanID !== null}
+        plan={replacePlanID ? plans.find((item) => item.stableID === replacePlanID) || null : null}
         isBusy={isBusy}
-        onClose={() => setReplaceIndex(null)}
+        onClose={() => setReplacePlanID(null)}
         onRegenerate={(start, end) => {
-          if (replaceIndex !== null && onReplacePlan) {
-            onReplacePlan(replaceIndex, start, end);
-            setReplaceIndex(null);
+          if (replacePlanID && onReplacePlan) {
+            const result = onReplacePlan(replacePlanID, start, end);
+            if (result && !result.success) {
+              alert(`${result.code}: ${result.message}`);
+              return;
+            }
+            setReplacePlanID(null);
           }
         }}
       />

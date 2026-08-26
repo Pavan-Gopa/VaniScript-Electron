@@ -109,6 +109,17 @@ function makeProject() {
         translatedCues: [{ startSec: 0, endSec: 2, text: 'Bonjour' }],
         unrecognizedFragments: ['Krishna'],
       }],
+      shortsPlans: [{
+        stableID: 'plan-1',
+        start: '00:00',
+        end: '00:10',
+        title: 'Fixture clip',
+        summary: 'Fixture summary',
+        hook: 'Fixture hook',
+        captionText: 'Fixture caption',
+        languageMode: 'source',
+      }],
+      shortsRejectedPlans: [],
     },
   };
 }
@@ -647,4 +658,204 @@ test('export reads surface typed errors over the loopback socket', async (t) => 
   assert.equal(response.status, 404);
   assert.equal(response.body.error.code, MCP_ERROR_CODES.NOT_FOUND);
   assert.equal(response.body.error.message, 'NO_ACTIVE_PROJECT: No project is open');
+});
+
+test('Shorts reads resolve the requested disk project, ignore globals, and publish path-safe state', async () => {
+  const makePlan = (stableID, title, overrides = {}) => ({
+    stableID,
+    start: '00:00',
+    end: '00:10',
+    title,
+    summary: `${title} summary`,
+    hook: `${title} hook`,
+    captionText: `${title} caption`,
+    languageMode: 'source',
+    backgroundSettings: { solidEnabled: true, solidColor: '#000000' },
+    sourceLogo: { id: `${stableID}-logo`, src: '/private/logo.png', name: 'Logo', size: 1, opacity: 1 },
+    sourceTextTracks: [{ id: `${stableID}-text`, name: 'Text', blocks: [] }],
+    sourceAudioTracks: [{
+      id: `${stableID}-audio`,
+      name: 'Audio',
+      src: '/private/audio.mp3',
+      previewSrc: '/private/audio-preview.mp3',
+      startSec: 0,
+      trimStartSec: 0,
+      trimEndSec: 0,
+      volume: 1,
+      fadeInSec: 0,
+      fadeOutSec: 0,
+    }],
+    sourceIntro: { id: `${stableID}-intro`, src: '/private/intro.mp4', name: 'Intro', duration: 1, x: 0, y: 0, scale: 1, animation: 'none' },
+    sourceOutro: { id: `${stableID}-outro`, src: '/private/outro.mp4', name: 'Outro', duration: 1, x: 0, y: 0, scale: 1, animation: 'none' },
+    ...overrides,
+  });
+  const projectA = {
+    id: 'project-a',
+    session: {
+      projectId: 'project-a',
+      durationSec: 100,
+      shortsPlans: [makePlan('plan-a', 'Project A')],
+      shortsRejectedPlans: [],
+    },
+  };
+  const projectB = {
+    id: 'project-b',
+    session: {
+      projectId: 'project-b',
+      durationSec: 8,
+      sourceMediaInfo: { durationSec: 8 },
+      shortsPlans: [makePlan('plan-b', 'Project B')],
+      shortsRejectedPlans: [makePlan('rejected-b', 'Rejected B')],
+    },
+  };
+  const catalog = createReadCatalog({
+    settings: {
+      shortsPlans: [makePlan('global-plan', 'Global fake')],
+      rejectedShortsPlans: [makePlan('global-rejected', 'Global rejected fake')],
+      visualEditorState: { marker: 'global fake', audioTracks: [{ src: '/private/global.mp3' }] },
+      session: { shortsPlans: [makePlan('session-plan', 'Unrelated session fake')] },
+    },
+    resolveShortsProject: async (projectId) => ({ 'project-a': projectA, 'project-b': projectB }[projectId || 'project-a'] || null),
+  });
+
+  const active = await catalog.execute('get_shorts_plans', {});
+  assert.equal(active.projectId, 'project-a');
+  assert.deepEqual(active.data.plans.map((plan) => plan.id), ['plan-a']);
+
+  const plans = await catalog.execute('get_shorts_plans', { projectId: 'project-b' });
+  assert.equal(plans.projectId, 'project-b');
+  assert.deepEqual(plans.data.plans.map((plan) => plan.id), ['plan-b']);
+  assert.equal(plans.data.plans[0].title, 'Project B');
+
+  const one = await catalog.execute('get_shorts_plan', { projectId: 'project-b', planId: 'plan-b' });
+  assert.equal(one.data.plan.id, 'plan-b');
+  assert.equal(one.data.plan.title, 'Project B');
+
+  const rejected = await catalog.execute('list_rejected_shorts_plans', { projectId: 'project-b' });
+  assert.deepEqual(rejected.data.plans.map((plan) => plan.id), ['rejected-b']);
+
+  const validation = await catalog.execute('validate_shorts_plan', { projectId: 'project-b', planId: 'plan-b' });
+  assert.equal(validation.data.planId, 'plan-b');
+  assert.equal(validation.data.valid, false);
+  assert.equal(validation.data.issues.some((issue) => issue.code === 'OUTSIDE_SOURCE'), true);
+
+  const editor = await catalog.execute('get_visual_editor_state', { projectId: 'project-b', planId: 'plan-b' });
+  assert.equal(editor.data.plan.id, 'plan-b');
+  assert.equal(editor.data.assetPolicy.includes('source paths'), true);
+  assert.equal(JSON.stringify({ plans, one, rejected, validation, editor }).includes('/private/'), false);
+  assert.equal(JSON.stringify(editor.data).includes('global fake'), false);
+
+  await assert.rejects(
+    () => catalog.execute('get_shorts_plans', { projectId: 'unknown-project' }),
+    (error) => error instanceof ReadCatalogError && error.mcpCode === 'MCP_NOT_FOUND',
+  );
+  await assert.rejects(
+    () => catalog.execute('get_shorts_plan', { projectId: 'project-b', planId: 'unknown-plan' }),
+    (error) => error instanceof ReadCatalogError && error.mcpCode === 'MCP_NOT_FOUND',
+  );
+});
+test('Shorts project isolation survives the authenticated loopback request path', async (t) => {
+  const makePlan = (stableID, title, overrides = {}) => ({
+    stableID,
+    start: '00:00',
+    end: '00:10',
+    title,
+    summary: `${title} summary`,
+    hook: `${title} hook`,
+    captionText: `${title} caption`,
+    languageMode: 'source',
+    sourceLogo: { id: `${stableID}-logo`, src: '/private/logo.png', name: 'Logo' },
+    sourceAudioTracks: [{
+      id: `${stableID}-audio`,
+      name: 'Audio',
+      src: '/private/audio.mp3',
+      previewSrc: '/private/audio-preview.mp3',
+    }],
+    ...overrides,
+  });
+  const projects = {
+    'project-a': {
+      id: 'project-a',
+      session: {
+        projectId: 'project-a',
+        durationSec: 100,
+        shortsPlans: [makePlan('plan-a', 'Project A')],
+        shortsRejectedPlans: [],
+      },
+    },
+    'project-b': {
+      id: 'project-b',
+      session: {
+        projectId: 'project-b',
+        durationSec: 8,
+        sourceMediaInfo: { durationSec: 8 },
+        shortsPlans: [makePlan('plan-b', 'Project B')],
+        shortsRejectedPlans: [makePlan('rejected-b', 'Rejected B')],
+      },
+    },
+  };
+  const catalog = createReadCatalog({
+    settings: {
+      shortsPlans: [makePlan('global-plan', 'Global fake')],
+      rejectedShortsPlans: [makePlan('global-rejected', 'Global rejected fake')],
+      visualEditorState: { marker: 'global fake' },
+    },
+    resolveShortsProject: async (projectId) => projects[projectId || 'project-a'] || null,
+  });
+  const server = new McpServer({
+    host: '127.0.0.1',
+    port: 0,
+    vault: new MemoryVault(),
+    readCatalog: catalog,
+  });
+  const issued = server.rotateToken();
+  await server.start();
+  t.after(() => server.stop());
+
+  const calls = [
+    ['get_shorts_plans', { projectId: 'project-b' }],
+    ['get_shorts_plan', { projectId: 'project-b', planId: 'plan-b' }],
+    ['list_rejected_shorts_plans', { projectId: 'project-b' }],
+    ['validate_shorts_plan', { projectId: 'project-b', planId: 'plan-b' }],
+    ['get_visual_editor_state', { projectId: 'project-b', planId: 'plan-b' }],
+  ];
+  for (const [name, args] of calls) {
+    const response = await requestJson(server, {
+      jsonrpc: '2.0',
+      id: `project-b-${name}`,
+      method: 'tools/call',
+      params: { name, arguments: args },
+      projectId: 'project-a',
+      projectRevision: 'revision-a',
+    }, { token: issued.token, requestId: `project-b-${name}` });
+    assert.equal(response.status, 200, name);
+    assert.equal(response.body.result.projectId, 'project-b', name);
+    const data = response.body.result.data;
+    assert.equal(JSON.stringify(data).includes('Global fake'), false, name);
+    assert.equal(JSON.stringify(data).includes('/private/'), false, name);
+    if (name === 'get_shorts_plans') {
+      assert.deepEqual(data.plans.map((plan) => plan.id), ['plan-b']);
+      assert.equal(data.plans[0].title, 'Project B');
+    } else if (name === 'get_shorts_plan' || name === 'get_visual_editor_state') {
+      assert.equal(data.plan.id, 'plan-b', name);
+      assert.equal(data.plan.title, 'Project B', name);
+    } else if (name === 'list_rejected_shorts_plans') {
+      assert.deepEqual(data.plans.map((plan) => plan.id), ['rejected-b']);
+    } else {
+      assert.equal(data.planId, 'plan-b');
+      assert.equal(data.valid, false);
+      assert.equal(data.issues.some((issue) => issue.code === 'OUTSIDE_SOURCE'), true);
+    }
+  }
+
+  const missing = await requestJson(server, {
+    jsonrpc: '2.0',
+    id: 'unknown-project',
+    method: 'tools/call',
+    params: { name: 'get_shorts_plans', arguments: { projectId: 'unknown-project' } },
+    projectId: 'project-a',
+    projectRevision: 'revision-a',
+  }, { token: issued.token, requestId: 'unknown-project' });
+  assert.equal(missing.status, 404);
+  assert.equal(missing.body.error.code, 'MCP_NOT_FOUND');
 });

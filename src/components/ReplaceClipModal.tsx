@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { parseTimestampToSeconds, secondsToShortsTimestamp, type ShortsClipPlan } from '../lib/shorts-reels';
+import { parseShortsTimestamp, validateShortsPlan, type ShortsClipPlan } from '../lib/shorts-reels';
 
 type Props = {
   isOpen: boolean;
@@ -8,21 +8,6 @@ type Props = {
   onClose: () => void;
   onRegenerate: (startTimestamp: string, endTimestamp: string) => void;
 };
-
-function timestampInputToSeconds(value: string): number {
-  return parseTimestampToSeconds(value);
-}
-
-function validateRange(
-  startSec: number,
-  endSec: number
-): { ok: boolean; reason?: string } {
-  if (endSec <= startSec) return { ok: false, reason: 'End must be after start.' };
-  const duration = endSec - startSec;
-  if (duration < 10) return { ok: false, reason: 'Clip must be at least 10 seconds.' };
-  if (duration > 300) return { ok: false, reason: 'Clip must be at most 5 minutes.' };
-  return { ok: true };
-}
 
 export function ReplaceClipModal({
   isOpen,
@@ -43,22 +28,34 @@ export function ReplaceClipModal({
 
   if (!isOpen || !plan) return null;
 
-  const startSec = timestampInputToSeconds(startValue);
-  const endSec = timestampInputToSeconds(endValue);
-  const durationSec = Math.max(0, endSec - startSec);
-  const validation = validateRange(startSec, endSec);
-
-  const originalStartSec = parseTimestampToSeconds(plan.start);
-  const originalEndSec = parseTimestampToSeconds(plan.end);
-  const originalDuration = Math.max(0, originalEndSec - originalStartSec);
-  const delta = durationSec - originalDuration;
+  const parsedStart = parseShortsTimestamp(startValue);
+  const parsedEnd = parseShortsTimestamp(endValue);
+  const canonicalStart = parsedStart.ok ? parsedStart.canonical : null;
+  const canonicalEnd = parsedEnd.ok ? parsedEnd.canonical : null;
+  const candidate = {
+    ...plan,
+    start: canonicalStart ?? startValue,
+    end: canonicalEnd ?? endValue,
+    timelineCuts: [],
+  };
+  const validation = validateShortsPlan(candidate, {
+    minDurationSec: 10,
+    maxDurationSec: 300,
+    projection: 'source',
+  });
+  const validationIssue = validation.issues.find((issue) => issue.severity === 'error');
+  const durationSec = validation.durationSec;
+  const originalStart = parseShortsTimestamp(plan.start);
+  const originalEnd = parseShortsTimestamp(plan.end);
+  const originalDuration = originalStart.ok && originalEnd.ok
+    && originalStart.seconds !== null && originalEnd.seconds !== null
+    ? Math.max(0, originalEnd.seconds - originalStart.seconds)
+    : null;
+  const delta = durationSec !== null && originalDuration !== null ? durationSec - originalDuration : null;
 
   const handleRegenerate = () => {
-    if (!validation.ok || isBusy) return;
-    onRegenerate(
-      secondsToShortsTimestamp(startSec),
-      secondsToShortsTimestamp(endSec)
-    );
+    if (!validation.valid || canonicalStart === null || canonicalEnd === null || isBusy) return;
+    onRegenerate(canonicalStart, canonicalEnd);
   };
 
   return (
@@ -110,8 +107,8 @@ export function ReplaceClipModal({
 
           <div className="replace-clip-stats">
             <span>
-              Duration: <strong>{durationSec}s</strong>
-              {delta !== 0 && (
+              Duration: <strong>{durationSec === null ? '—' : `${durationSec}s`}</strong>
+              {delta !== null && delta !== 0 && (
                 <span className={`replace-clip-delta ${delta > 0 ? 'longer' : 'shorter'}`}>
                   {delta > 0 ? `+${delta}s` : `${delta}s`}
                 </span>
@@ -119,8 +116,8 @@ export function ReplaceClipModal({
             </span>
           </div>
 
-          {!validation.ok && validation.reason && (
-            <div className="replace-clip-error">{validation.reason}</div>
+          {validationIssue && (
+            <div className="replace-clip-error">{validationIssue.code}: {validationIssue.message}</div>
           )}
         </div>
 
@@ -135,7 +132,7 @@ export function ReplaceClipModal({
           <button
             type="button"
             className="btn-dl btn-dl-primary"
-            disabled={!validation.ok || isBusy}
+            disabled={!validation.valid || isBusy}
             onClick={handleRegenerate}
           >
             {isBusy ? 'Regenerating...' : 'Regenerate Clip'}

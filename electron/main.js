@@ -22,6 +22,7 @@ const {
   resolveSessionCurrentIndex,
   resolveSessionReviewProgressIndex,
 } = require('./project-session');
+const { normalizeShortsSessionState } = require('../shared/shorts-state');
 const {
   createStreamingBundleService,
 } = require('./main/projects/streamingBundle');
@@ -366,14 +367,27 @@ const exportCatalog = createExportCatalog({
 
 const exportPreflightCatalog = createReadCatalog({
   exportReadiness: () => rendererBridge.readiness(),
+  // Shorts reads are Main-owned but resolve the renderer's active project ID
+  // only as a lookup key; the returned legacy record is the sole data source.
+  resolveShortsProject: (projectId) => rendererBridge.resolveProject(projectId),
 });
 
 const MCP_PREFLIGHT_TOOL_NAMES = Object.freeze(['list_export_options', 'validate_export']);
+const MCP_SHORTS_READ_TOOL_NAMES = Object.freeze([
+  'get_shorts_plans',
+  'get_shorts_plan',
+  'list_rejected_shorts_plans',
+  'validate_shorts_plan',
+  'get_visual_editor_state',
+]);
 const MCP_EXPORT_TOOL_NAMES = Object.freeze([...exportCatalog.names, ...MCP_PREFLIGHT_TOOL_NAMES]);
-// The five tools/list entries reuse the catalogues' own definition objects.
+// The export, preflight, and Shorts read entries reuse the catalogues' own
+// definition objects rather than being retyped in the transport.
 const MCP_MAIN_TOOL_DEFINITIONS = Object.freeze([
   ...exportCatalog.tools,
-  ...exportPreflightCatalog.tools.filter((tool) => MCP_PREFLIGHT_TOOL_NAMES.includes(tool.name)),
+  ...exportPreflightCatalog.tools.filter((tool) => (
+    MCP_PREFLIGHT_TOOL_NAMES.includes(tool.name) || MCP_SHORTS_READ_TOOL_NAMES.includes(tool.name)
+  )),
 ]);
 
 // Typed catalogue failures map onto deterministic JSON-RPC codes; messages are
@@ -407,7 +421,7 @@ function mcpToolRpcError(error) {
 
 function dispatchedMcpToolCatalog(name) {
   if (exportCatalog.names.includes(name)) return exportCatalog;
-  if (MCP_PREFLIGHT_TOOL_NAMES.includes(name)) return exportPreflightCatalog;
+  if (MCP_PREFLIGHT_TOOL_NAMES.includes(name) || MCP_SHORTS_READ_TOOL_NAMES.includes(name)) return exportPreflightCatalog;
   return null;
 }
 
@@ -461,7 +475,9 @@ function projectSummary(project) {
 function readProject(projectId) {
   const filePath = projectJsonPath(projectId);
   if (!fs.existsSync(filePath)) throw new Error(`Project not found: ${projectId}`);
-  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  const project = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  if (project?.session) project.session = normalizeShortsSessionState(project.session);
+  return project;
 }
 
 function listProjects() {
@@ -483,12 +499,12 @@ function saveProjectRecord(input) {
   const now = new Date().toISOString();
   const id = input.id || input.session?.projectId || newProjectId();
   const createdAt = input.createdAt || now;
-  const session = normalizeProjectSessionAssets(id, {
+  const session = normalizeShortsSessionState(normalizeProjectSessionAssets(id, {
     ...(input.session || {}),
     projectId: id,
     createdAt,
     updatedAt: now,
-  });
+  }));
   const project = {
     id,
     name: input.name || session.sourceFileName || 'Untitled Project',
@@ -2200,7 +2216,9 @@ ipcMain.handle('project:load', async (_event, { id }) => {
   try {
     const project = readProject(id);
     if (project && project.session) {
-      project.session = normalizeImportedProjectSession(project.session, { projectId: project.id });
+      project.session = normalizeShortsSessionState(
+        normalizeImportedProjectSession(project.session, { projectId: project.id })
+      );
     }
     if (project && project.session && !project.session.sourceMediaInfo) {
       const mediaPath = project.session.originalVideoPath || project.session.sourceFile;
@@ -2249,6 +2267,7 @@ ipcMain.handle('project:clearAll', async () => {
 ipcMain.handle('project:export', async (_event, { id }) => {
   try {
     const project = readProject(id);
+    if (project?.session) project.session = normalizeShortsSessionState(project.session);
     const result = await dialog.showSaveDialog(windowManager.getMainWindow(), {
       defaultPath: `${safeName(project.name || project.session?.sourceFileName || 'VaniScript Project')}.vaniscript`,
       filters: [{ name: 'VaniScript Project', extensions: ['vaniscript'] }],
@@ -2264,6 +2283,9 @@ ipcMain.handle('project:export', async (_event, { id }) => {
 ipcMain.handle('project:exportAll', async () => {
   try {
     const projects = listProjects().map((summary) => readProject(summary.id));
+    for (const project of projects) {
+      if (project?.session) project.session = normalizeShortsSessionState(project.session);
+    }
     const result = await dialog.showSaveDialog(windowManager.getMainWindow(), {
       defaultPath: 'VaniScript Library.vaniscript-library',
       filters: [{ name: 'VaniScript Library', extensions: ['vaniscript-library'] }],
@@ -2290,6 +2312,9 @@ ipcMain.handle('project:import', async () => {
 
     // One hardened service call routes all four supported formats by content.
     const importedProjects = await streamingBundleService.importBundle(filePath);
+    if (importedProjects[0]?.session) {
+      importedProjects[0].session = normalizeShortsSessionState(importedProjects[0].session);
+    }
     return { ok: true, project: importedProjects[0] || null };
   } catch (error) {
     return { ok: false, error: error.message || String(error) };
@@ -2666,11 +2691,6 @@ function startMcpServer() {
                     }
                   },
                   {
-                    name: 'get_shorts_plans',
-                    description: 'List all vertical shorts clip plans planned in timeline',
-                    inputSchema: { type: 'object', properties: {} }
-                  },
-                  {
                     name: 'create_shorts_plan',
                     description: 'Create a new vertical shorts plan segment in timeline',
                     inputSchema: {
@@ -2719,9 +2739,9 @@ function startMcpServer() {
           if (rpc.method === 'tools/call') {
             const { name, arguments: args } = rpc.params || {};
 
-            // S4-C: the file-export and preflight tools execute entirely in
+            // S4-C/S5: file-export, preflight, and Shorts reads execute in
             // Main, ahead of the window-active guard and the legacy renderer
-            // forwarding path (which stays untouched for its nine tools).
+            // forwarding path (which stays untouched for its eight tools).
             const mainToolCatalog = typeof name === 'string' ? dispatchedMcpToolCatalog(name) : null;
             if (mainToolCatalog) {
               let response;

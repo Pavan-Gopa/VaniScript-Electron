@@ -7,12 +7,12 @@
  * process-level services at require time), so the wiring half of this suite
  * pins the observable composition contract against the real sources using the
  * brace-aware extractor style of mainProjectBundleIpc.test.js: exactly one
- * store/catalogue construction site each, the five export/preflight tools
- * dispatched through the Main-side catalogues ahead of the legacy renderer
- * forwarding branch, the singleton bundle writer and shell reveal bindings,
- * the deterministic typed-error → JSON-RPC code table with root-path
+ * store/catalogue construction site each, the ten export/preflight/Shorts
+ * tools dispatched through the Main-side catalogues ahead of the legacy
+ * renderer forwarding branch, the singleton bundle writer and shell reveal
+ * bindings, the deterministic typed-error → JSON-RPC code table with root-path
  * redaction, renderer bridge handlers for all three new channels, and an
- * untouched legacy nine-tool surface.
+ * untouched legacy eight-tool surface.
  *
  * The behavioural half drives the REAL catalogue/store modules wired in the
  * exact shape main.js binds them (no Electron runtime needed): protected
@@ -51,13 +51,19 @@ const {
 const { createMcpExportStore } = require('../electron/main/projects/mcpExportStore.js');
 
 const PREFLIGHT_TOOL_NAMES = Object.freeze(['list_export_options', 'validate_export']);
+const SHORTS_READ_TOOL_NAMES = Object.freeze([
+  'get_shorts_plans',
+  'get_shorts_plan',
+  'list_rejected_shorts_plans',
+  'validate_shorts_plan',
+  'get_visual_editor_state',
+]);
 const LEGACY_RENDERER_TOOLS = Object.freeze([
   'get_project_state',
   'update_chunk_text',
   'approve_chunk',
   'get_subtitle_style',
   'update_subtitle_style',
-  'get_shorts_plans',
   'create_shorts_plan',
   'set_background_settings',
   'trigger_render',
@@ -280,27 +286,28 @@ test('renderer implements all three compute handlers over the live session state
 
 // ─── SSE transport integration ───────────────────────────────────────────────
 
-test('tools/list appends the five catalog-owned definitions instead of retyping them', () => {
+test('tools/list appends the ten catalog-owned definitions instead of retyping them', () => {
   const serverBody = extractFunctionBody(MAIN_SOURCE, 'startMcpServer');
 
-  assert.ok(serverBody.includes('.concat(MCP_MAIN_TOOL_DEFINITIONS)'), 'five definitions appended to tools/list');
+  assert.ok(serverBody.includes('.concat(MCP_MAIN_TOOL_DEFINITIONS)'), 'catalog definitions appended to tools/list');
   assert.ok(
     COMPOSITION_BLOCK.includes('...exportCatalog.tools,'),
     'the three export definitions are the catalogue objects themselves',
   );
   assert.ok(
-    COMPOSITION_BLOCK.includes("filter((tool) => MCP_PREFLIGHT_TOOL_NAMES.includes(tool.name))"),
-    'the two preflight definitions are filtered from the read catalogue objects',
+    COMPOSITION_BLOCK.includes('MCP_PREFLIGHT_TOOL_NAMES.includes(tool.name)')
+      && COMPOSITION_BLOCK.includes('MCP_SHORTS_READ_TOOL_NAMES.includes(tool.name)'),
+    'preflight and Shorts definitions are filtered from the read catalogue objects',
   );
 
   // No definition payload is retyped inside the composition block.
   assert.equal(occurrences(COMPOSITION_BLOCK, 'inputSchema'), 0, 'no inline schema retyping');
   assert.equal(occurrences(COMPOSITION_BLOCK, 'description:'), 0, 'no inline description retyping');
 
-  // The five names exist exactly once as the Main-dispatch set, sourced from the catalogues.
-  const expectedNames = [...EXPORT_TOOL_NAMES, ...PREFLIGHT_TOOL_NAMES];
-  assert.equal(expectedNames.length, 5);
-  assert.equal(new Set(expectedNames).size, 5, 'five unique tool names');
+  // The ten names exist exactly once as the Main-dispatch set, sourced from the catalogues.
+  const expectedNames = [...EXPORT_TOOL_NAMES, ...PREFLIGHT_TOOL_NAMES, ...SHORTS_READ_TOOL_NAMES];
+  assert.equal(expectedNames.length, 10);
+  assert.equal(new Set(expectedNames).size, 10, 'ten unique tool names');
   assert.ok(COMPOSITION_BLOCK.includes('...exportCatalog.names'));
   assert.match(COMPOSITION_BLOCK, /Object\.freeze\(\['list_export_options',\s*'validate_export'\]\)/);
 
@@ -312,7 +319,7 @@ test('tools/list appends the five catalog-owned definitions instead of retyping 
   assert.deepEqual([...EXPORT_TOOL_NAMES], ['export_transcript', 'export_project_bundle', 'reveal_export']);
 });
 
-test('tools/call dispatches the five names through Main ahead of the renderer-forwarding branch', () => {
+test('tools/call dispatches the ten names through Main ahead of the renderer-forwarding branch', () => {
   const serverBody = extractFunctionBody(MAIN_SOURCE, 'startMcpServer');
 
   const callIndex = serverBody.indexOf("rpc.method === 'tools/call'");
@@ -325,24 +332,24 @@ test('tools/call dispatches the five names through Main ahead of the renderer-fo
   assert.ok(dispatchIndex < guardIndex, 'dispatch runs before the window-active guard');
   assert.ok(guardIndex < forwardIndex, 'legacy guard stays ahead of the forwarding send');
 
-  // The router resolves the export lane via the catalogue's own name list and
-  // the preflight lane via the pinned two-name set.
+  // The router resolves export, preflight, and Shorts reads through the
+  // catalogue-owned name lists.
   assert.match(
     COMPOSITION_BLOCK,
-    /function dispatchedMcpToolCatalog\(name\) \{\s*if \(exportCatalog\.names\.includes\(name\)\) return exportCatalog;\s*if \(MCP_PREFLIGHT_TOOL_NAMES\.includes\(name\)\) return exportPreflightCatalog;\s*return null;/,
+    /function dispatchedMcpToolCatalog\(name\) \{\s*if \(exportCatalog\.names\.includes\(name\)\) return exportCatalog;\s*if \(MCP_PREFLIGHT_TOOL_NAMES\.includes\(name\) \|\| MCP_SHORTS_READ_TOOL_NAMES\.includes\(name\)\) return exportPreflightCatalog;\s*return null;/,
   );
   for (const name of expectedDispatchNames()) {
     assert.ok(expectedDispatchNames().includes(name), `Main dispatch covers ${name}`);
   }
-  assert.deepEqual(new Set(expectedDispatchNames()).size, 5, 'exactly five Main-executed names');
+  assert.deepEqual(new Set(expectedDispatchNames()).size, 10, 'exactly ten Main-executed names');
 });
 
 function expectedDispatchNames() {
-  return [...EXPORT_TOOL_NAMES, ...PREFLIGHT_TOOL_NAMES];
+  return [...EXPORT_TOOL_NAMES, ...PREFLIGHT_TOOL_NAMES, ...SHORTS_READ_TOOL_NAMES];
 }
 
 
-test('legacy nine tools keep their exact entries and forwarding path', () => {
+test('legacy eight tools keep their exact entries and forwarding path', () => {
   const serverBody = extractFunctionBody(MAIN_SOURCE, 'startMcpServer');
   const listIndex = serverBody.indexOf("rpc.method === 'tools/list'");
   const callIndex = serverBody.indexOf("rpc.method === 'tools/call'");
@@ -355,7 +362,7 @@ test('legacy nine tools keep their exact entries and forwarding path', () => {
     assert.equal(occurrences(listSection, `name: '${name}'`), 1, `legacy tool ${name} listed exactly once`);
     cursor = at;
   }
-  assert.equal(occurrences(listSection, 'inputSchema'), 9, 'exactly the nine legacy schemas remain inline');
+  assert.equal(occurrences(listSection, 'inputSchema'), 8, 'exactly the eight legacy schemas remain inline');
 
   assert.ok(
     serverBody.includes("pendingMcpRequests.set(requestId"),
@@ -366,8 +373,9 @@ test('legacy nine tools keep their exact entries and forwarding path', () => {
     'forwarding payload unchanged',
   );
 
-  // The renderer switch never claims the five Main-executed tools.
-  for (const name of expectedDispatchNames()) {
+  // The renderer's historical case is unreachable for the Main-owned
+  // get_shorts_plans route; the other newly Main-owned names have no case.
+  for (const name of expectedDispatchNames().filter((candidate) => candidate !== 'get_shorts_plans')) {
     assert.equal(
       occurrences(APP_SOURCE, `case '${name}':`),
       0,

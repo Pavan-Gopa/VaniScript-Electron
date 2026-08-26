@@ -5,13 +5,14 @@ onboarding:
   model_pairs_confirmed: true
   completed_at: 2026-08-21T00:00:00Z
 current_step: P3E
-current_work_item_id: P3E.D4
+current_work_item_id: P3E.D5
 current_work_item: >-
-  P3E.D3 closed tester-green (731/731). Next: P3E.D4 discovery and binding
-  for shorts plan/state parity (persisted plans/languages), then Coder.
+  P3E.D4 closed tester-green (746/0). Next: P3E.D5 discovery and binding
+  for the visual render contract (immutable render plan / cancel safety),
+  then Coder slices.
 step_description: >-
-  P3E.D1-D3 complete. Active pointer advanced to P3E.D4 shorts parity;
-  card-level O1/O2/J1/J2 remain open until D4-D5 complete.
+  P3E.D1-D4 complete. Active pointer P3E.D5 render contract;
+  card-level O1/O2/J2 remain open until D5 completes (J1 evidenced).
 completed_steps:
   - P0
   - P1
@@ -26,8 +27,8 @@ implementation:
   status: tester_verified
   attempts: 1
   note: >-
-    P3ED3Tester1 qa_green over the full S1-S4 candidate; Main independently
-    re-ran the full suite (731 pass / 0 fail), compile exit 0, vite build green.
+    P3E.D4 fully closed: six slices, one review-blocker fix round, card
+    review approved, Tester qa_green 746/0 independently verified.
   target_files:
     - Electron/src/App.tsx
     - Electron/src/lib/review-format.ts
@@ -45,14 +46,14 @@ retry_guard:
   repeated_failure_count: 0
   blocker: null
 omp:
-  last_result_artifact: history://P3ED3Tester1
+  last_result_artifact: history://P3ED4Tester1
   active_agent: null
   active_role: null
   status: idle_between_items
   role: tester
   primary_agent: workflow-tester
-  evidence: history://P3ED3Tester1
-  omp_status_note: p3e_d3_closed_advancing_d4
+  evidence: history://P3ED4Tester1
+  omp_status_note: p3e_d4_closed_advancing_d5
 standing_order:
   human_instruction: >-
     STANDING ORDER (2026-08-22, supersedes all earlier pause directives):
@@ -88,11 +89,11 @@ review:
   status: approved
   last_feedback_file: AI_Workflow_Kit/docs/AI/FEEDBACK.md
   verdict: approved
-  note: P3ED3Reviewer2 approved after fix round. Human paused before Tester.
+  note: P3ED4Reviewer2 approved after the seed-gating fix round.
 qa:
-  suite: "P3E.D3 final Tester 731/731 (+2 SSE loopback); compile and Vite build green"
+  suite: "P3E.D4 final Tester 746/746 (+1 isolation loopback); compile and Vite build green"
   bugs_open: 0
-  note: Tester qa_green verified by independent Main re-run.
+  note: D4 Tester qa_green verified by independent Main re-run; O2-SHT-10/J2 deferred to D5 per binding §8.
 next_actor: scout
 pipeline:
   profile: standard
@@ -104,10 +105,11 @@ security_audit:
 checkpoint:
   last_pre_tag: null
   last_post_tag: null
-  last_commit: 6b80f3a
+  last_commit: 599488d
   note: >-
-    P3E.D2 product and closure-time snapshots committed and pushed as 6b80f3a
-    on codex/v2-swift-import-compat. Outer canonical state is local-only.
+    P3E.D3 product candidate plus closure-time workflow-memory mirror committed
+    and pushed as 599488d on codex/v2-swift-import-compat. Outer canonical
+    state remains local-only; next closure mirror will carry this hash.
 notes: |
   2026-08-21 canonical state repair: STEPS.md rewritten as Step Cards (P0..P5) with
   stable IDs <step>.D/O/J; current_step restored; completed_steps limited to

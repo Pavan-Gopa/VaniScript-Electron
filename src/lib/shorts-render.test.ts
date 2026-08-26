@@ -5,8 +5,10 @@ import {
   buildVerticalVideoFilter,
   buildVerticalVideoFilterGraph,
   crfForShortsQuality,
+  defaultShortsSubtitleStyle,
   extensionForShortsFormat,
   fpsForShortsQuality,
+  resolveShortsSubtitleStyle,
   SHORTS_SUBTITLE_PRESETS,
   verticalResolutionForPreset,
 } from './shorts-render';
@@ -179,4 +181,50 @@ test('export format and quality helpers map to predictable output options', () =
   assert.equal(fpsForShortsQuality('compact'), 24);
   assert.equal(fpsForShortsQuality('balanced'), 30);
   assert.equal(fpsForShortsQuality('high'), 30);
+});
+test('O2-SHT-06 render style is plan-owned and missing styles use a deterministic built-in', () => {
+  const cues = [{ startSec: 0, endSec: 2, text: 'Plan caption' }];
+  const styleA = resolveShortsSubtitleStyle({
+    fontFamily: 'Cuprum',
+    fontSize: 72,
+    boxColor: '#FF8C00',
+    subtitleBottomMargin: 560,
+  });
+  const styleB = resolveShortsSubtitleStyle({
+    fontFamily: 'Inter',
+    fontSize: 52,
+    boxColor: '#0000FF',
+    subtitleBottomMargin: 420,
+  });
+  const renderedA = buildShortsAssSubtitle({
+    cues,
+    width: 1080,
+    height: 1920,
+    bottomMargin: styleA.subtitleBottomMargin ?? 0,
+    style: styleA,
+  });
+  const renderedB = buildShortsAssSubtitle({
+    cues,
+    width: 1080,
+    height: 1920,
+    bottomMargin: styleB.subtitleBottomMargin ?? 0,
+    style: styleB,
+  });
+  assert.notEqual(renderedA, renderedB);
+  assert.equal(
+    buildShortsAssSubtitle({
+      cues,
+      width: 1080,
+      height: 1920,
+      bottomMargin: styleA.subtitleBottomMargin ?? 0,
+      style: styleA,
+    }),
+    renderedA,
+  );
+
+  const missingA = defaultShortsSubtitleStyle();
+  const missingB = defaultShortsSubtitleStyle();
+  assert.deepEqual(missingA, missingB);
+  assert.equal(missingA.fontFamily, 'Cuprum');
+  assert.equal(missingA.subtitleBottomMargin, 560);
 });

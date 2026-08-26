@@ -1,0 +1,263 @@
+{
+  "activeTranslationLanguage": "German",
+  "availableTranslationLanguages": ["German", "Russian"],
+  "targetLang": "German",
+  "shortsPlans": [
+    {
+      "stableID": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "start": "00:12",
+      "end": "00:32",
+      "title": "German active title",
+      "summary": "German active summary",
+      "hook": "German active hook",
+      "category": "Teaching",
+      "sourceTitle": "Source active title",
+      "sourceSummary": "Source active summary",
+      "sourceHook": "Source active hook",
+      "sourceCategory": "Source",
+      "targetTitle": "German active title",
+      "targetSummary": "German active summary",
+      "targetHook": "German active hook",
+      "targetCategory": "Teaching",
+      "captionText": "German caption",
+      "sourceCaptionText": "Source caption",
+      "targetCaptionText": "German caption",
+      "languageMode": "bilingual",
+      "translationsByLanguage": {
+        "german": {
+          "language": "German",
+          "title": "German active title",
+          "summary": "German active summary",
+          "hook": "German active hook",
+          "category": "Teaching",
+          "captionText": "German caption",
+          "provider": "native-provider-de",
+          "updatedAt": "2026-08-26T01:00:00.000Z"
+        },
+        "russian": {
+          "language": "Russian",
+          "title": "Russian active title",
+          "summary": "Russian active summary",
+          "hook": "Russian active hook",
+          "category": "Учение",
+          "captionText": "Русские субтитры",
+          "provider": "native-provider-ru",
+          "updatedAt": "2026-08-26T02:00:00.000Z"
+        }
+      },
+      "sourceAlignment": [
+        {
+          "id": "source-segment-1",
+          "start": 0,
+          "end": 2,
+          "text": "Source caption",
+          "words": [
+            { "id": "source-word-1", "text": "Source", "start": 0, "end": 1 }
+          ]
+        }
+      ],
+      "targetAlignment": [
+        {
+          "id": "target-segment-1",
+          "start": 0,
+          "end": 2,
+          "text": "German caption",
+          "words": [
+            { "id": "target-word-1", "text": "German", "start": 0, "end": 1 }
+          ]
+        }
+      ],
+      "sourceFrameKeyframes": [
+        { "id": "source-frame-1", "time": 0, "x": 50, "y": 50, "zoom": 1, "backgroundColor": "#111111" }
+      ],
+      "targetFrameKeyframes": [
+        { "id": "target-frame-1", "time": 0, "x": 48, "y": 52, "zoom": 1.08, "backgroundColor": "#222222" }
+      ],
+      "timelineCuts": [
+        { "stableID": "native-cut-active", "startSec": 2, "endSec": 4 }
+      ],
+      "timelineTrim": { "trimStartSec": 1, "trimEndSec": 2 },
+      "backgroundSettings": {
+        "effectReferenceHeight": 1920,
+        "solidEnabled": true,
+        "solidColor": "#101010",
+        "blurEnabled": true,
+        "blurStrength": 30,
+        "blurScale": 1.3,
+        "blurPanX": 0.1,
+        "gradientEnabled": false,
+        "gradientType": "linear",
+        "gradientColorA": "#000000",
+        "gradientColorB": "#1a1a2e",
+        "gradientAngle": 180,
+        "gradientOpacity": 0.6,
+        "featherEnabled": true,
+        "featherTop": 20,
+        "featherBottom": 20,
+        "featherLeft": 10,
+        "featherRight": 10,
+        "frameGuideColor": "#ffaa19",
+        "frameGuideOpacity": 0.5,
+        "frameGuideBorderWidth": 2,
+        "frameGuideBlur": 0,
+        "frameGuideBorderOpacity": 1,
+        "featherTopHeight": 100,
+        "featherBottomHeight": 100
+      },
+      "subtitleStyle": {
+        "fontFamily": "Cuprum",
+        "fontSize": 96,
+        "bold": true,
+        "textTransform": "uppercase",
+        "textColor": "#FFFFFF",
+        "boxColor": "#FF8C00",
+        "boxOpacity": 0.5,
+        "boxWidth": 86,
+        "boxHeight": 1,
+        "edgeBlur": 8,
+        "letterSpacing": 0,
+        "lineSpacing": 1.05,
+        "edgeSoftness": 0.25,
+        "outline": 2,
+        "outlineColor": "#000000",
+        "outlineOpacity": 0.8,
+        "shadow": 4,
+        "shadowColor": "#000000",
+        "shadowOpacity": 0.6,
+        "shadowBlur": 3,
+        "shadowDistance": 2,
+        "shadowAngle": 90,
+        "subtitleBottomMargin": 560
+      },
+      "sourceLogo": {
+        "id": "native-logo",
+        "src": "/private/native-logo.png",
+        "name": "Native logo",
+        "size": 0.5,
+        "opacity": 0.8,
+        "position": "topRight",
+        "hidden": false
+      },
+      "sourceTextTracks": [
+        {
+          "id": "native-text-track",
+          "name": "Native text",
+          "hidden": false,
+          "muted": false,
+          "blocks": [
+            { "id": "native-text-block", "startSec": 1, "endSec": 3, "text": "Overlay text", "hidden": false }
+          ],
+          "style": {
+            "fontFamily": "Inter",
+            "fontSize": 40,
+            "bold": false,
+            "textTransform": "none",
+            "textColor": "#FFFFFF",
+            "boxColor": "#000000",
+            "boxOpacity": 0.4,
+            "boxWidth": 80,
+            "boxHeight": 1,
+            "edgeBlur": 0,
+            "letterSpacing": 0,
+            "lineSpacing": 1,
+            "edgeSoftness": 0,
+            "outline": 0,
+            "shadow": 0
+          }
+        }
+      ],
+      "sourceAudioTracks": [
+        {
+          "id": "native-audio-track",
+          "name": "Native audio",
+          "src": "/private/native-audio.mp3",
+          "previewSrc": "/private/native-audio-preview.mp3",
+          "startSec": 0,
+          "trimStartSec": 0,
+          "trimEndSec": 10,
+          "volume": 0.7,
+          "fadeInSec": 1,
+          "fadeOutSec": 2,
+          "muted": false,
+          "assetDuration": 12
+        }
+      ],
+      "sourceIntro": {
+        "id": "native-intro",
+        "src": "/private/native-intro.mp4",
+        "name": "Native intro",
+        "duration": 1,
+        "x": 0,
+        "y": 0,
+        "scale": 1,
+        "animation": "fade",
+        "hidden": false,
+        "speed": 1,
+        "transitionSec": 0.2
+      },
+      "sourceOutro": {
+        "id": "native-outro",
+        "src": "/private/native-outro.mp4",
+        "name": "Native outro",
+        "duration": 1,
+        "x": 0,
+        "y": 0,
+        "scale": 1,
+        "animation": "fade",
+        "hidden": false,
+        "speed": 1,
+        "transitionSec": 0.2
+      }
+    }
+  ],
+  "shortsRejectedPlans": [
+    {
+      "stableID": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "start": "01:00",
+      "end": "01:20",
+      "title": "Rejected Russian title",
+      "summary": "Rejected Russian summary",
+      "hook": "Rejected Russian hook",
+      "languageMode": "target",
+      "translationsByLanguage": {
+        "russian": {
+          "language": "Russian",
+          "title": "Rejected Russian title",
+          "summary": "Rejected Russian summary",
+          "hook": "Rejected Russian hook",
+          "provider": "native-provider-ru",
+          "updatedAt": "2026-08-26T03:00:00.000Z"
+        },
+        "german": {
+          "language": "German",
+          "title": "Rejected German title",
+          "summary": "Rejected German summary",
+          "hook": "Rejected German hook",
+          "provider": "native-provider-de",
+          "updatedAt": "2026-08-26T04:00:00.000Z"
+        }
+      },
+      "subtitleStyle": {
+        "fontFamily": "Inter",
+        "fontSize": 52,
+        "bold": false,
+        "textTransform": "none",
+        "textColor": "#FFFFFF",
+        "boxColor": "#000000",
+        "boxOpacity": 0.4,
+        "boxWidth": 80,
+        "boxHeight": 1,
+        "edgeBlur": 0,
+        "letterSpacing": 0,
+        "lineSpacing": 1,
+        "edgeSoftness": 0,
+        "outline": 0,
+        "shadow": 0,
+        "subtitleBottomMargin": 420
+      },
+      "timelineCuts": [
+        { "stableID": "native-cut-rejected", "startSec": 1, "endSec": 3 }
+      ]
+    }
+  ]
+}

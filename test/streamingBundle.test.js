@@ -18,6 +18,9 @@ const path = require('node:path');
 const {
   createStreamingBundleService,
 } = require('../electron/main/projects/streamingBundle.js');
+const {
+  normalizeImportedProjectSession,
+} = require('../electron/project-session.js');
 
 const FIXED_NOW = '2026-08-24T00:00:00.000Z';
 const PROJECT_MAGIC = 'VANISCRIPT_BUNDLE_V2';
@@ -90,6 +93,21 @@ function makeChunk(overrides = {}) {
     translationsByLanguage: {},
     ...overrides,
   };
+}
+
+function stripBundleManagedPaths(session) {
+  const clone = JSON.parse(JSON.stringify(session));
+  delete clone.projectId;
+  delete clone.sourceFile;
+  delete clone.originalVideoPath;
+  delete clone.wavPath;
+  if (clone.sourceMediaInfo && typeof clone.sourceMediaInfo === 'object') {
+    delete clone.sourceMediaInfo.filePath;
+  }
+  for (const chunk of Array.isArray(clone.chunks) ? clone.chunks : []) {
+    if (chunk && typeof chunk === 'object') delete chunk.filePath;
+  }
+  return clone;
 }
 
 // ─── Hand-built wire helpers (independent of the service under test) ─========
@@ -324,6 +342,405 @@ test('project V2 round trip preserves >1MiB binaries and emits Apple-shaped mani
   );
   assert.equal(persisted.id, 'vs-test-001');
   assert.equal(persisted.session.sourceFile, restoredSource);
+  assertCleanStore(storeRoot, ['vs-test-001']);
+});
+
+test('O2-SHT-08 schema-3 round trip preserves canonical Shorts state and metadata', async (t) => {
+  const sourceDir = makeRoot(t, 'vs-shorts-src-');
+  const storeRoot = makeRoot(t, 'vs-shorts-store-');
+  const outDir = makeRoot(t, 'vs-shorts-out-');
+
+  const sourcePath = writeFile(sourceDir, 'round-source.mov', Buffer.from('round-trip-source'));
+  const originalVideoPath = writeFile(sourceDir, 'round-video.mp4', Buffer.from('round-trip-video'));
+  const chunk0Path = writeFile(sourceDir, 'round-chunk-0.wav', Buffer.from('round-trip-chunk-0'));
+  const chunk1Path = writeFile(sourceDir, 'round-chunk-1.wav', Buffer.from('round-trip-chunk-1'));
+
+  const activeStyle = {
+    fontFamily: 'Cuprum',
+    fontSize: 96,
+    bold: true,
+    textTransform: 'uppercase',
+    textColor: '#FFFFFF',
+    boxColor: '#FF8C00',
+    boxOpacity: 0.5,
+    boxWidth: 86,
+    boxHeight: 1,
+    edgeBlur: 8,
+    letterSpacing: 0,
+    lineSpacing: 1.05,
+    edgeSoftness: 0.25,
+    outline: 2,
+    outlineColor: '#000000',
+    outlineOpacity: 0.8,
+    shadow: 4,
+    shadowColor: '#000000',
+    shadowOpacity: 0.6,
+    shadowBlur: 3,
+    shadowDistance: 2,
+    shadowAngle: 90,
+    subtitleBottomMargin: 560,
+  };
+  const rejectedStyle = {
+    ...activeStyle,
+    fontFamily: 'Inter',
+    fontSize: 52,
+    bold: false,
+    textTransform: 'none',
+    subtitleBottomMargin: 420,
+  };
+  const editorMetadata = {
+    sourceAlignment: [{
+      id: 'round-source-segment',
+      start: 0,
+      end: 2,
+      text: 'Source caption',
+      words: [{ id: 'round-source-word', text: 'Source', start: 0, end: 1 }],
+    }],
+    targetAlignment: [{
+      id: 'round-target-segment',
+      start: 0,
+      end: 2,
+      text: 'German caption',
+      words: [{ id: 'round-target-word', text: 'German', start: 0, end: 1 }],
+    }],
+    sourceFrameKeyframes: [{
+      id: 'round-source-frame',
+      time: 0,
+      x: 50,
+      y: 50,
+      zoom: 1,
+      backgroundColor: '#111111',
+    }],
+    targetFrameKeyframes: [{
+      id: 'round-target-frame',
+      time: 0,
+      x: 48,
+      y: 52,
+      zoom: 1.08,
+      backgroundColor: '#222222',
+    }],
+    timelineCuts: [{ stableID: 'round-cut', startSec: 2, endSec: 4 }],
+    timelineTrim: { trimStartSec: 1, trimEndSec: 2 },
+    backgroundSettings: {
+      effectReferenceHeight: 1920,
+      solidEnabled: true,
+      solidColor: '#101010',
+      blurEnabled: true,
+      blurStrength: 30,
+      blurScale: 1.3,
+      blurPanX: 0.1,
+      gradientEnabled: false,
+      gradientType: 'linear',
+      gradientColorA: '#000000',
+      gradientColorB: '#1a1a2e',
+      gradientAngle: 180,
+      gradientOpacity: 0.6,
+      featherEnabled: true,
+      featherTop: 20,
+      featherBottom: 20,
+      featherLeft: 10,
+      featherRight: 10,
+      frameGuideColor: '#ffaa19',
+      frameGuideOpacity: 0.5,
+      frameGuideBorderWidth: 2,
+      frameGuideBlur: 0,
+      frameGuideBorderOpacity: 1,
+      featherTopHeight: 100,
+      featherBottomHeight: 100,
+    },
+    sourceLogo: {
+      id: 'round-source-logo',
+      src: '/private/round-source-logo.png',
+      name: 'Round source logo',
+      size: 0.5,
+      opacity: 0.8,
+      position: 'topRight',
+      hidden: false,
+    },
+    targetLogo: {
+      id: 'round-target-logo',
+      src: '/private/round-target-logo.png',
+      name: 'Round target logo',
+      size: 0.45,
+      opacity: 0.7,
+      position: 'topLeft',
+      hidden: false,
+    },
+    sourceTextTracks: [{
+      id: 'round-source-text-track',
+      name: 'Round source text',
+      hidden: false,
+      muted: false,
+      blocks: [{
+        id: 'round-source-text-block',
+        startSec: 1,
+        endSec: 3,
+        text: 'Source overlay',
+        hidden: false,
+      }],
+      style: { fontFamily: 'Inter', fontSize: 40, textColor: '#FFFFFF' },
+    }],
+    targetTextTracks: [{
+      id: 'round-target-text-track',
+      name: 'Round target text',
+      hidden: false,
+      muted: false,
+      blocks: [{
+        id: 'round-target-text-block',
+        startSec: 1,
+        endSec: 3,
+        text: 'Target overlay',
+        hidden: false,
+      }],
+      style: { fontFamily: 'Inter', fontSize: 42, textColor: '#FFFF00' },
+    }],
+    sourceAudioTracks: [{
+      id: 'round-source-audio-track',
+      name: 'Round source audio',
+      src: '/private/round-source-audio.mp3',
+      previewSrc: '/private/round-source-audio-preview.mp3',
+      startSec: 0,
+      trimStartSec: 0,
+      trimEndSec: 10,
+      volume: 0.7,
+      fadeInSec: 1,
+      fadeOutSec: 2,
+      muted: false,
+      assetDuration: 12,
+    }],
+    targetAudioTracks: [{
+      id: 'round-target-audio-track',
+      name: 'Round target audio',
+      src: '/private/round-target-audio.mp3',
+      previewSrc: '/private/round-target-audio-preview.mp3',
+      startSec: 0,
+      trimStartSec: 0,
+      trimEndSec: 8,
+      volume: 0.6,
+      fadeInSec: 1,
+      fadeOutSec: 1,
+      muted: false,
+      assetDuration: 10,
+    }],
+    sourceIntro: {
+      id: 'round-source-intro',
+      src: '/private/round-source-intro.mp4',
+      name: 'Round source intro',
+      duration: 1,
+      x: 0,
+      y: 0,
+      scale: 1,
+      animation: 'fade',
+      hidden: false,
+      speed: 1,
+      transitionSec: 0.2,
+    },
+    targetIntro: {
+      id: 'round-target-intro',
+      src: '/private/round-target-intro.mp4',
+      name: 'Round target intro',
+      duration: 1,
+      x: 0,
+      y: 0,
+      scale: 1,
+      animation: 'fade',
+      hidden: false,
+      speed: 1,
+      transitionSec: 0.2,
+    },
+    sourceOutro: {
+      id: 'round-source-outro',
+      src: '/private/round-source-outro.mp4',
+      name: 'Round source outro',
+      duration: 1,
+      x: 0,
+      y: 0,
+      scale: 1,
+      animation: 'fade',
+      hidden: false,
+      speed: 1,
+      transitionSec: 0.2,
+    },
+    targetOutro: {
+      id: 'round-target-outro',
+      src: '/private/round-target-outro.mp4',
+      name: 'Round target outro',
+      duration: 1,
+      x: 0,
+      y: 0,
+      scale: 1,
+      animation: 'fade',
+      hidden: false,
+      speed: 1,
+      transitionSec: 0.2,
+    },
+  };
+  const activePlan = {
+    stableID: 'round-active-plan',
+    start: '00:12',
+    end: '00:32',
+    title: 'German active title',
+    summary: 'German active summary',
+    hook: 'German active hook',
+    category: 'Teaching',
+    sourceTitle: 'Source active title',
+    sourceSummary: 'Source active summary',
+    sourceHook: 'Source active hook',
+    sourceCategory: 'Source',
+    targetTitle: 'German active title',
+    targetSummary: 'German active summary',
+    targetHook: 'German active hook',
+    targetCategory: 'Teaching',
+    captionText: 'German caption',
+    sourceCaptionText: 'Source caption',
+    targetCaptionText: 'German caption',
+    languageMode: 'bilingual',
+    translationsByLanguage: {
+      german: {
+        language: 'German',
+        title: 'German active title',
+        summary: 'German active summary',
+        hook: 'German active hook',
+        category: 'Teaching',
+        captionText: 'German caption',
+        provider: 'provider-de',
+        updatedAt: '2026-08-26T01:00:00.000Z',
+      },
+      russian: {
+        language: 'Russian',
+        title: 'Russian active title',
+        summary: 'Russian active summary',
+        hook: 'Russian active hook',
+        category: 'Учение',
+        captionText: 'Русские субтитры',
+        provider: 'provider-ru',
+        updatedAt: '2026-08-26T02:00:00.000Z',
+      },
+      french: {
+        language: 'French',
+        title: 'French active title',
+        summary: 'French active summary',
+        hook: 'French active hook',
+        category: 'Enseignement',
+        captionText: 'Sous-titres français',
+        provider: 'provider-fr',
+        updatedAt: '2026-08-26T03:00:00.000Z',
+      },
+    },
+    subtitleStyle: activeStyle,
+    ...editorMetadata,
+  };
+  const rejectedPlan = {
+    stableID: 'round-rejected-plan',
+    start: '01:00',
+    end: '01:20',
+    title: 'Rejected Russian title',
+    summary: 'Rejected Russian summary',
+    hook: 'Rejected Russian hook',
+    category: 'Rejected',
+    languageMode: 'target',
+    translationsByLanguage: {
+      russian: {
+        language: 'Russian',
+        title: 'Rejected Russian title',
+        summary: 'Rejected Russian summary',
+        hook: 'Rejected Russian hook',
+        category: 'Rejected',
+        provider: 'provider-ru',
+        updatedAt: '2026-08-26T04:00:00.000Z',
+      },
+      german: {
+        language: 'German',
+        title: 'Rejected German title',
+        summary: 'Rejected German summary',
+        hook: 'Rejected German hook',
+        category: 'Abgelehnt',
+        provider: 'provider-de',
+        updatedAt: '2026-08-26T05:00:00.000Z',
+      },
+    },
+    subtitleStyle: rejectedStyle,
+    ...editorMetadata,
+    timelineCuts: [{ stableID: 'round-rejected-cut', startSec: 3, endSec: 5 }],
+  };
+  const session = normalizeImportedProjectSession(makeSession({
+    projectId: 'round-source-project',
+    activeTranslationLanguage: 'German',
+    targetLang: 'German',
+    availableTranslationLanguages: ['German', 'Russian'],
+    selectedShortsPlanIndexes: [0],
+    sourceFile: sourcePath,
+    originalVideoPath,
+    wavPath: '/private/derived-round.wav',
+    sourceMediaInfo: {
+      kind: 'video',
+      durationSec: 120,
+      filePath: sourcePath,
+      fileName: 'round-source.mov',
+    },
+    durationSec: 120,
+    chunks: [
+      makeChunk({
+        index: 0,
+        startSec: 0,
+        endSec: 60,
+        durationSec: 60,
+        filePath: chunk0Path,
+        original: 'First round chunk',
+      }),
+      makeChunk({
+        index: 1,
+        startSec: 60,
+        endSec: 120,
+        durationSec: 60,
+        filePath: chunk1Path,
+        original: 'Second round chunk',
+      }),
+    ],
+    shortsPlans: [activePlan],
+    shortsRejectedPlans: [rejectedPlan],
+  }), { projectId: 'round-source-project' });
+  const project = {
+    id: 'round-source-project',
+    name: 'Shorts canonical round trip',
+    session,
+  };
+  const service = makeService(t, storeRoot);
+  const bundlePath = path.join(outDir, 'shorts-canonical.vsbundle');
+  await service.writeProjectBundle(project, bundlePath);
+
+  const { metadata } = readExportedProject(bundlePath);
+  assert.equal(metadata.schemaVersion, 3);
+  assert.deepEqual(
+    metadata.assetManifest.entries.map((entry) => entry.key),
+    ['sourceFile', 'originalVideoPath', 'chunk:0', 'chunk:1'],
+  );
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(metadata.project.session, 'selectedShortsPlanIndexes'),
+    false,
+  );
+
+  const imported = await service.importProjectBundle(bundlePath);
+  assert.equal(imported.id, 'vs-test-001');
+  assert.equal(imported.session.projectId, imported.id);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(imported.session, 'selectedShortsPlanIndexes'),
+    false,
+  );
+  assert.deepEqual(stripBundleManagedPaths(imported.session), stripBundleManagedPaths(session));
+  assert.deepEqual(imported.session.shortsPlans.map((plan) => plan.stableID), ['round-active-plan']);
+  assert.deepEqual(imported.session.shortsRejectedPlans.map((plan) => plan.stableID), ['round-rejected-plan']);
+  assert.deepEqual(imported.session.shortsPlans[0].translationsByLanguage, session.shortsPlans[0].translationsByLanguage);
+  assert.deepEqual(imported.session.shortsRejectedPlans[0].translationsByLanguage, session.shortsRejectedPlans[0].translationsByLanguage);
+  assert.deepEqual(imported.session.shortsPlans[0].subtitleStyle, activeStyle);
+  assert.deepEqual(imported.session.shortsRejectedPlans[0].subtitleStyle, rejectedStyle);
+  assert.deepEqual(imported.session.shortsPlans[0].sourceAlignment, activePlan.sourceAlignment);
+  assert.deepEqual(imported.session.shortsPlans[0].targetFrameKeyframes, activePlan.targetFrameKeyframes);
+  assert.deepEqual(imported.session.shortsPlans[0].backgroundSettings, activePlan.backgroundSettings);
+  assert.deepEqual(imported.session.shortsPlans[0].sourceLogo, activePlan.sourceLogo);
+  assert.deepEqual(imported.session.shortsPlans[0].sourceAudioTracks, activePlan.sourceAudioTracks);
+  assert.equal(imported.session.shortsPlans[0].translationsByLanguage.german.provider, 'provider-de');
+  assert.equal(imported.session.shortsPlans[0].translationsByLanguage.french.updatedAt, '2026-08-26T03:00:00.000Z');
   assertCleanStore(storeRoot, ['vs-test-001']);
 });
 

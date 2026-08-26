@@ -36,7 +36,7 @@ import { AssistantSidebar } from './components/AssistantSidebar';
 import { assistantStore } from './stores/assistantStore';
 import { resolveShortsAudioPath } from './lib/shorts-media-source';
 import { buildShortsCuesForClip, buildShortsTranscriptText } from './lib/shorts-transcript';
-import { appendNonOverlappingShortsPlans, buildShortsPrompt, parseShortsPlanResponse, parseTimestampToSeconds, replaceShortsPlanRange, secondsToShortsTimestamp, ShortsClipPlan, ShortsPlanLanguageMode } from './lib/shorts-reels';
+import { appendNonOverlappingShortsPlans, attachShortsPlanActiveTranslation, buildShortsPrompt, collectAvailableShortsTranslationLanguages, parseShortsMetadataResponse, parseShortsPlanResponse, parseShortsTimestamp, projectShortsPlanForLanguage, replaceShortsPlanRangeChecked, selectShortsPlanProjection, selectShortsSourceProjection, selectShortsTargetProjection, shortsAlignmentMatchesCaption, validateShortsExportSelection, validateShortsPlan, validateShortsPlanSettings, resolveShortsSourceDuration, applyShortsRejectedLedgerPolicy, removeShortsPlanToRejectedLedger, restoreShortsPlanFromRejectedLedger, shortsPlanExportLanguages, shortsSelectionKey, sortShortsSelectionKeys, updateShortsPlanTargetMetadata, upsertShortsPlanTranslation, ShortsClipPlan, NormalizedShortsClipPlan, ShortsPlanLanguageMode, ShortsSelectionKey, ShortsMutationResult, ShortsValidationError } from './lib/shorts-reels';
 import { renderPrompt } from './lib/prompt-presets';
 import { toggleSync, copyMotionFrom, findLinkedPartnerIndex, resolveClipLanguageRole, buildSyncPatch } from './lib/ClipSyncManager';
 import {
@@ -45,6 +45,7 @@ import {
   buildVerticalVideoFilterGraph,
   extensionForShortsFormat,
   fpsForShortsFrameRate,
+  resolveShortsSubtitleStyle,
   verticalResolutionForPreset,
 } from './lib/shorts-render';
 import { buildShortsRenderProject } from './render-engine/RenderPipeline';
@@ -69,13 +70,12 @@ const MCP_TRANSCRIPT_FORMATS: Record<string, OutputFormat> = {
   srt: 'SRT',
   vtt: 'VTT',
 };
-
 interface Session extends PreparedMediaSession {
   projectId?: string;
   createdAt?: string;
   updatedAt?: string;
-  shortsPlans?: ShortsClipPlan[];
-  selectedShortsPlanIndexes?: number[];
+  shortsPlans: NormalizedShortsClipPlan[];
+  shortsRejectedPlans: NormalizedShortsClipPlan[];
 }
 type LocalAsrSegment = { t0?: number; t1?: number; text?: string } | [number, number, string];
 
@@ -149,6 +149,34 @@ const DEFAULT_SHORTS_SETTINGS: ShortsSettings = {
   videoQuality: 'balanced',
   frameRate: 'source',
 };
+
+function shortsSubtitleStyleFromSettings(settings: ShortsSettings) {
+  return resolveShortsSubtitleStyle({
+    fontFamily: settings.subtitleFontFamily,
+    fontSize: settings.subtitleFontSize,
+    bold: settings.subtitleBold,
+    textTransform: settings.subtitleTextTransform,
+    textColor: settings.subtitleTextColor,
+    boxColor: settings.subtitleBoxColor,
+    boxOpacity: settings.subtitleBoxOpacity,
+    boxWidth: settings.subtitleBoxWidth,
+    boxHeight: settings.subtitleBoxHeight,
+    edgeBlur: settings.subtitleBoxBlur,
+    letterSpacing: settings.subtitleLetterSpacing,
+    lineSpacing: settings.subtitleLineSpacing,
+    edgeSoftness: settings.subtitleEdgeSoftness,
+    outline: settings.subtitleOutline ?? 2,
+    outlineColor: settings.subtitleOutlineColor ?? '#000000',
+    outlineOpacity: settings.subtitleOutlineOpacity ?? 0.58,
+    shadow: settings.subtitleShadowDistance ?? settings.subtitleShadow ?? 6,
+    shadowColor: settings.subtitleShadowColor ?? '#000000',
+    shadowOpacity: settings.subtitleShadowOpacity ?? 0.72,
+    shadowBlur: settings.subtitleShadowBlur ?? 3,
+    shadowDistance: settings.subtitleShadowDistance ?? 6,
+    shadowAngle: settings.subtitleShadowAngle ?? 90,
+    subtitleBottomMargin: settings.subtitleBottomMargin,
+  });
+}
 
 const SHORTS_DEFAULTS_KEY = 'vs_shorts_defaults_v1';
 
@@ -423,12 +451,13 @@ export default function App() {
   const [shortsBusy, setShortsBusy] = useState(false);
   const [shortsBusyLabel, setShortsBusyLabel] = useState('');
   const [shortsExportProgress, setShortsExportProgress] = useState<ShortsExportProgress | null>(null);
-  const [selectedShortsPlanIndex, setSelectedShortsPlanIndex] = useState<number | null>(null);
-  const [selectedShortsPlanIndexes, setSelectedShortsPlanIndexes] = useState<number[]>([]);
+  const [selectedShortsPlanKeys, setSelectedShortsPlanKeys] = useState<Set<ShortsSelectionKey>>(() => new Set());
+  const [focusedShortsPlanID, setFocusedShortsPlanID] = useState<string | null>(null);
   const [shortsVideoSourceInfo, setShortsVideoSourceInfo] = useState<{ width: number; height: number; durationSec: number; fps?: number } | null>(null);
   const [glossaryDraft, setGlossaryDraft] = useState<GlossaryDraft | null>(null);
   const [addLanguageChoice, setAddLanguageChoice] = useState('');
   const [isAddingTranslation, setIsAddingTranslation] = useState(false);
+  const [isTranslatingShortsMetadata, setIsTranslatingShortsMetadata] = useState(false);
   const [editingProvider, setEditingProvider] = useState<string>(() => loadShortsDefaults().planningProvider || settings.translationProvider);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const navigation = useNavigationStore();
@@ -514,8 +543,8 @@ export default function App() {
   // revisions keep identity and therefore the user's in-progress choice.
   useEffect(() => {
     setShortsPlans(session?.shortsPlans ?? []);
-    setSelectedShortsPlanIndex(null);
-    setSelectedShortsPlanIndexes(session?.selectedShortsPlanIndexes ?? []);
+    setFocusedShortsPlanID(null);
+    setSelectedShortsPlanKeys(new Set());
     setShortsVideoSourceInfo(null);
     setAddLanguageChoice('');
   }, [session?.projectId, session?.sourceFile]);
@@ -550,12 +579,15 @@ export default function App() {
 
   useEffect(() => {
     if (!session) return;
-    setSession((prev) => prev ? {
-      ...prev,
-      shortsPlans,
-      selectedShortsPlanIndexes,
-    } : prev);
-  }, [shortsPlans, selectedShortsPlanIndexes]);
+    setSession((prev) => {
+      if (!prev) return prev;
+      return applyShortsRejectedLedgerPolicy({
+        ...prev,
+        shortsPlans,
+        shortsRejectedPlans: prev.shortsRejectedPlans,
+      }) as unknown as Session;
+    });
+  }, [shortsPlans]);
 
   useEffect(() => { applyTheme(settings.theme, settings.fontSize, settings.fontScale, settings.fontFamily); }, [settings.theme, settings.fontSize, settings.fontScale, settings.fontFamily]);
 
@@ -642,18 +674,19 @@ export default function App() {
 
   useEffect(() => {
     if (!session || !window.electronAPI?.projectSave || (screen !== 'review' && screen !== 'export')) return;
-    const snapshot = JSON.stringify({ screen, session });
+    const canonicalSession = applyShortsRejectedLedgerPolicy(session);
+    const snapshot = JSON.stringify({ screen, session: canonicalSession });
     if (snapshot === autosaveSnapshotRef.current) return;
     if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current);
     autosaveTimerRef.current = window.setTimeout(async () => {
-      const currentSnapshot = JSON.stringify({ screen, session });
+      const currentSnapshot = JSON.stringify({ screen, session: canonicalSession });
       autosaveSnapshotRef.current = currentSnapshot;
       const result = await window.electronAPI?.projectSave({
-        id: session.projectId,
-        name: session.sourceFileName.replace(/\.[^/.]+$/, '') || 'Untitled Project',
-        createdAt: session.createdAt,
+        id: canonicalSession.projectId,
+        name: canonicalSession.sourceFileName.replace(/\.[^/.]+$/, '') || 'Untitled Project',
+        createdAt: canonicalSession.createdAt,
         screen,
-        session,
+        session: canonicalSession,
       });
       if (result?.ok && result.project?.session) {
         setSession((prev) => {
@@ -1458,10 +1491,11 @@ export default function App() {
           },
         },
       );
-      // Hydration: canonical normalization (active/available languages from
-      // the real config target) plus a fresh generation epoch, so the first
-      // transcription starts canonical.
-      const adopted = review.adopt(prepared);
+      const adopted = applyShortsRejectedLedgerPolicy(review.adopt({
+        ...prepared,
+        shortsPlans: [],
+        shortsRejectedPlans: [],
+      }) as Session);
       const begun = review.beginTranscription(adopted, 0, cfg, { retry: false });
       if (!begun) return;
       setSession(begun.session);
@@ -1641,7 +1675,10 @@ export default function App() {
     try {
       // Register and select immediately; the projection switches synchronously
       // while every prior language stays archived.
-      const registered = review.addLanguage(currentSession, language);
+      const registered = review.addLanguage({
+        ...currentSession,
+        availableTranslationLanguages: collectAvailableShortsTranslationLanguages(currentSession),
+      }, language);
       if (!registered) return;
       setSession(registered);
       const sweepConfig: SessionConfig = { ...registered.config, targetLang: language, translationProvider: providerId };
@@ -1708,7 +1745,7 @@ export default function App() {
       : clampChunkIndex(loadedProjectSession.currentIndex, loadedProjectSession.chunks.length);
     // Project open activates a fresh generation epoch over the normalized
     // session (legacy selected stripped, variants re-keyed and projected).
-    const loaded = review.adopt({ ...loadedProjectSession, currentIndex: nextIndex });
+    const loaded = applyShortsRejectedLedgerPolicy(review.adopt({ ...loadedProjectSession, currentIndex: nextIndex }) as Session);
     setSourceFile(loaded.sourceFile);
     setSourceFileName(loaded.sourceFileName);
     setSession(loaded);
@@ -1766,7 +1803,7 @@ export default function App() {
       return;
     }
     await refreshProjects();
-    const loaded = review.adopt(result.project.session as Session);
+    const loaded = applyShortsRejectedLedgerPolicy(review.adopt(result.project.session as Session));
     setSourceFile(loaded.sourceFile);
     setSourceFileName(loaded.sourceFileName);
     setSession(loaded);
@@ -1946,6 +1983,11 @@ export default function App() {
 
   const handleGenerateShortsPlan = useCallback(async (mode: ShortsPlanLanguageMode = 'target') => {
     if (!session) return;
+    const settingsValidation = validateShortsPlanSettings(shortsSettings.minDurationSec, shortsSettings.maxDurationSec);
+    if (!settingsValidation.ok) {
+      alert(settingsValidation.reason || 'Invalid Shorts/Reels duration settings.');
+      return;
+    }
     setShortsBusy(true);
     setShortsBusyLabel('Planning clips...');
     try {
@@ -1964,58 +2006,177 @@ export default function App() {
       const prompt = buildShortsPrompt({
         transcript,
         count: shortsSettings.count,
-        minDurationSec: shortsSettings.minDurationSec,
-        maxDurationSec: shortsSettings.maxDurationSec,
+        minDurationSec: settingsValidation.minDurationSec,
+        maxDurationSec: settingsValidation.maxDurationSec,
         outputLanguage: safeMode === 'source' || session.targetLang === 'same' ? 'English' : session.targetLang,
         speakerName,
         mode: safeMode,
-        existingClips: shortsPlans,
+        existingClips: [...shortsPlans, ...(session.shortsRejectedPlans ?? [])],
         promptPresets: settingsRef.current.promptPresets,
       });
       const response = await runShortsPrompt(prompt);
       const incomingPlans = parseShortsPlanResponse(response)
-        .map((plan) => personalizeShortsPlanSpeaker({ ...plan, languageMode: safeMode }, speakerNames.source, speakerNames.target));
-      const merged = appendNonOverlappingShortsPlans(shortsPlans, incomingPlans);
-      if (merged.addedIndexes.length === 0 && incomingPlans.length > 0) {
-        alert('Shorts/Reels planning returned only clips that overlap existing clips. Existing clips were preserved; try running again or delete a clip manually if you want to replace that range.');
+        .map((plan) => {
+          const generated = personalizeShortsPlanSpeaker(
+            { ...plan, languageMode: safeMode, subtitleStyle: shortsSubtitleStyleFromSettings(shortsSettings) },
+            speakerNames.source,
+            speakerNames.target,
+          );
+          return attachShortsPlanActiveTranslation(
+            generated,
+            session.activeTranslationLanguage ?? session.targetLang,
+          );
+        });
+      const canonicalIncoming = applyShortsRejectedLedgerPolicy({
+        ...session,
+        shortsPlans: incomingPlans,
+        shortsRejectedPlans: session.shortsRejectedPlans,
+      }).shortsPlans;
+      const merged = appendNonOverlappingShortsPlans(shortsPlans, canonicalIncoming, 1, {
+        minDurationSec: settingsValidation.minDurationSec,
+        maxDurationSec: settingsValidation.maxDurationSec,
+        session,
+        activeLanguage: session.activeTranslationLanguage ?? session.targetLang,
+        rejectedPlans: session.shortsRejectedPlans,
+      });
+      if (merged.addedIndexes.length === 0 && canonicalIncoming.length > 0) {
+        alert('Shorts/Reels planning returned no valid clips outside active and rejected exclusions. Existing clips were preserved; try running again or delete a clip manually if you want to replace that range.');
         return;
       }
-      setShortsPlans(merged.plans);
-      setSelectedShortsPlanIndex(merged.addedIndexes[0] ?? (selectedShortsPlanIndex ?? (merged.plans.length > 0 ? 0 : null)));
-      setSelectedShortsPlanIndexes(Array.from(new Set([
-        ...selectedShortsPlanIndexes.filter((index) => index >= 0 && index < shortsPlans.length),
-        ...merged.addedIndexes,
-      ])));
+      if (merged.addedIndexes.length === 0) return;
+      const canonicalMerged = applyShortsRejectedLedgerPolicy({
+        ...session,
+        shortsPlans: merged.plans,
+        shortsRejectedPlans: session.shortsRejectedPlans,
+      });
+      setSession(canonicalMerged as Session);
+      setShortsPlans(canonicalMerged.shortsPlans);
+      const addedPlanIDs = merged.addedIndexes
+        .map((index) => merged.plans[index]?.stableID)
+        .filter((stableID): stableID is string => Boolean(stableID));
+      setFocusedShortsPlanID(addedPlanIDs[0] ?? focusedShortsPlanID ?? canonicalMerged.shortsPlans[0]?.stableID ?? null);
+      setSelectedShortsPlanKeys((previous) => {
+        const validIDs = new Set(canonicalMerged.shortsPlans.map((plan: ShortsClipPlan) => plan.stableID));
+        const next = new Set(Array.from(previous).filter((key) => validIDs.has(key.slice(0, key.lastIndexOf(':')))));
+        for (const stableID of addedPlanIDs) {
+          const addedPlan = canonicalMerged.shortsPlans.find((plan: ShortsClipPlan) => plan.stableID === stableID);
+          if (!addedPlan) continue;
+          for (const language of shortsPlanExportLanguages(addedPlan)) {
+            next.add(shortsSelectionKey(stableID, language));
+          }
+        }
+        return next;
+      });
     } catch (error) {
       console.error('Shorts/Reels planning failed.', error);
       alert(`Shorts/Reels planning failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setShortsBusy(false);
-      setShortsBusyLabel('');
     }
-  }, [buildShortsTranscript, getShortsSpeakerNames, runShortsPrompt, selectedShortsPlanIndex, selectedShortsPlanIndexes, session, shortsPlans, shortsSettings.count, shortsSettings.maxDurationSec, shortsSettings.minDurationSec]);
+  }, [buildShortsTranscript, focusedShortsPlanID, getShortsSpeakerNames, runShortsPrompt, session, shortsPlans, shortsSettings.count, shortsSettings.maxDurationSec, shortsSettings.minDurationSec]);
+
+  const handleTranslateShortsMetadata = useCallback(async () => {
+    const currentSession = sessionRef.current;
+    const activeLanguage = currentSession?.activeTranslationLanguage;
+    if (!currentSession || !activeLanguage || activeLanguage.toLowerCase() === 'same' || isTranslatingShortsMetadata) return;
+    const selectedIDs = new Set(
+      Array.from(selectedShortsPlanKeys).map((key) => key.slice(0, key.lastIndexOf(':'))),
+    );
+    const sourcePlans = selectedIDs.size > 0
+      ? currentSession.shortsPlans.filter((plan) => plan.stableID && selectedIDs.has(plan.stableID))
+      : currentSession.shortsPlans;
+    if (sourcePlans.length === 0) return;
+
+    setIsTranslatingShortsMetadata(true);
+    const failures: string[] = [];
+    try {
+      for (const plan of sourcePlans) {
+        try {
+          const source = selectShortsSourceProjection(plan);
+          const prompt = [
+            `Translate this Shorts/Reels metadata into ${activeLanguage}.`,
+            'Return only one JSON object with string fields title, summary, hook, category, and captionText.',
+            JSON.stringify({
+              title: source.title,
+              summary: source.summary,
+              hook: source.hook,
+              category: source.category,
+              captionText: source.captionText,
+            }),
+          ].join('\n');
+          const translated = parseShortsMetadataResponse(await runShortsPrompt(prompt));
+          if (!translated.title.trim() || !translated.summary.trim() || !translated.hook.trim()) {
+            throw new Error('The provider returned incomplete Shorts metadata.');
+          }
+          const latest = sessionRef.current;
+          if (!latest) break;
+          const provider = editingProvider || latest.config.translationProvider || settingsRef.current.translationProvider;
+          const nextPlans = latest.shortsPlans.map((candidate) => candidate.stableID === plan.stableID
+            ? upsertShortsPlanTranslation(candidate, activeLanguage, {
+                ...translated,
+                provider,
+                updatedAt: new Date().toISOString(),
+              })
+            : candidate);
+          const nextSession = applyShortsRejectedLedgerPolicy({
+            ...latest,
+            shortsPlans: nextPlans,
+            shortsRejectedPlans: latest.shortsRejectedPlans,
+          }) as Session;
+          setSession(nextSession);
+          setShortsPlans(nextSession.shortsPlans);
+          if (window.electronAPI?.projectSave) {
+            await window.electronAPI.projectSave({
+              id: nextSession.projectId,
+              name: nextSession.sourceFileName.replace(/\.[^/.]+$/, '') || 'Untitled Project',
+              createdAt: nextSession.createdAt,
+              screen,
+              session: nextSession,
+            });
+          }
+        } catch (error) {
+          failures.push(`${plan.stableID || plan.start}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      if (failures.length > 0) {
+        alert(`Some Shorts metadata translations failed:\n${failures.join('\n')}`);
+      }
+    } finally {
+      setIsTranslatingShortsMetadata(false);
+    }
+  }, [editingProvider, isTranslatingShortsMetadata, runShortsPrompt, screen, selectedShortsPlanKeys]);
 
   // ── Replace Clip: update timestamps and clear stale alignments ─────────
-  const handleReplacePlan = useCallback((index: number, startTimestamp: string, endTimestamp: string) => {
-    setShortsPlans((prev) => prev.map((plan, i) => {
-      if (i !== index) return plan;
-      return replaceShortsPlanRange(plan, startTimestamp, endTimestamp);
-    }));
-  }, []);
+  const handleReplacePlan = useCallback((stableID: string, startTimestamp: string, endTimestamp: string): ShortsMutationResult<ShortsClipPlan> | undefined => {
+    const currentSession = sessionRef.current;
+    const plan = shortsPlans.find((item) => item.stableID === stableID);
+    if (!currentSession || !plan) return undefined;
+    const result = replaceShortsPlanRangeChecked(plan, startTimestamp, endTimestamp, {
+      session: currentSession,
+      activeLanguage: currentSession.activeTranslationLanguage ?? currentSession.targetLang,
+      activePlans: shortsPlans,
+      rejectedPlans: currentSession.shortsRejectedPlans,
+    });
+    if (result.success) {
+      setShortsPlans((prev) => prev.map((item) => item.stableID === stableID ? result.value : item));
+    }
+    return result;
+  }, [shortsPlans]);
 
   // ── Toggle sync between linked source↔target clips ─────────────────────
-  const handleToggleClipSync = useCallback((index: number) => {
+  const handleToggleClipSync = useCallback((stableID: string) => {
     setShortsPlans((prev) => {
-      const plan = prev[index];
-      if (!plan) return prev;
+      const index = prev.findIndex((plan) => plan.stableID === stableID);
+      if (index < 0) return prev;
       return toggleSync(prev, index);
     });
   }, []);
 
   // ── Import motion keyframes from linked partner ────────────────────────
-  const handleImportMotion = useCallback((index: number) => {
+  const handleImportMotion = useCallback((stableID: string) => {
     setShortsPlans((prev) => {
-      const plan = prev[index];
+      const index = prev.findIndex((plan) => plan.stableID === stableID);
+      const plan = index < 0 ? undefined : prev[index];
       if (!plan) return prev;
       const partnerIdx = findLinkedPartnerIndex(prev, index);
       if (partnerIdx < 0) {
@@ -2026,7 +2187,52 @@ export default function App() {
       const targetRole = resolveClipLanguageRole(prev, index);
       const sourceRole = resolveClipLanguageRole(prev, partnerIdx);
       const patch = copyMotionFrom(partner, sourceRole, targetRole);
-      return prev.map((p, i) => i === index ? { ...p, ...patch } : p);
+      return prev.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item);
+    });
+  }, []);
+
+  const handleRemoveShortsPlan = useCallback((stableID: string) => {
+    const currentSession = sessionRef.current;
+    if (!currentSession) return;
+    const result = removeShortsPlanToRejectedLedger({
+      ...currentSession,
+      shortsPlans,
+    }, stableID);
+    if (!result.success) {
+      alert(`${result.code}: ${result.message}`);
+      return;
+    }
+    setSession(result.session as unknown as Session);
+    setShortsPlans(result.session.shortsPlans);
+    setSelectedShortsPlanKeys((previous) => new Set(
+      Array.from(previous).filter((key) => key.slice(0, key.lastIndexOf(':')).toLowerCase() !== stableID.toLowerCase())
+    ));
+    setFocusedShortsPlanID((previous) => previous?.toLowerCase() === stableID.toLowerCase() ? null : previous);
+  }, [shortsPlans]);
+
+  const handleRestoreShortsPlan = useCallback((stableID: string) => {
+    const currentSession = sessionRef.current;
+    if (!currentSession) return;
+    const result = restoreShortsPlanFromRejectedLedger(currentSession, stableID, {
+      session: currentSession,
+      activeLanguage: currentSession.activeTranslationLanguage ?? currentSession.targetLang,
+      sourceDurationSec: resolveShortsSourceDuration(currentSession),
+    });
+    if (!result.success) {
+      alert(`${result.code}: ${result.message}`);
+      return;
+    }
+    setSession(result.session as unknown as Session);
+    setShortsPlans(result.session.shortsPlans);
+    if (result.plan.stableID) setFocusedShortsPlanID(result.plan.stableID);
+    setSelectedShortsPlanKeys((previous) => {
+      const next = new Set(previous);
+      if (result.plan.stableID) {
+        for (const language of shortsPlanExportLanguages(result.plan)) {
+          next.add(shortsSelectionKey(result.plan.stableID, language));
+        }
+      }
+      return next;
     });
   }, []);
 
@@ -2069,22 +2275,26 @@ export default function App() {
 
   const buildShortsCues = useCallback((plan: ShortsClipPlan, languageOverride?: 'source' | 'target') => {
     if (!session) return [];
-    const clipStartSec = parseTimestampToSeconds(plan.start);
-    const clipEndSec = parseTimestampToSeconds(plan.end);
-    const manualSegments = languageOverride === 'source'
-      ? plan.sourceAlignment
-      : languageOverride === 'target'
-        ? plan.targetAlignment
-        : undefined;
-    if (manualSegments?.length) {
+    const parsedStart = parseShortsTimestamp(plan.start);
+    const parsedEnd = parseShortsTimestamp(plan.end);
+    if (!parsedStart.ok || !parsedEnd.ok || parsedStart.seconds === null || parsedEnd.seconds === null) return [];
+    const clipStartSec = parsedStart.seconds;
+    const clipEndSec = parsedEnd.seconds;
+    const activeLanguage = session.activeTranslationLanguage;
+    const mode = languageOverride || (plan.languageMode === 'source' ? 'source' : 'target');
+    const projection = selectShortsPlanProjection(plan, mode, activeLanguage);
+    if (mode === 'target' && (plan.languageMode === 'target' || plan.languageMode === 'bilingual') && !projection.available) {
+      return [];
+    }
+    const manualSegments = mode === 'source' ? plan.sourceAlignment : plan.targetAlignment;
+    if (manualSegments?.length && (
+      mode === 'source'
+      || shortsAlignmentMatchesCaption(manualSegments, projection.captionText)
+    )) {
       return alignedSegmentsToCues(manualSegments);
     }
-    const customCaptionText = languageOverride === 'source'
-      ? plan.sourceCaptionText
-      : languageOverride === 'target'
-        ? plan.targetCaptionText || plan.captionText
-        : plan.captionText;
-    if (customCaptionText?.trim()) {
+    const customCaptionText = projection.captionText;
+    if (customCaptionText.trim()) {
       const captionText = customCaptionText.trim();
       const customLines = parseKaraokeLines(customCaptionText, clipStartSec, clipEndSec)
         .filter((line) => line.kind === 'timed')
@@ -2101,21 +2311,25 @@ export default function App() {
         text: captionText,
       }].flatMap(splitShortsCue);
     }
-    const mode = languageOverride || (plan.languageMode === 'source' ? 'source' : 'target');
     const lines = buildShortsCuesForClip(session.chunks, mode, clipStartSec, clipEndSec);
 
     if (lines.length > 0) return lines.flatMap(splitShortsCue);
     return [{
       startSec: 0,
       endSec: Math.max(1, clipEndSec - clipStartSec),
-      text: plan.hook || plan.title,
+      text: projection.hook || projection.title,
     }].flatMap(splitShortsCue);
   }, [session, splitShortsCue]);
 
   const buildShortsDetailText = useCallback((plan: ShortsClipPlan) => {
     if (!session) return { source: '', target: '' };
-    const clipStartSec = parseTimestampToSeconds(plan.start);
-    const clipEndSec = parseTimestampToSeconds(plan.end);
+    const parsedStart = parseShortsTimestamp(plan.start);
+    const parsedEnd = parseShortsTimestamp(plan.end);
+    if (!parsedStart.ok || !parsedEnd.ok || parsedStart.seconds === null || parsedEnd.seconds === null) {
+      return { source: '', target: '' };
+    }
+    const clipStartSec = parsedStart.seconds;
+    const clipEndSec = parsedEnd.seconds;
     const collect = (mode: 'source' | 'target') => buildShortsCuesForClip(session.chunks, mode, clipStartSec, clipEndSec)
       .map((cue) => `[${formatPlaybackClock(clipStartSec + cue.startSec)}] ${cue.text}`)
       .join('\n\n');
@@ -2127,37 +2341,15 @@ export default function App() {
 
   const writeShortsAssFile = useCallback(async (plan: ShortsClipPlan, outputSize: { width: number; height: number }, language: 'source' | 'target') => {
     if (!window.electronAPI?.writeTempTextFile) throw new Error('Could not write subtitle file in this runtime.');
+    const style = resolveShortsSubtitleStyle(plan.subtitleStyle);
     const ass = buildShortsAssSubtitle({
       cues: buildShortsCues(plan, language),
       width: outputSize.width,
       height: outputSize.height,
-      bottomMargin: shortsSettings.subtitleBottomMargin,
+      bottomMargin: style.subtitleBottomMargin ?? shortsSettings.subtitleBottomMargin,
       maxLines: shortsSettings.subtitleUseLinesPerCue ? subtitleMaxLines : 8,
       maxCharsPerLine: shortsSettings.subtitleUseCharsPerLine ? subtitleMaxCharsPerLine : undefined,
-      style: {
-        fontFamily: shortsSettings.subtitleFontFamily,
-        fontSize: shortsSettings.subtitleFontSize,
-        bold: shortsSettings.subtitleBold,
-        textTransform: shortsSettings.subtitleTextTransform,
-        textColor: shortsSettings.subtitleTextColor,
-        boxColor: shortsSettings.subtitleBoxColor,
-        boxOpacity: shortsSettings.subtitleBoxOpacity,
-        boxWidth: shortsSettings.subtitleBoxWidth,
-        boxHeight: shortsSettings.subtitleBoxHeight,
-        edgeBlur: shortsSettings.subtitleBoxBlur,
-        letterSpacing: shortsSettings.subtitleLetterSpacing,
-        lineSpacing: shortsSettings.subtitleLineSpacing,
-        edgeSoftness: shortsSettings.subtitleEdgeSoftness,
-        outline: shortsSettings.subtitleOutline ?? 2,
-        outlineColor: shortsSettings.subtitleOutlineColor ?? '#000000',
-        outlineOpacity: shortsSettings.subtitleOutlineOpacity ?? 0.58,
-        shadow: shortsSettings.subtitleShadowDistance ?? shortsSettings.subtitleShadow ?? 6,
-        shadowColor: shortsSettings.subtitleShadowColor ?? '#000000',
-        shadowOpacity: shortsSettings.subtitleShadowOpacity ?? 0.72,
-        shadowBlur: shortsSettings.subtitleShadowBlur ?? 3,
-        shadowDistance: shortsSettings.subtitleShadowDistance ?? 6,
-        shadowAngle: shortsSettings.subtitleShadowAngle ?? 90,
-      },
+      style,
     });
     const result = await window.electronAPI.writeTempTextFile({
       fileName: `shorts_${Date.now()}.ass`,
@@ -2167,20 +2359,19 @@ export default function App() {
     return result.filePath;
   }, [buildShortsCues, shortsSettings, subtitleMaxCharsPerLine, subtitleMaxLines]);
 
-  const shortsExportLanguagesForPlan = (plan: ShortsClipPlan): ('source' | 'target')[] => {
-    if (plan.languageMode === 'bilingual') return ['source', 'target'];
-    if (plan.languageMode === 'source') return ['source'];
-    return ['target'];
-  };
 
   const shortsTitleForLanguage = (plan: ShortsClipPlan, language: 'source' | 'target'): string => {
-    if (language === 'source') return plan.sourceTitle || plan.title;
-    return plan.targetTitle || plan.title;
+    const projection = language === 'source'
+      ? selectShortsSourceProjection(plan)
+      : selectShortsTargetProjection(plan, session?.activeTranslationLanguage);
+    return projection.title;
   };
-
   const handleExportShortsIdeas = useCallback(async () => {
     if (!session || !window.electronAPI || shortsPlans.length === 0) return;
-    const selected = selectedShortsPlanIndexes.map((index) => shortsPlans[index]).filter(Boolean);
+    const selected = shortsPlans.filter((plan) => {
+      if (!plan.stableID) return false;
+      return shortsPlanExportLanguages(plan).some((language) => selectedShortsPlanKeys.has(shortsSelectionKey(plan.stableID!, language)));
+    });
     const ideas = selected.length > 0 ? selected : shortsPlans;
     const filePath = await window.electronAPI.saveFile({
       defaultName: `${session.sourceFileName.replace(/\.[^/.]+$/, '')}_shorts_ideas.json`,
@@ -2191,18 +2382,26 @@ export default function App() {
     });
     if (!filePath) return;
     const isText = filePath.toLowerCase().endsWith('.txt');
+    const projectedIdeas = ideas.map((plan) => {
+      const language = plan.stableID && selectedShortsPlanKeys.has(shortsSelectionKey(plan.stableID, 'target'))
+        ? 'target'
+        : plan.stableID && selectedShortsPlanKeys.has(shortsSelectionKey(plan.stableID, 'source'))
+          ? 'source'
+          : plan.languageMode === 'source' ? 'source' : 'target';
+      return projectShortsPlanForLanguage(plan, language, session.activeTranslationLanguage);
+    });
     const content = isText
-      ? ideas.map((plan, index) => [
+      ? projectedIdeas.map((plan, index) => [
           `${index + 1}. ${plan.title}`,
           `${plan.start} -> ${plan.end}`,
           plan.category ? `Category: ${plan.category}` : '',
           plan.summary,
           plan.hook ? `Hook: ${plan.hook}` : '',
         ].filter(Boolean).join('\n')).join('\n\n')
-      : JSON.stringify({ format: 'vaniscript-shorts-ideas-v1', exportedAt: new Date().toISOString(), source: session.sourceFileName, clips: ideas }, null, 2);
+      : JSON.stringify({ format: 'vaniscript-shorts-ideas-v1', exportedAt: new Date().toISOString(), source: session.sourceFileName, clips: projectedIdeas }, null, 2);
     const result = await window.electronAPI.writeFile({ filePath, content });
     if (!result.success) alert(result.error || 'Could not export Shorts/Reels ideas.');
-  }, [selectedShortsPlanIndexes, session, shortsPlans]);
+  }, [selectedShortsPlanKeys, session, shortsPlans]);
 
   const handleCancelShortsExport = useCallback(async () => {
     shortsExportCancelRef.current = true;
@@ -2212,23 +2411,61 @@ export default function App() {
       await window.electronAPI.hyperframesCancelExport({ jobId }).catch(() => undefined);
     }
   }, []);
-
   const handleExportSelectedShortsVideos = useCallback(async () => {
     if (!session?.originalVideoPath || !window.electronAPI) return;
-    const selected = selectedShortsPlanIndexes.map((index) => ({ index, plan: shortsPlans[index] })).filter((item) => item.plan);
-    const jobs = selected.flatMap(({ index, plan }) => shortsExportLanguagesForPlan(plan).map((language) => ({ index, plan, language })));
+    const jobs = sortShortsSelectionKeys(selectedShortsPlanKeys).flatMap((key) => {
+      const separator = key.lastIndexOf(':');
+      const stableID = key.slice(0, separator);
+      const language = key.slice(separator + 1) as 'source' | 'target';
+      const plan = shortsPlans.find((item) => item.stableID === stableID);
+      if (!plan || !shortsPlanExportLanguages(plan).includes(language)) return [];
+      return [{ stableID, plan, language }];
+    });
     if (jobs.length === 0) return;
-    setShortsBusy(true);
-    setShortsBusyLabel(`Exporting ${jobs.length} video${jobs.length === 1 ? '' : 's'}...`);
+    const exportSourceInfo = shortsVideoSourceInfo ?? { width: 1920, height: 1080, durationSec: 0, fps: undefined as number | undefined };
+    let probedSourceInfo = exportSourceInfo;
+    let exportStarted = false;
     const exported: string[] = [];
     let outputDir = '';
     let currentOutputPath = '';
     const exportJobId = `shorts_export_${Date.now()}`;
-    shortsExportCancelRef.current = false;
-    shortsExportJobIdRef.current = exportJobId;
-    shortsExportCompletedRef.current = 0;
-    shortsExportTotalRef.current = jobs.length;
     try {
+      if (window.electronAPI.ffmpegGetVideoInfo) {
+        const probedInfo = await window.electronAPI.ffmpegGetVideoInfo({ inputPath: session.originalVideoPath });
+        if (probedInfo.success && probedInfo.width && probedInfo.height) {
+          probedSourceInfo = {
+            width: probedInfo.width,
+            height: probedInfo.height,
+            durationSec: probedInfo.durationSec || 0,
+            fps: probedInfo.fps,
+          };
+        } else if (shortsSettings.resolutionPreset === 'source' || shortsSettings.frameRate === 'source') {
+          throw new Error(probedInfo.error || 'Could not read source video resolution/FPS for source-based export.');
+        }
+      }
+      const preflight = validateShortsExportSelection(
+        jobs.map(({ plan, language }) => ({ plan, language })),
+        {
+          session,
+          sourceDurationSec: resolveShortsSourceDuration(session) ?? probedSourceInfo.durationSec,
+          minDurationSec: 10,
+          maxDurationSec: 300,
+          activeLanguage: session.activeTranslationLanguage ?? session.targetLang,
+        }
+      );
+      if (!preflight.valid) {
+        const failed = preflight.results.find((result) => !result.valid);
+        if (failed) throw new ShortsValidationError(failed);
+        throw new Error('Shorts export preflight failed.');
+      }
+      setShortsVideoSourceInfo(probedSourceInfo);
+      exportStarted = true;
+      setShortsBusy(true);
+      setShortsBusyLabel(`Exporting ${jobs.length} video${jobs.length === 1 ? '' : 's'}...`);
+      shortsExportCancelRef.current = false;
+      shortsExportJobIdRef.current = exportJobId;
+      shortsExportCompletedRef.current = 0;
+      shortsExportTotalRef.current = jobs.length;
       outputDir = await window.electronAPI.openDirectory() || '';
       if (!outputDir) return;
       setShortsExportProgress({
@@ -2241,22 +2478,7 @@ export default function App() {
         stage: 'prepare',
         cancelling: false,
       });
-      let exportSourceInfo = shortsVideoSourceInfo ?? { width: 1920, height: 1080, durationSec: 0, fps: undefined as number | undefined };
-      if (window.electronAPI.ffmpegGetVideoInfo) {
-        const probedInfo = await window.electronAPI.ffmpegGetVideoInfo({ inputPath: session.originalVideoPath });
-        if (probedInfo.success && probedInfo.width && probedInfo.height) {
-          exportSourceInfo = {
-            width: probedInfo.width,
-            height: probedInfo.height,
-            durationSec: probedInfo.durationSec || 0,
-            fps: probedInfo.fps,
-          };
-          setShortsVideoSourceInfo(exportSourceInfo);
-        } else if (shortsSettings.resolutionPreset === 'source' || shortsSettings.frameRate === 'source') {
-          throw new Error(probedInfo.error || 'Could not read source video resolution/FPS for source-based export.');
-        }
-      }
-      const outputSize = verticalResolutionForPreset(shortsSettings.resolutionPreset, exportSourceInfo);
+      const outputSize = verticalResolutionForPreset(shortsSettings.resolutionPreset, probedSourceInfo);
       const extension = extensionForShortsFormat(shortsSettings.videoFormat);
       const videoUrlResult = await window.electronAPI.pathToFileUrl({ filePath: session.originalVideoPath });
       if (!videoUrlResult.success || !videoUrlResult.url) {
@@ -2269,7 +2491,7 @@ export default function App() {
           cancelled.name = 'ExportCancelled';
           throw cancelled;
         }
-        const { index, plan, language } = jobs[i];
+        const { stableID, plan, language } = jobs[i];
         shortsExportCompletedRef.current = i;
         setShortsBusyLabel(`Exporting ${i + 1}/${jobs.length}...`);
         setShortsExportProgress((prev) => ({
@@ -2283,48 +2505,30 @@ export default function App() {
           cancelling: prev?.cancelling ?? false,
         }));
         const frameKeyframes = language === 'source' ? plan.sourceFrameKeyframes : plan.targetFrameKeyframes;
-        const startSec = parseTimestampToSeconds(plan.start);
-        const endSec = parseTimestampToSeconds(plan.end);
-        const outputPath = `${outputDir}/${String(index + 1).padStart(2, '0')}_${language}_${safeExportPart(shortsTitleForLanguage(plan, language))}${extension}`;
+        const validation = preflight.results[i];
+        if (!validation || !validation.valid || validation.startSec === null || validation.endSec === null) {
+          throw new Error(`Shorts export validation failed for plan ${stableID}.`);
+        }
+        const startSec = validation.startSec;
+        const endSec = validation.endSec;
+        const outputPath = `${outputDir}/${String(i + 1).padStart(2, '0')}_${language}_${safeExportPart(shortsTitleForLanguage(plan, language))}${extension}`;
         currentOutputPath = outputPath;
+        const style = resolveShortsSubtitleStyle(plan.subtitleStyle);
         const project = buildShortsRenderProject({
-          id: `${session.sourceFileName}_${index}_${language}`,
+          id: `${session.sourceFileName}_${stableID}_${language}`,
           title: shortsTitleForLanguage(plan, language),
           inputVideoSrc: videoUrlResult.url,
-          sourceWidth: exportSourceInfo.width,
-          sourceHeight: exportSourceInfo.height,
+          sourceWidth: probedSourceInfo.width,
+          sourceHeight: probedSourceInfo.height,
           clipStartSec: startSec,
           clipEndSec: endSec,
           outputWidth: outputSize.width,
           outputHeight: outputSize.height,
-          fps: fpsForShortsFrameRate(shortsSettings.frameRate || 'source', exportSourceInfo.fps),
+          fps: fpsForShortsFrameRate(shortsSettings.frameRate || 'source', probedSourceInfo.fps),
           cues: buildShortsCues(plan, language),
           frameKeyframes,
-          subtitleBottomMargin: shortsSettings.subtitleBottomMargin,
-          style: {
-            fontFamily: shortsSettings.subtitleFontFamily,
-            fontSize: shortsSettings.subtitleFontSize,
-            bold: shortsSettings.subtitleBold,
-            textTransform: shortsSettings.subtitleTextTransform,
-            textColor: shortsSettings.subtitleTextColor,
-            boxColor: shortsSettings.subtitleBoxColor,
-            boxOpacity: shortsSettings.subtitleBoxOpacity,
-            boxWidth: shortsSettings.subtitleBoxWidth,
-            boxHeight: shortsSettings.subtitleBoxHeight,
-            edgeBlur: shortsSettings.subtitleBoxBlur,
-            letterSpacing: shortsSettings.subtitleLetterSpacing,
-            lineSpacing: shortsSettings.subtitleLineSpacing,
-            edgeSoftness: shortsSettings.subtitleEdgeSoftness,
-            outline: shortsSettings.subtitleOutline ?? 2,
-            outlineColor: shortsSettings.subtitleOutlineColor ?? '#000000',
-            outlineOpacity: shortsSettings.subtitleOutlineOpacity ?? 0.58,
-            shadow: shortsSettings.subtitleShadowDistance ?? shortsSettings.subtitleShadow ?? 6,
-            shadowColor: shortsSettings.subtitleShadowColor ?? '#000000',
-            shadowOpacity: shortsSettings.subtitleShadowOpacity ?? 0.72,
-            shadowBlur: shortsSettings.subtitleShadowBlur ?? 3,
-            shadowDistance: shortsSettings.subtitleShadowDistance ?? 6,
-            shadowAngle: shortsSettings.subtitleShadowAngle ?? 90,
-          },
+          subtitleBottomMargin: style.subtitleBottomMargin ?? shortsSettings.subtitleBottomMargin,
+          style,
           timelineCuts: plan.timelineCuts,
           timelineTrim: plan.timelineTrim,
           backgroundSettings: plan.backgroundSettings,
@@ -2350,7 +2554,7 @@ export default function App() {
           cancelled.name = 'ExportCancelled';
           throw cancelled;
         }
-        if (!result.success) throw new Error(result.error || `Could not export clip ${index + 1}.`);
+        if (!result.success) throw new Error(result.error || `Could not export plan ${stableID}.`);
         exported.push(result.outputPath || outputPath);
         shortsExportCompletedRef.current = i + 1;
       }
@@ -2370,16 +2574,21 @@ export default function App() {
         return;
       }
       console.error('Shorts/Reels export failed.', error);
-      alert(`Shorts/Reels export failed: ${error instanceof Error ? error.message : String(error)}`);
+      const failureMessage = error instanceof ShortsValidationError
+        ? `${error.code}: ${error.message}`
+        : error instanceof Error ? error.message : String(error);
+      alert(`Shorts/Reels export failed: ${failureMessage}`);
     } finally {
       shortsExportCancelRef.current = false;
       shortsExportJobIdRef.current = '';
       shortsExportCompletedRef.current = 0;
       shortsExportTotalRef.current = 0;
-      setShortsBusy(false);
-      setShortsBusyLabel('');
+      if (exportStarted) {
+        setShortsBusy(false);
+        setShortsBusyLabel('');
+      }
     }
-  }, [selectedShortsPlanIndexes, session?.originalVideoPath, shortsPlans, shortsSettings, shortsVideoSourceInfo, writeShortsAssFile]);
+  }, [selectedShortsPlanKeys, session, shortsPlans, shortsSettings, shortsVideoSourceInfo, writeShortsAssFile]);
 
   const handleExportDownload = (which: 'original' | 'translated', format: OutputFormat) => {
     if (!session) return;
@@ -2457,28 +2666,28 @@ export default function App() {
         setSession(review.setApproval(currentSession, chunkIndex, approved));
         return { success: true, message: `Updated approval for segment ${chunkIndex + 1} to ${approved}` };
       }
-      case 'get_subtitle_style':
-        return { style: shortsSettings };
-      case 'update_subtitle_style': {
-        const { stylePatch } = args;
-        setShortsSettings(prev => ({
-          ...prev,
-          ...stylePatch,
-        }));
-        return { success: true, message: 'Updated subtitle styles' };
+      case 'get_shorts_plans': {
+        const projection = args?.language === 'source' ? 'source' : 'target';
+        return {
+          plans: shortsPlans.map((plan) => projectShortsPlanForLanguage(
+            plan,
+            projection,
+            sessionRef.current?.activeTranslationLanguage,
+          )),
+        };
       }
-      case 'get_shorts_plans':
-        return { plans: shortsPlans };
       case 'create_shorts_plan': {
         const { plan } = args;
+        const requestedPlan = plan && typeof plan === 'object' ? plan : {};
         const newPlan = {
-          id: Math.random().toString(36).substring(2, 9),
-          title: plan.title || 'Untitled Clip',
-          start: plan.start || '00:00',
-          end: plan.end || '00:15',
-          summary: plan.summary || '',
-          category: plan.category || '',
-          hook: plan.hook || '',
+          ...requestedPlan,
+          title: typeof requestedPlan.title === 'string' ? requestedPlan.title : '',
+          start: typeof requestedPlan.start === 'string' || typeof requestedPlan.start === 'number' ? String(requestedPlan.start) : '',
+          end: typeof requestedPlan.end === 'string' || typeof requestedPlan.end === 'number' ? String(requestedPlan.end) : '',
+          summary: typeof requestedPlan.summary === 'string' ? requestedPlan.summary : '',
+          category: typeof requestedPlan.category === 'string' ? requestedPlan.category : '',
+          hook: typeof requestedPlan.hook === 'string' ? requestedPlan.hook : '',
+          languageMode: requestedPlan.languageMode || 'source',
           logo: null,
           backgroundSettings: {
             frameGuideColor: '#ffaa19',
@@ -2506,74 +2715,98 @@ export default function App() {
           textTracks: [],
           audioTracks: [],
           timelineCuts: [],
-          timelineTrim: { startSec: 0, endSec: 15 },
-          ...plan
+          timelineTrim: { trimStartSec: 0, trimEndSec: 0 },
         };
-        setShortsPlans(prev => [...prev, newPlan]);
-        return { success: true, planIndex: shortsPlans.length, message: 'Created new shorts plan' };
+        const currentSession = sessionRef.current;
+        if (!currentSession) throw new Error('No active session.');
+        const preparedPlan = attachShortsPlanActiveTranslation({
+          ...newPlan,
+          subtitleStyle: shortsSubtitleStyleFromSettings(shortsSettings),
+        }, currentSession.activeTranslationLanguage ?? currentSession.targetLang);
+        const canonical = applyShortsRejectedLedgerPolicy({
+          ...currentSession,
+          shortsPlans: [...shortsPlans, preparedPlan],
+          shortsRejectedPlans: currentSession.shortsRejectedPlans,
+        });
+        const candidate = canonical.shortsPlans[canonical.shortsPlans.length - 1];
+        const validation = candidate
+          ? validateShortsPlan(candidate, {
+              session: currentSession,
+              activeLanguage: currentSession.activeTranslationLanguage ?? currentSession.targetLang,
+              activePlans: shortsPlans,
+              rejectedPlans: currentSession.shortsRejectedPlans,
+            })
+          : null;
+        if (!candidate || !validation) throw new Error('Could not build Shorts plan.');
+        if (!validation.valid) throw new ShortsValidationError(validation);
+        setSession(canonical as Session);
+        setShortsPlans(canonical.shortsPlans);
+        return { success: true, planIndex: canonical.shortsPlans.length - 1, message: 'Created new shorts plan' };
       }
       case 'set_background_settings': {
         const { settings: bgPatch } = args;
-        if (selectedShortsPlanIndex !== null) {
-          setShortsPlans(prev => prev.map((p, i) => {
-            if (i === selectedShortsPlanIndex) {
-              return {
-                ...p,
-                backgroundSettings: {
-                  ...(p.backgroundSettings || {
-                    frameGuideColor: '#ffaa19',
-                    frameGuideOpacity: 0.8,
-                    frameGuideBorderWidth: 2,
-                    frameGuideBorderOpacity: 0.35,
-                    frameGuideBorderColor: '#ffffff',
-                    frameGuideBlur: 10,
-                    solidEnabled: false,
-                    solidColor: '#000000',
-                    blurEnabled: true,
-                    blurStrength: 15,
-                    blurScale: 1.15,
-                    gradientEnabled: false,
-                    gradientType: 'linear',
-                    gradientColorA: '#FF007F',
-                    gradientColorB: '#7F00FF',
-                    gradientAngle: 135,
-                    gradientOpacity: 0.5,
-                    featherEnabled: false,
-                    featherTop: 0,
-                    featherBottom: 0,
-                    featherLeft: 0,
-                    featherRight: 0,
-                  }),
-                  ...bgPatch
-                }
-              };
-            }
-            return p;
-          }));
-          return { success: true, message: `Updated background settings for plan index ${selectedShortsPlanIndex}` };
-        } else {
-          throw new Error('No active shorts plan selected');
-        }
+        const focusedPlan = focusedShortsPlanID
+          ? shortsPlans.find((plan) => plan.stableID === focusedShortsPlanID)
+          : undefined;
+        if (!focusedPlan || !focusedShortsPlanID) throw new Error('No active shorts plan selected');
+        setShortsPlans((prev) => prev.map((plan) => {
+          if (plan.stableID !== focusedShortsPlanID) return plan;
+          return {
+            ...plan,
+            backgroundSettings: {
+              ...(plan.backgroundSettings || {
+                frameGuideColor: '#ffaa19',
+                frameGuideOpacity: 0.8,
+                frameGuideBorderWidth: 2,
+                frameGuideBorderOpacity: 0.35,
+                frameGuideBorderColor: '#ffffff',
+                frameGuideBlur: 10,
+                solidEnabled: false,
+                solidColor: '#000000',
+                blurEnabled: true,
+                blurStrength: 15,
+                blurScale: 1.15,
+                gradientEnabled: false,
+                gradientType: 'linear',
+                gradientColorA: '#FF007F',
+                gradientColorB: '#7F00FF',
+                gradientAngle: 135,
+                gradientOpacity: 0.5,
+                featherEnabled: false,
+                featherTop: 0,
+                featherBottom: 0,
+                featherLeft: 0,
+                featherRight: 0,
+              }),
+              ...bgPatch,
+            },
+          };
+        }));
+        return { success: true, message: `Updated background settings for plan ${focusedPlan.stableID}` };
       }
       case 'trigger_render': {
         const { planIndex } = args;
         if (planIndex < 0 || planIndex >= shortsPlans.length) {
           throw new Error(`Invalid planIndex ${planIndex}`);
         }
-        setSelectedShortsPlanIndex(planIndex);
-        setSelectedShortsPlanIndexes([planIndex]);
+        const plan = shortsPlans[planIndex];
+        if (!plan?.stableID) throw new Error(`Invalid planIndex ${planIndex}`);
+        setFocusedShortsPlanID(plan.stableID);
+        setSelectedShortsPlanKeys(new Set(
+          shortsPlanExportLanguages(plan).map((language) => shortsSelectionKey(plan.stableID!, language))
+        ));
         setTimeout(() => {
           const exportBtn = document.querySelector('[data-tour="export-video-btn"]') as HTMLButtonElement;
           if (exportBtn) {
             exportBtn.click();
           }
         }, 100);
-        return { success: true, message: `Triggered render for plan ${planIndex + 1}` };
+        return { success: true, planId: plan.stableID, message: `Triggered render for plan ${plan.stableID}` };
       }
       default:
         throw new Error(`Unknown tool name ${name}`);
     }
-  }, [review, screen, settings, shortsPlans, shortsSettings, selectedShortsPlanIndex]);
+  }, [focusedShortsPlanID, review, screen, settings, shortsPlans, shortsSettings]);
 
   useEffect(() => {
     if (!window.electronAPI?.onMcpCallTool) return;
@@ -2581,8 +2814,15 @@ export default function App() {
       try {
         const result = await executeMcpTool(name, args);
         window.electronAPI?.mcpToolResponse?.({ requestId, success: true, result });
-      } catch (err: any) {
-        window.electronAPI?.mcpToolResponse?.({ requestId, success: false, error: err.message || String(err) });
+      } catch (err: unknown) {
+        const error = err instanceof ShortsValidationError
+          ? { code: err.code, message: err.message, issues: err.issues }
+          : err instanceof Error ? err.message : String(err);
+        window.electronAPI?.mcpToolResponse?.({
+          requestId,
+          success: false,
+          error: typeof error === 'string' ? error : JSON.stringify(error),
+        });
       }
     });
     return unsubscribe;
@@ -2814,7 +3054,11 @@ export default function App() {
                         onChange={(event) => {
                           const latest = sessionRef.current;
                           if (!latest) return;
-                          const next = review.selectLanguage(latest, event.target.value);
+                          const withShortsLanguages = {
+                            ...latest,
+                            availableTranslationLanguages: collectAvailableShortsTranslationLanguages(latest),
+                          };
+                          const next = review.selectLanguage(withShortsLanguages, event.target.value);
                           if (next) setSession(next);
                         }}
                       >
@@ -3213,15 +3457,18 @@ export default function App() {
 
                   <div className="export-tab-panel" data-tour="shorts-panel">
                     <ShortsReelsPanel
+                      key={`shorts-${session.projectId || session.sourceFile}`}
                       hasVideo={Boolean(session.originalVideoPath)}
                       hasTranslation={shouldTranslateChunk(session.targetLang)}
                       targetLang={session.targetLang}
+                      activeTranslationLanguage={session.activeTranslationLanguage ?? ''}
                       settings={shortsSettings}
                       plans={shortsPlans}
+                      rejectedPlans={session.shortsRejectedPlans}
                       isBusy={shortsBusy}
                       busyLabel={shortsBusyLabel}
-                      selectedPlanIndex={selectedShortsPlanIndex}
-                      selectedPlanIndexes={selectedShortsPlanIndexes}
+                      focusedPlanID={focusedShortsPlanID}
+                      selectedPlanKeys={selectedShortsPlanKeys}
                       planningProviders={editingProviders}
                       planningProvider={editingProvider}
                       onPlanningProviderChange={setEditingProvider}
@@ -3239,46 +3486,55 @@ export default function App() {
                         setSubtitleMaxLines(maxLines);
                       }}
                       onFindMoments={handleGenerateShortsPlan}
-                      onFocusPlan={(index) => {
-                        setSelectedShortsPlanIndex(index);
+                      onFocusPlan={(stableID) => {
+                        setFocusedShortsPlanID(stableID);
                       }}
-                      onTogglePlan={(index) => {
-                        setSelectedShortsPlanIndexes((prev) => {
-                          const next = prev.includes(index)
-                            ? prev.filter((item) => item !== index)
-                            : [...prev, index];
-                          return next.sort((a, b) => a - b);
+                      onTogglePlan={(stableID) => {
+                        const plan = shortsPlans.find((item) => item.stableID === stableID);
+                        if (!plan) return;
+                        const keys = shortsPlanExportLanguages(plan).map((language) => shortsSelectionKey(stableID, language));
+                        setSelectedShortsPlanKeys((previous) => {
+                          const next = new Set(previous);
+                          const selected = keys.every((key) => next.has(key));
+                          for (const key of keys) {
+                            if (selected) next.delete(key);
+                            else next.add(key);
+                          }
+                          return next;
                         });
-                        setSelectedShortsPlanIndex(index);
+                        setFocusedShortsPlanID(stableID);
                       }}
-                      onUpdatePlan={(index, patch) => {
+                      onUpdatePlan={(stableID, patch, language) => {
                         setShortsPlans((prev) => {
-                          const next = prev.map((plan, i) => i === index ? { ...plan, ...patch } : plan);
-                          // Auto-sync to linked partner when sync is enabled
-                          const syncResult = buildSyncPatch(next, index, patch);
+                          const index = prev.findIndex((plan) => plan.stableID === stableID);
+                          if (index < 0) return prev;
+                          const current = prev[index];
+                          const appliedPatch = language === 'target'
+                            ? updateShortsPlanTargetMetadata(
+                                current,
+                                sessionRef.current?.activeTranslationLanguage,
+                                patch,
+                              )
+                            : { ...current, ...patch };
+                          const next = prev.map((plan, itemIndex) => itemIndex === index
+                            ? appliedPatch
+                            : plan);
+                          const syncResult = language === 'target' ? null : buildSyncPatch(next, index, patch);
                           if (syncResult) {
-                            return next.map((plan, i) => i === syncResult.partnerIndex ? { ...plan, ...syncResult.patch } : plan);
+                            return next.map((plan, itemIndex) => itemIndex === syncResult.partnerIndex ? { ...plan, ...syncResult.patch } : plan);
                           }
                           return next;
                         });
                       }}
-                      onRemovePlan={(index) => {
-                        setShortsPlans((prev) => prev.filter((_, itemIndex) => itemIndex !== index));
-                        setSelectedShortsPlanIndexes((prev) => prev
-                          .filter((item) => item !== index)
-                          .map((item) => item > index ? item - 1 : item)
-                        );
-                        setSelectedShortsPlanIndex((prev) => {
-                          if (prev === null) return null;
-                          if (prev === index) return null;
-                          return prev > index ? prev - 1 : prev;
-                        });
-                      }}
-                      onSavePlanAlignment={(index, language, segments) => {
+                      onRemovePlan={handleRemoveShortsPlan}
+                      onRestorePlan={handleRestoreShortsPlan}
+                      onSavePlanAlignment={(stableID, language, segments) => {
                         const patch: Partial<ShortsClipPlan> = language === 'source'
                           ? { sourceAlignment: segments as AlignedSubtitleSegment[] }
                           : { targetAlignment: segments as AlignedSubtitleSegment[] };
                         setShortsPlans((prev) => {
+                          const index = prev.findIndex((plan) => plan.stableID === stableID);
+                          if (index < 0) return prev;
                           const next = prev.map((plan, itemIndex) => itemIndex === index ? { ...plan, ...patch } : plan);
                           const syncResult = buildSyncPatch(next, index, patch);
                           if (syncResult) {
@@ -3287,81 +3543,92 @@ export default function App() {
                           return next;
                         });
                       }}
-                      onSavePlanFrameKeyframes={(index, language, keyframes) => {
+                      onSavePlanFrameKeyframes={(stableID, language, keyframes) => {
                         const patch: Partial<ShortsClipPlan> = language === 'source'
                           ? { sourceFrameKeyframes: keyframes }
                           : { targetFrameKeyframes: keyframes };
                         setShortsPlans((prev) => {
-                          const next = prev.map((plan, i) => i === index ? { ...plan, ...patch } : plan);
-                          // Auto-sync frame keyframes to linked partner
+                          const index = prev.findIndex((plan) => plan.stableID === stableID);
+                          if (index < 0) return prev;
+                          const next = prev.map((plan, itemIndex) => itemIndex === index ? { ...plan, ...patch } : plan);
                           const syncResult = buildSyncPatch(next, index, patch);
                           if (syncResult) {
-                            return next.map((plan, i) => i === syncResult.partnerIndex ? { ...plan, ...syncResult.patch } : plan);
+                            return next.map((plan, itemIndex) => itemIndex === syncResult.partnerIndex ? { ...plan, ...syncResult.patch } : plan);
                           }
                           return next;
                         });
                       }}
-                      onSavePlanLogo={(index, language, logo) => {
+                      onSavePlanLogo={(stableID, language, logo) => {
                         const patch: Partial<ShortsClipPlan> = language === 'source'
                           ? { sourceLogo: logo }
                           : { targetLogo: logo };
                         setShortsPlans((prev) => {
-                          const next = prev.map((plan, i) => i === index ? { ...plan, ...patch } : plan);
+                          const index = prev.findIndex((plan) => plan.stableID === stableID);
+                          if (index < 0) return prev;
+                          const next = prev.map((plan, itemIndex) => itemIndex === index ? { ...plan, ...patch } : plan);
                           const syncResult = buildSyncPatch(next, index, patch);
                           if (syncResult) {
-                            return next.map((plan, i) => i === syncResult.partnerIndex ? { ...plan, ...syncResult.patch } : plan);
+                            return next.map((plan, itemIndex) => itemIndex === syncResult.partnerIndex ? { ...plan, ...syncResult.patch } : plan);
                           }
                           return next;
                         });
                       }}
-                      onSavePlanIntro={(index, language, intro) => {
+                      onSavePlanIntro={(stableID, language, intro) => {
                         const patch: Partial<ShortsClipPlan> = language === 'source'
                           ? { sourceIntro: intro }
                           : { targetIntro: intro };
                         setShortsPlans((prev) => {
-                          const next = prev.map((plan, i) => i === index ? { ...plan, ...patch } : plan);
+                          const index = prev.findIndex((plan) => plan.stableID === stableID);
+                          if (index < 0) return prev;
+                          const next = prev.map((plan, itemIndex) => itemIndex === index ? { ...plan, ...patch } : plan);
                           const syncResult = buildSyncPatch(next, index, patch);
                           if (syncResult) {
-                            return next.map((plan, i) => i === syncResult.partnerIndex ? { ...plan, ...syncResult.patch } : plan);
+                            return next.map((plan, itemIndex) => itemIndex === syncResult.partnerIndex ? { ...plan, ...syncResult.patch } : plan);
                           }
                           return next;
                         });
                       }}
-                      onSavePlanOutro={(index, language, outro) => {
+                      onSavePlanOutro={(stableID, language, outro) => {
                         const patch: Partial<ShortsClipPlan> = language === 'source'
                           ? { sourceOutro: outro }
                           : { targetOutro: outro };
                         setShortsPlans((prev) => {
-                          const next = prev.map((plan, i) => i === index ? { ...plan, ...patch } : plan);
+                          const index = prev.findIndex((plan) => plan.stableID === stableID);
+                          if (index < 0) return prev;
+                          const next = prev.map((plan, itemIndex) => itemIndex === index ? { ...plan, ...patch } : plan);
                           const syncResult = buildSyncPatch(next, index, patch);
                           if (syncResult) {
-                            return next.map((plan, i) => i === syncResult.partnerIndex ? { ...plan, ...syncResult.patch } : plan);
+                            return next.map((plan, itemIndex) => itemIndex === syncResult.partnerIndex ? { ...plan, ...syncResult.patch } : plan);
                           }
                           return next;
                         });
                       }}
-                      onSavePlanTextTracks={(index, language, tracks) => {
+                      onSavePlanTextTracks={(stableID, language, tracks) => {
                         const patch: Partial<ShortsClipPlan> = language === 'source'
                           ? { sourceTextTracks: tracks }
                           : { targetTextTracks: tracks };
                         setShortsPlans((prev) => {
-                          const next = prev.map((plan, i) => i === index ? { ...plan, ...patch } : plan);
+                          const index = prev.findIndex((plan) => plan.stableID === stableID);
+                          if (index < 0) return prev;
+                          const next = prev.map((plan, itemIndex) => itemIndex === index ? { ...plan, ...patch } : plan);
                           const syncResult = buildSyncPatch(next, index, patch);
                           if (syncResult) {
-                            return next.map((plan, i) => i === syncResult.partnerIndex ? { ...plan, ...syncResult.patch } : plan);
+                            return next.map((plan, itemIndex) => itemIndex === syncResult.partnerIndex ? { ...plan, ...syncResult.patch } : plan);
                           }
                           return next;
                         });
                       }}
-                      onSavePlanAudioTracks={(index, language, tracks) => {
+                      onSavePlanAudioTracks={(stableID, language, tracks) => {
                         const patch: Partial<ShortsClipPlan> = language === 'source'
                           ? { sourceAudioTracks: tracks }
                           : { targetAudioTracks: tracks };
                         setShortsPlans((prev) => {
-                          const next = prev.map((plan, i) => i === index ? { ...plan, ...patch } : plan);
+                          const index = prev.findIndex((plan) => plan.stableID === stableID);
+                          if (index < 0) return prev;
+                          const next = prev.map((plan, itemIndex) => itemIndex === index ? { ...plan, ...patch } : plan);
                           const syncResult = buildSyncPatch(next, index, patch);
                           if (syncResult) {
-                            return next.map((plan, i) => i === syncResult.partnerIndex ? { ...plan, ...syncResult.patch } : plan);
+                            return next.map((plan, itemIndex) => itemIndex === syncResult.partnerIndex ? { ...plan, ...syncResult.patch } : plan);
                           }
                           return next;
                         });
@@ -3370,6 +3637,8 @@ export default function App() {
                       getPlanDetailText={buildShortsDetailText}
                       onExportIdeas={handleExportShortsIdeas}
                       onExportSelected={handleExportSelectedShortsVideos}
+                      onTranslateMetadata={handleTranslateShortsMetadata}
+                      isTranslatingMetadata={isTranslatingShortsMetadata}
                       onSaveDefaults={handleSaveShortsDefaults}
                       onReplacePlan={handleReplacePlan}
                       onToggleClipSync={handleToggleClipSync}
