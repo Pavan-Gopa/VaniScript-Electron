@@ -33,6 +33,7 @@ import {
 import { reconcileLocalModelStatesWithDisk } from './services/model-presence';
 import { ShortsReelsPanel, ShortsSettings } from './components/ShortsReelsPanel';
 import { AssistantSidebar } from './components/AssistantSidebar';
+import { HelpCenterPanel } from './components/HelpCenterPanel';
 import { assistantStore } from './stores/assistantStore';
 import { resolveShortsAudioPath } from './lib/shorts-media-source';
 import { buildShortsCuesForClip, buildShortsTranscriptText } from './lib/shorts-transcript';
@@ -529,6 +530,7 @@ export default function App() {
   const onboardingBuildId = useMemo(() => currentBuildId(), []);
   const [usage, setUsage] = useState<UsageStats>(() => loadUsage());
   const [showSettings, setShowSettings] = useState(false);
+  const [showHelpCenter, setShowHelpCenter] = useState(false);
   const [settingsTab, setSettingsTab] = useState(0);
   const [screen, setScreen] = useState<Screen>('upload');
   const [sourceFile, setSourceFile] = useState('');
@@ -641,6 +643,37 @@ export default function App() {
       return nextSettings;
     });
   }, [onboardingBuildId]);
+
+  const openHelpCenter = useCallback(() => {
+    setShowSettings(false);
+    setShowHelpCenter(true);
+  }, []);
+
+  const closeHelpCenter = useCallback(() => {
+    setShowHelpCenter(false);
+  }, []);
+
+  const handleHelpLocaleChange = useCallback((helpLocale: 'en' | 'ru') => {
+    setSettings((previous) => {
+      const next = { ...previous, helpLocale };
+      settingsRef.current = next;
+      saveSettings(next);
+      return next;
+    });
+  }, []);
+
+  const startHelpTour = useCallback(() => {
+    setShowHelpCenter(false);
+    setOnboardingVisible(true);
+  }, [setOnboardingVisible]);
+
+  const helpCenterContext = useMemo(() => ({
+    screen,
+    hasSource: Boolean(sourceFile || sourceFileName || session?.sourceFile || session?.sourceFileName),
+    hasSession: Boolean(session),
+    processingProgress: procProgress / 100,
+    hasShortsPlans: shortsPlans.length > 0,
+  }), [procProgress, screen, session, shortsPlans.length, sourceFile, sourceFileName]);
 
   // Session/project identity switch: projectId when present, otherwise the
   // stable source path (creation identity). Transient per-session drafts
@@ -1097,6 +1130,7 @@ export default function App() {
 
   const handleSettingsPersist = (nextSettings: AppSettings) => {
     setSettings(nextSettings);
+    saveSettings(nextSettings);
 
     setSession(prev => {
       if (!prev) return prev;
@@ -3156,15 +3190,13 @@ export default function App() {
         {screen !== 'review' && (
           <div className="corner-actions">
             <button
-              className={`settings-btn inline ${settings.annotationMode ? 'active' : ''}`}
-              onClick={() => {
-                setOnboardingVisible(!settings.annotationMode);
-              }}
-              title={settings.annotationMode ? "Disable Help Tour" : "Enable Help Tour"}
-              aria-label={settings.annotationMode ? "Disable Help Tour" : "Enable Help Tour"}
-              aria-pressed={settings.annotationMode}
+              className={`settings-btn inline ${showHelpCenter ? 'active' : ''}`}
+              onClick={openHelpCenter}
+              title="Help Center"
+              aria-label="Help Center"
+              aria-pressed={showHelpCenter}
             >
-              <HelpCircle size={15} style={{ color: settings.annotationMode ? 'var(--accent)' : 'inherit' }} />
+              <HelpCircle size={15} style={{ color: showHelpCenter ? 'var(--accent)' : 'inherit' }} />
             </button>
             <button
               className={`settings-btn inline ${pane.showChatSidebar ? 'active' : ''}`}
@@ -3386,15 +3418,13 @@ export default function App() {
                     <Sparkles size={14} style={{ color: pane.showChatSidebar ? 'var(--accent)' : 'inherit' }} />
                   </button>
                   <button
-                    className="review-icon-btn"
-                    onClick={() => {
-                      setOnboardingVisible(!settings.annotationMode);
-                    }}
-                    title={settings.annotationMode ? "Disable Help Tour" : "Enable Help Tour"}
-                    aria-label={settings.annotationMode ? "Disable Help Tour" : "Enable Help Tour"}
-                    aria-pressed={settings.annotationMode}
+                    className={`review-icon-btn ${showHelpCenter ? 'active' : ''}`}
+                    onClick={openHelpCenter}
+                    title="Help Center"
+                    aria-label="Help Center"
+                    aria-pressed={showHelpCenter}
                   >
-                    <HelpCircle size={14} style={{ color: settings.annotationMode ? 'var(--accent)' : 'inherit' }} />
+                    <HelpCircle size={14} style={{ color: showHelpCenter ? 'var(--accent)' : 'inherit' }} />
                   </button>
                   <button
                     className="review-icon-btn"
@@ -3916,13 +3946,25 @@ export default function App() {
             onClose={() => setShowSettings(false)}
             tabIndex={settingsTab}
             onTabChange={setSettingsTab}
+            onOpenHelpCenter={openHelpCenter}
           />
         )}
 
         <AssistantSidebar
           isOpen={pane.showChatSidebar}
           onClose={() => paneStore.setChatSidebar(false)}
+          onOpenHelp={openHelpCenter}
+          helpLocale={settings.helpLocale}
           store={assistantStore}
+        />
+
+        <HelpCenterPanel
+          isOpen={showHelpCenter}
+          locale={settings.helpLocale}
+          context={helpCenterContext}
+          onClose={closeHelpCenter}
+          onLocaleChange={handleHelpLocaleChange}
+          onStartHelpTour={startHelpTour}
         />
 
         {shortsExportProgress && (() => {
@@ -4379,6 +4421,7 @@ export default function App() {
             onToggleAnnotationMode={(enabled) => {
               setOnboardingVisible(enabled);
             }}
+            onHelpLocaleChange={handleHelpLocaleChange}
             settingsTab={settingsTab}
             onSettingsTabChange={setSettingsTab}
           />

@@ -21,6 +21,7 @@ const mediaTranslations = require('../../../../shared/media-translations.js');
 // aligned with the renderer while the response sanitizers below enforce the
 // MCP trust boundary.
 const shortsState = require('../../../../shared/shorts-state.js');
+const helpCatalog = require('../../../../shared/help-catalog.js');
 
 const READ_SCOPE = 'read';
 const READ_RISK = 'read';
@@ -234,41 +235,6 @@ const READ_TOOL_DEFINITIONS = Object.freeze([
 
 const READ_TOOL_NAMES = Object.freeze(READ_TOOL_DEFINITIONS.map((tool) => tool.name));
 
-const DEFAULT_HELP_TOPICS = Object.freeze([
-  Object.freeze({
-    topicId: 'getting-started',
-    category: 'Getting Started',
-    screen: 'workspace',
-    title: 'Getting started',
-    summary: 'Import a source, review the transcript, and export the finished result.',
-    requirements: [],
-    steps: ['Import an audio, video, or document source.', 'Review and correct the transcript.', 'Export the approved result.'],
-    troubleshooting: [],
-    relatedTopicIds: ['review-transcript', 'export-results'],
-  }),
-  Object.freeze({
-    topicId: 'review-transcript',
-    category: 'Transcript Review',
-    screen: 'review',
-    title: 'Review a transcript',
-    summary: 'Use the chunk list and timed cues to inspect source and translated text.',
-    requirements: ['An imported project'],
-    steps: ['Select a chunk.', 'Compare source and translation.', 'Correct text before approval.'],
-    troubleshooting: [],
-    relatedTopicIds: ['getting-started'],
-  }),
-  Object.freeze({
-    topicId: 'export-results',
-    category: 'Export',
-    screen: 'export',
-    title: 'Export results',
-    summary: 'Choose an output format after the transcript has been reviewed.',
-    requirements: ['A project with reviewed chunks'],
-    steps: ['Open Export.', 'Choose a format.', 'Run the export preflight and save the result.'],
-    troubleshooting: [],
-    relatedTopicIds: ['getting-started'],
-  }),
-]);
 
 class ReadCatalogError extends Error {
   constructor(message, code = 'MCP_INVALID_REQUEST') {
@@ -843,8 +809,156 @@ function glossaryEntries(options, project) {
   return [];
 }
 
-function helpTopics(options) {
-  return Array.isArray(options.helpTopics) ? options.helpTopics : Array.from(DEFAULT_HELP_TOPICS);
+function helpLanguage(options, args) {
+  const params = asObject(args);
+  const configured = asObject(options.settings).helpLocale ?? options.helpLocale;
+  return helpCatalog.normalizeHelpLanguage(params.language, configured);
+}
+
+function helpTopicSummary(topic) {
+  return {
+    topicId: topic?.id || '',
+    category: topic?.category || '',
+    screen: topic?.screen || '',
+    title: topic?.title || '',
+    summary: topic?.summary || '',
+  };
+}
+
+function helpTopicDictionary(topic) {
+  const summary = helpTopicSummary(topic);
+  const requirements = Array.isArray(topic?.requirements) ? [...topic.requirements] : [];
+  const sourceSteps = Array.isArray(topic?.steps) ? topic.steps : [];
+  const troubleshooting = Array.isArray(topic?.troubleshooting) ? [...topic.troubleshooting] : [];
+  const relatedTopicIds = Array.isArray(topic?.relatedTopicIDs) ? [...topic.relatedTopicIDs] : [];
+  return {
+    ...summary,
+    requirements,
+    steps: sourceSteps.map((instruction, index) => ({ number: index + 1, instruction })),
+    troubleshooting,
+    relatedTopicIds,
+  };
+}
+
+function helpStateValue(states, keys) {
+  for (const key of keys) {
+    for (const state of states) {
+      if (Object.prototype.hasOwnProperty.call(state, key)) return state[key];
+    }
+  }
+  return undefined;
+}
+
+function helpStateCandidates(options, handlerContext, readerStates) {
+  const configured = asObject(options.settings);
+  const context = asObject(handlerContext);
+  return [
+    ...readerStates,
+    asObject(context.helpContext),
+    asObject(context.activeRendererState),
+    asObject(context.workflowState),
+    asObject(context.activeState),
+    asObject(options.helpContext),
+    asObject(options.activeHelpContext),
+    asObject(options.activeRendererState),
+    asObject(options.workflowState),
+    asObject(options.activeState),
+    asObject(options.uiState),
+    asObject(options.state),
+    asObject(options),
+    asObject(configured.helpContext),
+    asObject(configured.activeHelpContext),
+    asObject(configured.activeRendererState),
+    asObject(configured.workflowState),
+    asObject(configured.activeState),
+    asObject(configured.uiState),
+  ].filter((state) => Object.keys(state).length > 0);
+}
+
+async function helpReaderState(options, name, args, handlerContext) {
+  const reader = findReader(options, name);
+  if (!reader) return null;
+  try {
+    const value = await reader(args, handlerContext);
+    const object = asObject(value);
+    return isObject(object.data) ? object.data : object;
+  } catch {
+    return null;
+  }
+}
+
+async function activeHelpState(options, args, handlerContext) {
+  const [uiState, processingState] = await Promise.all([
+    helpReaderState(options, 'get_ui_state', args, handlerContext),
+    helpReaderState(options, 'get_processing_status', args, handlerContext),
+  ]);
+  const readerStates = [uiState, processingState].filter(Boolean);
+  const states = helpStateCandidates(options, handlerContext, readerStates);
+  const configured = asObject(options.settings);
+  const activeProject = isObject(options.activeProject)
+    ? options.activeProject
+    : isObject(options.project) ? options.project : {};
+  const sessionCandidates = [
+    ...states.map((state) => state.session).filter(isObject),
+    isObject(options.session) ? options.session : null,
+    isObject(activeProject.session) ? activeProject.session : null,
+    isObject(configured.session) ? configured.session : null,
+  ].filter(Boolean);
+  const session = sessionCandidates[0] || {};
+
+  const screenValue = helpStateValue(states, ['screen', 'currentScreen']);
+  const sourceValue = helpStateValue(states, ['hasSource']);
+  const hasSource = typeof sourceValue === 'boolean'
+    ? sourceValue
+    : Boolean(
+      session.sourceFile
+      || session.sourceFileName
+      || activeProject.sourceFile
+      || activeProject.sourceFileName
+      || helpStateValue(states, ['sourceFile', 'sourceFileName']),
+    );
+
+  const sessionValue = helpStateValue(states, ['hasSession']);
+  const activeSessionValue = helpStateValue(states, ['hasActiveSession']);
+  const hasSession = typeof sessionValue === 'boolean'
+    ? sessionValue
+    : typeof activeSessionValue === 'boolean'
+      ? activeSessionValue
+      : sessionCandidates.length > 0 || Boolean(
+        options.session
+        || options.activeProject
+        || options.project
+        || configured.session
+      );
+
+  const progressValue = helpStateValue(states, ['processingProgress']);
+  const processingValue = helpStateValue(states, ['progress']);
+  const processingProgress = Number.isFinite(progressValue)
+    ? progressValue
+    : Number.isFinite(processingValue)
+      ? processingValue
+      : Number.isFinite(session.processingProgress)
+        ? session.processingProgress
+        : 0;
+
+  const shortsValue = helpStateValue(states, ['hasShortsPlans']);
+  const shortsCount = helpStateValue(states, ['shortsPlanCount']);
+  const stateShortsPlans = helpStateValue(states, ['shortsPlans']);
+  const hasShortsPlans = typeof shortsValue === 'boolean'
+    ? shortsValue
+    : Number.isFinite(shortsCount)
+      ? shortsCount > 0
+      : Array.isArray(stateShortsPlans)
+        ? stateShortsPlans.length > 0
+        : Array.isArray(session.shortsPlans) && session.shortsPlans.length > 0;
+
+  return {
+    screen: screenValue ?? configured.screen ?? activeProject.screen ?? session.screen ?? 'workspace',
+    hasSource,
+    hasSession,
+    processingProgress,
+    hasShortsPlans,
+  };
 }
 
 function safeSettings(options) {
@@ -957,6 +1071,12 @@ function createReadCatalog(options = {}) {
     const params = asObject(args);
     const context = contextFor(settings, params, handlerContext);
     const data = await callReader(settings, toolName, params, context, () => fallback(params, context));
+    return makeEnvelope(toolName, data, context);
+  };
+  const helpHandlerFor = (toolName, fallback) => async (args = {}, handlerContext = {}) => {
+    const params = asObject(args);
+    const context = contextFor(settings, params, handlerContext);
+    const data = await fallback(params, context, asObject(handlerContext));
     return makeEnvelope(toolName, data, context);
   };
 
@@ -1286,55 +1406,61 @@ function createReadCatalog(options = {}) {
   handlers.get_document_selection = handlerFor('get_document_selection', selectionFallback);
   handlers.get_document_selection_context = handlerFor('get_document_selection_context', selectionFallback);
 
-  handlers.list_help_topics = handlerFor('list_help_topics', (args) => {
-    const language = typeof args.language === 'string' && args.language.length > 0 ? args.language : 'en';
-    const topics = helpTopics(settings).filter((topic) => !args.category || topic.category === args.category).map((topic) => ({
-      topicId: topic.topicId || topic.id,
-      category: topic.category || '',
-      screen: topic.screen || '',
-      title: topic.title || '',
-      summary: topic.summary || '',
-    }));
-    return { language, categories: Array.from(new Set(topics.map((topic) => topic.category))).sort(), topics, count: topics.length };
+  handlers.list_help_topics = helpHandlerFor('list_help_topics', (args) => {
+    const language = helpLanguage(settings, args);
+    const allTopics = helpCatalog.listHelpTopics({ language });
+    const topics = helpCatalog.listHelpTopics({ category: args.category, language })
+      .map(helpTopicSummary);
+    const categories = Array.from(new Set(allTopics.map((topic) => topic.category))).sort();
+    return { language, categories, topics, count: topics.length };
   });
 
-  handlers.get_help_topic = handlerFor('get_help_topic', (args) => {
-    const topic = helpTopics(settings).find((candidate) => (candidate.topicId || candidate.id) === args.topicId) || null;
-    return { topic: topic ? safeClone({ ...topic, topicId: topic.topicId || topic.id }) : null, topicId: args.topicId || null };
+  handlers.get_help_topic = helpHandlerFor('get_help_topic', (args) => {
+    const topicId = typeof args.topicId === 'string' ? args.topicId.trim() : '';
+    if (!topicId) {
+      throw new ReadCatalogError('topicId is required. Call list_help_topics or search_help first.');
+    }
+    const language = helpLanguage(settings, args);
+    const topic = helpCatalog.getHelpTopic({ id: topicId, language });
+    if (!topic) throw new ReadCatalogError(`Help topic not found: ${topicId}`, 'MCP_NOT_FOUND');
+    return { topic: helpTopicDictionary(topic), topicId };
   });
 
-  handlers.search_help = handlerFor('search_help', (args) => {
-    const query = typeof args.query === 'string' ? args.query.trim().toLocaleLowerCase() : '';
+  handlers.search_help = helpHandlerFor('search_help', (args) => {
+    const query = typeof args.query === 'string' ? args.query.trim() : '';
+    if (!query) throw new ReadCatalogError('query is required and cannot be empty');
+    const language = helpLanguage(settings, args);
     const limit = clampInteger(args.limit, 5, 1, 10);
-    const matches = helpTopics(settings).filter((topic) => !query || JSON.stringify(topic).toLocaleLowerCase().includes(query)).slice(0, limit).map((topic) => safeClone({ ...topic, topicId: topic.topicId || topic.id }));
-    return { query: args.query || '', language: args.language || 'en', matches, matchCount: matches.length, limit };
+    const matches = helpCatalog.searchHelp({ query, language, limit }).map(helpTopicDictionary);
+    return { query, language, matches, matchCount: matches.length, limit };
   });
 
-  handlers.get_contextual_help = handlerFor('get_contextual_help', (args, context) => {
-    const screen = settings.screen || settings.activeProject?.screen || 'workspace';
-    const topic = helpTopics(settings).find((candidate) => candidate.screen === screen) || helpTopics(settings)[0];
+  handlers.get_contextual_help = helpHandlerFor('get_contextual_help', async (args, context, handlerContext) => {
+    const language = helpLanguage(settings, args);
+    const state = await activeHelpState(settings, args, handlerContext);
+    const contextual = helpCatalog.contextualHelp({ ...state, language });
     return {
-      language: args.language || 'en',
-      screen,
-      title: topic?.title || '',
-      summary: topic?.summary || '',
-      nextActions: Array.isArray(topic?.steps) ? topic.steps.slice(0, 3) : [],
-      recommendedTopicIds: topic ? [topic.topicId || topic.id] : [],
+      language,
+      screen: contextual.screen,
+      title: contextual.title,
+      summary: contextual.summary,
+      nextActions: contextual.nextActions,
+      recommendedTopicIds: contextual.recommendedTopicIDs,
       projectId: context.projectId,
     };
   });
 
-  handlers.get_onboarding_checklist = handlerFor('get_onboarding_checklist', (args) => ({
-    language: args.language || 'en',
-    title: 'Getting started with VaniScript',
-    summary: 'Import, review, and export a project.',
-    steps: [
-      { number: 1, instruction: 'Import a source.' },
-      { number: 2, instruction: 'Review transcript chunks.' },
-      { number: 3, instruction: 'Export the approved result.' },
-    ],
-    topicIds: helpTopics(settings).map((topic) => topic.topicId || topic.id),
-  }));
+  handlers.get_onboarding_checklist = helpHandlerFor('get_onboarding_checklist', (args) => {
+    const language = helpLanguage(settings, args);
+    const checklist = helpCatalog.onboardingChecklist({ language });
+    return {
+      language,
+      title: checklist.title,
+      summary: checklist.summary,
+      steps: checklist.steps.map((instruction, index) => ({ number: index + 1, instruction })),
+      topicIds: [...checklist.topicIDs],
+    };
+  });
 
   handlers.get_subtitle_style = handlerFor('get_subtitle_style', () => safeClone(settings.subtitleStyle || settings.style || {}));
   handlers.get_shorts_plans = shortsHandlerFor('get_shorts_plans', async (args, context) => {

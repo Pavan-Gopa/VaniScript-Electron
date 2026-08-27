@@ -12,6 +12,8 @@ const {
   ReadCatalogError,
   createReadCatalog,
 } = require('../electron/main/mcp/mcpTools/readCatalog.js');
+const helpSearchFixture = require('./fixtures/help-search.json');
+const helpContextFixture = require('./fixtures/help-context.json');
 
 class MemoryVault {
   constructor() {
@@ -858,4 +860,241 @@ test('Shorts project isolation survives the authenticated loopback request path'
   }, { token: issued.token, requestId: 'unknown-project' });
   assert.equal(missing.status, 404);
   assert.equal(missing.body.error.code, 'MCP_NOT_FOUND');
+});
+
+test('help list projects shared bilingual summaries with full sorted categories', async () => {
+  const catalog = createReadCatalog({
+    settings: { helpLocale: 'ru-RU' },
+    helpTopics: [{ topicId: 'injected', category: 'Injected', title: 'Do not use', summary: 'Do not use' }],
+  });
+
+  const result = await catalog.execute('list_help_topics', { category: ' translation ' });
+  assert.equal(result.schemaVersion, 1);
+  assert.equal(result.tool, 'list_help_topics');
+  assert.equal(result.scope, 'read');
+  assert.equal(result.risk, 'read');
+  assert.equal(result.data.language, 'ru');
+  assert.deepEqual(result.data.categories, [
+    'Assistant',
+    'Export',
+    'Getting Started',
+    'Import',
+    'Processing',
+    'Projects',
+    'Review',
+    'Settings',
+    'Shorts',
+    'Translation',
+    'Troubleshooting',
+  ]);
+  assert.deepEqual(result.data.topics.map((topic) => ({
+    topicId: topic.topicId,
+    category: topic.category,
+    screen: topic.screen,
+    title: topic.title,
+  })), [
+    {
+      topicId: 'translate',
+      category: 'Translation',
+      screen: 'review',
+      title: 'Создание, переключение и полировка переводов',
+    },
+    {
+      topicId: 'glossary',
+      category: 'Translation',
+      screen: '',
+      title: 'Использование glossary для имён и терминов',
+    },
+  ]);
+  assert.equal(result.data.count, 2);
+  assert.equal(result.data.topics.every((topic) => (
+    Object.keys(topic).sort().join(',') === 'category,screen,summary,title,topicId'
+  )), true);
+});
+
+test('help search follows bilingual fixture ranking, clamped limits, and empty result semantics', async () => {
+  const catalog = createReadCatalog({ settings: { helpLocale: 'ru' } });
+
+  for (const fixture of helpSearchFixture.queries) {
+    const result = await catalog.execute('search_help', {
+      query: fixture.query,
+      language: fixture.language,
+      limit: fixture.limit,
+    });
+    assert.equal(result.data.query, fixture.query, fixture.name);
+    assert.equal(result.data.language, fixture.expectedLanguage, fixture.name);
+    assert.equal(result.data.matches[0]?.topicId, fixture.expectedFirstID, fixture.name);
+    if (fixture.expectedFirstTitle) {
+      assert.equal(result.data.matches[0]?.title, fixture.expectedFirstTitle, fixture.name);
+    }
+    assert.equal(result.data.matchCount, result.data.matches.length, fixture.name);
+    assert.equal(result.data.limit, fixture.limit, fixture.name);
+    assert.equal(result.data.matches.every((topic) => (
+      Array.isArray(topic.requirements)
+      && topic.steps.every((step, index) => step.number === index + 1 && typeof step.instruction === 'string')
+      && Array.isArray(topic.troubleshooting)
+      && Array.isArray(topic.relatedTopicIds)
+    )), true, fixture.name);
+  }
+
+  const tie = await catalog.execute('search_help', helpSearchFixture.tie);
+  assert.deepEqual(tie.data.matches.map((topic) => topic.topicId), helpSearchFixture.tie.expectedIDs);
+
+  const noMatch = await catalog.execute('search_help', helpSearchFixture.noMatch);
+  assert.deepEqual(noMatch.data.matches, []);
+  assert.equal(noMatch.data.matchCount, 0);
+  assert.equal(noMatch.data.limit, helpSearchFixture.noMatch.limit);
+
+  for (const fixture of helpSearchFixture.limits) {
+    const result = await catalog.execute('search_help', fixture);
+    assert.equal(result.data.matchCount, fixture.expectedCount, JSON.stringify(fixture));
+    assert.equal(result.data.limit, Math.min(10, Math.max(1, fixture.limit)));
+  }
+  const invalidLimit = await catalog.execute('search_help', {
+    query: 'export',
+    language: 'en',
+    limit: 'invalid',
+  });
+  assert.equal(invalidLimit.data.limit, 5);
+});
+
+test('help search rejects blank MCP queries with a typed invalid request', async () => {
+  const catalog = createReadCatalog();
+  await assert.rejects(
+    () => catalog.execute('search_help', {
+      query: helpSearchFixture.empty.query,
+      language: helpSearchFixture.empty.language,
+      limit: helpSearchFixture.empty.limit,
+    }),
+    (error) => {
+      assert.ok(error instanceof ReadCatalogError);
+      assert.equal(error.mcpCode, 'MCP_INVALID_REQUEST');
+      assert.equal(error.message, 'query is required and cannot be empty');
+      return true;
+    },
+  );
+});
+
+test('help topic lookup localizes full details and reports typed not-found errors', async () => {
+  const catalog = createReadCatalog({ settings: { helpLocale: 'ru' } });
+  const result = await catalog.execute('get_help_topic', { topicId: ' export-documents ' });
+  assert.equal(result.data.topicId, 'export-documents');
+  assert.equal(result.data.topic.topicId, 'export-documents');
+  assert.equal(result.data.topic.category, 'Export');
+  assert.equal(result.data.topic.screen, 'export');
+  assert.equal(result.data.topic.title, 'Экспорт документов транскрипта');
+  assert.equal(result.data.topic.summary, 'Экспортируйте исходный текст или перевод в TXT, SRT, VTT или Markdown.');
+  assert.deepEqual(result.data.topic.steps.map((step) => step.number), [1, 2, 3]);
+  assert.equal(result.data.topic.steps[1].instruction.includes('Document export'), true);
+  assert.deepEqual(result.data.topic.relatedTopicIds, ['review-transcript', 'create-shorts']);
+  assert.equal(Object.prototype.hasOwnProperty.call(result.data.topic, 'id'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(result.data.topic, 'relatedTopicIDs'), false);
+
+  await assert.rejects(
+    () => catalog.execute('get_help_topic', { topicId: 'not-a-real-topic', language: 'en' }),
+    (error) => {
+      assert.ok(error instanceof ReadCatalogError);
+      assert.equal(error.mcpCode, 'MCP_NOT_FOUND');
+      assert.equal(error.message, 'Help topic not found: not-a-real-topic');
+      return true;
+    },
+  );
+  await assert.rejects(
+    () => catalog.execute('get_help_topic', { topicId: '   ' }),
+    (error) => {
+      assert.ok(error instanceof ReadCatalogError);
+      assert.equal(error.mcpCode, 'MCP_INVALID_REQUEST');
+      assert.equal(error.message, 'topicId is required. Call list_help_topics or search_help first.');
+      return true;
+    },
+  );
+});
+
+test('help language arguments take precedence over persisted locale and normalize to en or ru', async () => {
+  const catalog = createReadCatalog({ settings: { helpLocale: 'ru-RU' } });
+  const persisted = await catalog.execute('get_onboarding_checklist', {});
+  assert.equal(persisted.data.language, 'ru');
+  assert.equal(persisted.data.title, 'Чек-лист первого проекта');
+
+  const explicitEnglish = await catalog.execute('get_onboarding_checklist', { language: 'en-US' });
+  assert.equal(explicitEnglish.data.language, 'en');
+  assert.equal(explicitEnglish.data.title, 'First project checklist');
+
+  const invalid = await catalog.execute('get_onboarding_checklist', { language: 'fr' });
+  assert.equal(invalid.data.language, 'en');
+});
+
+test('contextual help follows every active renderer screen/state fixture in both locales', async () => {
+  for (const fixture of helpContextFixture.cases) {
+    const catalog = createReadCatalog({
+      projectId: 'context-project',
+      projectRevision: 'context-revision',
+      activeRendererState: fixture.state,
+    });
+    for (const language of ['en', 'ru']) {
+      const result = await catalog.execute('get_contextual_help', { language });
+      const expected = fixture.expected[language];
+      assert.deepEqual({
+        language: result.data.language,
+        screen: result.data.screen,
+        title: result.data.title,
+        summary: result.data.summary,
+        nextActions: result.data.nextActions,
+        recommendedTopicIds: result.data.recommendedTopicIds,
+      }, {
+        language,
+        screen: expected.screen,
+        title: expected.title,
+        summary: expected.summary,
+        nextActions: expected.nextActions,
+        recommendedTopicIds: expected.recommendedTopicIDs,
+      }, `${fixture.name} ${language}`);
+      assert.equal(result.data.projectId, 'context-project', `${fixture.name} ${language}`);
+    }
+  }
+});
+
+test('contextual help reads active UI and processing state readers before stale options', async () => {
+  const catalog = createReadCatalog({
+    screen: 'review',
+    readers: {
+      getUiState: async () => ({
+        screen: 'export',
+        hasSource: true,
+        hasActiveSession: true,
+        shortsPlanCount: 1,
+      }),
+      getProcessingStatus: async () => ({ progress: 1 }),
+    },
+  });
+  const result = await catalog.execute('get_contextual_help', { language: 'en' });
+  assert.equal(result.data.screen, 'export');
+  assert.equal(result.data.title, 'Export documents or create Shorts');
+  assert.deepEqual(result.data.nextActions, [
+    'Use Document export for TXT, SRT, VTT, or Markdown.',
+    'Select the required clip cards and export ideas or videos.',
+  ]);
+});
+
+test('onboarding checklist remains eight numbered localized steps', async () => {
+  const catalog = createReadCatalog();
+  const expectedTopicIds = [
+    'getting-started',
+    'manage-models',
+    'configure-engine',
+    'review-transcript',
+    'glossary',
+    'export-documents',
+    'create-shorts',
+  ];
+  for (const language of ['en', 'ru']) {
+    const result = await catalog.execute('get_onboarding_checklist', { language });
+    assert.equal(result.data.language, language);
+    assert.equal(result.data.steps.length, 8);
+    assert.deepEqual(result.data.steps.map((step) => step.number), [1, 2, 3, 4, 5, 6, 7, 8]);
+    assert.deepEqual(result.data.topicIds, expectedTopicIds);
+    assert.equal(result.data.steps[3].instruction.includes('Initialize Engine'), true);
+    assert.equal(result.data.steps[4].instruction.includes('Approve & Next'), true);
+    assert.equal(result.data.steps[7].instruction.includes('Help Tour'), true);
+  }
 });

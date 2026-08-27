@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { CheckCircle, Copy, Image, Mic, Paperclip, RotateCcw, Send, Sparkles, Square, X } from 'lucide-react';
+import { CheckCircle, Copy, HelpCircle, Image, Mic, Paperclip, RotateCcw, Send, Sparkles, Square, X } from 'lucide-react';
 import {
   ASSISTANT_REASONING,
   assistantStore,
@@ -8,10 +8,13 @@ import {
   useAssistantStore,
   type AssistantStore,
 } from '../stores/assistantStore';
+import { normalizeHelpLanguage } from '../../shared/help-catalog';
 
 export interface AssistantSidebarProps {
   isOpen: boolean;
   onClose: () => void;
+  onOpenHelp: () => void;
+  helpLocale?: string;
   store?: AssistantStore;
 }
 
@@ -37,10 +40,17 @@ const iconButtonStyle: React.CSSProperties = {
   cursor: 'pointer',
 };
 
-export function AssistantSidebar({ isOpen, onClose, store = assistantStore }: AssistantSidebarProps): React.ReactElement | null {
+export function AssistantSidebar({
+  isOpen,
+  onClose,
+  onOpenHelp,
+  helpLocale,
+  store = assistantStore,
+}: AssistantSidebarProps): React.ReactElement | null {
   const state = useAssistantStore(store);
   const profile = state.profiles.find((item) => item.id === state.profileId) || state.profiles[0];
   const models = profile ? modelsForProfile(profile) : [];
+  const helpLabel = normalizeHelpLanguage(helpLocale) === 'ru' ? 'Центр помощи' : 'Help Center';
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const live = state.canCancel;
 
@@ -117,6 +127,16 @@ export function AssistantSidebar({ isOpen, onClose, store = assistantStore }: As
               </select>
             </label>
           )}
+          <button
+            type="button"
+            data-testid="assistant-open-help"
+            style={iconButtonStyle}
+            onClick={onOpenHelp}
+            aria-label={helpLabel}
+            title={helpLabel}
+          >
+            <HelpCircle size={14} /> {helpLabel}
+          </button>
           <button type="button" className="chat-sidebar-close" onClick={onClose} aria-label="Close assistant">
             <X size={16} />
           </button>

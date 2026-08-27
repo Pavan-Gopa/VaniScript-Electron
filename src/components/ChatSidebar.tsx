@@ -21,7 +21,10 @@ interface Message {
   timestamp: Date;
   toolCalls?: Array<{ name: string; args: any; status: 'running' | 'done' | 'error'; error?: string }>;
 }
-
+type GeminiHistoryEntry = {
+  role: 'user' | 'model';
+  parts: Array<{ text: string }>;
+};
 const MCP_TOOL_DECLARATIONS = [
   {
     name: 'get_project_state',
@@ -115,11 +118,69 @@ const MCP_TOOL_DECLARATIONS = [
       },
       required: ['planIndex']
     }
-  }
+  },
+  {
+    name: 'list_help_topics',
+    description: 'List built-in VaniScript help topics for feature discovery.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        category: { type: 'STRING', description: 'Optional exact help category.' },
+        language: { type: 'STRING', description: 'Help language: canonical en or ru.' },
+      },
+    },
+  },
+  {
+    name: 'get_help_topic',
+    description: 'Read one built-in help topic with requirements, instructions, troubleshooting, and related topics.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        topicId: { type: 'STRING', description: 'Topic ID returned by search_help or list_help_topics.' },
+        language: { type: 'STRING', description: 'Help language: canonical en or ru.' },
+      },
+      required: ['topicId'],
+    },
+  },
+  {
+    name: 'search_help',
+    description: 'Search built-in help topics by a non-empty question or feature name.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        query: { type: 'STRING', description: 'Non-empty help question or feature name.' },
+        language: { type: 'STRING', description: 'Help language: canonical en or ru.' },
+        limit: { type: 'NUMBER', description: 'Maximum 10 results.' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'get_contextual_help',
+    description: 'Read exact next actions for the current screen and project state.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        language: { type: 'STRING', description: 'Help language: canonical en or ru.' },
+      },
+    },
+  },
+  {
+    name: 'get_onboarding_checklist',
+    description: 'Read the complete first-project workflow checklist.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        language: { type: 'STRING', description: 'Help language: canonical en or ru.' },
+      },
+    },
+  },
 ];
 
-const SYSTEM_PROMPT = `
-You are the VaniScript AI Chat Assistant. You are fully integrated with VaniScript via local tools.
+// These declarations describe the tools available to the embedded MCP routes.
+// Never pass them to, or claim their execution from, the direct Gemini route.
+const MCP_SYSTEM_PROMPT = `
+You are the VaniScript AI Chat Assistant on an MCP-capable route. You are fully integrated with VaniScript via local tools.
 Your goal is to help users manage, refine, style, and export their transcription/translation project.
 
 You have access to tools that can:
@@ -130,9 +191,23 @@ You have access to tools that can:
 - Plan, crop, and adjust background effects (blur, gradient, solid, feathering) for vertical clips (Shorts/Reels).
 - Trigger final video renders.
 
-When the user asks you to do something (e.g. "make text color orange" or "approve segment 4"), ALWAYS invoke the corresponding tool to execute the action immediately. Once the tool executes, confirm the success of the action clearly to the user.
+For how-to questions about VaniScript screens, features, controls, settings, or workflows, call search_help before answering in the language of the latest user message. If the answer depends on the current screen or project state, also call get_contextual_help. If a beginner asks where to start, call get_onboarding_checklist. Use exact English button and screen labels returned by the tools while explaining the steps in the user's language. Pass only canonical help language values en or ru; help language never changes source or target translation language or transcript content.
+
+When the user asks you to do something (for example, make text color orange or approve segment 4), ALWAYS invoke the corresponding mutation tool to execute the action immediately. Once the tool executes, confirm the success of the action clearly to the user.
 Keep responses concise, helpful, and professional.
 `;
+
+const DIRECT_API_SYSTEM_PROMPT = `
+You are the VaniScript AI Chat Assistant on the direct API route. Answer using the conversation provided.
+This route has no VaniScript MCP tool loop and no tool execution capability. Never claim that you called, ran, or completed an MCP tool. If the user needs screen-specific instructions, direct them to the Help Center or local catalog; do not invent current project state or mutation results.
+Keep responses concise, helpful, and professional.
+`;
+
+/*
+ * Kept as a declaration mirror for the embedded MCP route. The API route
+ * intentionally uses DIRECT_API_SYSTEM_PROMPT and never receives this list.
+ */
+const SYSTEM_PROMPT = MCP_SYSTEM_PROMPT;
 
 export function ChatSidebar({ isOpen, onClose, executeMcpTool, settings, chatRoute = 'api', chatGrokModel = 'grok-4.5', chatQwenModel = 'qwen3.8-max-preview', onChatConfigChange }: ChatSidebarProps) {
   const route = chatRoute;
@@ -196,96 +271,35 @@ export function ChatSidebar({ isOpen, onClose, executeMcpTool, settings, chatRou
 
     try {
       const ai = new GoogleGenAI({ apiKey: settings.geminiKey });
-      
-      // Build conversation history for Gemini API
-      // Filter only user and assistant messages, and map to { role, parts }
-      const history: any[] = messages
+
+      const history: GeminiHistoryEntry[] = messages
         .filter(m => m.sender !== 'system')
         .map(m => ({
           role: m.sender === 'user' ? 'user' : 'model',
-          parts: [{ text: m.text }] as any
+          parts: [{ text: m.text }]
         }));
 
       history.push({
         role: 'user',
-        parts: [{ text: userText }] as any
+        parts: [{ text: userText }]
       });
 
-      let currentContents: any[] = [...history];
-      let loops = 0;
-      let finalReply = '';
-      let executedTools: Message['toolCalls'] = [];
-
-      while (loops < 8) {
-        const response = await ai.models.generateContent({
-          model: 'gemini-2.5-flash',
-          contents: currentContents,
-          config: {
-            systemInstruction: SYSTEM_PROMPT,
-            tools: [{ functionDeclarations: MCP_TOOL_DECLARATIONS }] as any,
-            temperature: 0.1,
-          }
-        });
-
-        const parts = response.candidates?.[0]?.content?.parts || [];
-        finalReply = response.text || '';
-
-        const calls = parts.filter(p => p.functionCall);
-        if (calls.length === 0) {
-          break; // Loop completes when no more function calls
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: history,
+        config: {
+          systemInstruction: DIRECT_API_SYSTEM_PROMPT,
+          temperature: 0.1,
         }
+      });
 
-        // Push model's call to history
-        currentContents.push({ role: 'model', parts } as any);
-
-        const responseParts = [];
-        for (const call of calls) {
-          if (!call.functionCall) continue;
-          const { name, args } = call.functionCall;
-          if (!name) continue;
-          setActiveToolName(name);
-
-          // Update message log with temporary tool call state
-          executedTools.push({ name, args, status: 'running' });
-
-          try {
-            const result = await executeMcpTool(name, args);
-            executedTools = executedTools.map(t => 
-              t.name === name ? { ...t, status: 'done' as const } : t
-            );
-            responseParts.push({
-              functionResponse: {
-                name,
-                response: { output: result }
-              }
-            });
-          } catch (err: any) {
-            const errMsg = err.message || String(err);
-            executedTools = executedTools.map(t => 
-              t.name === name ? { ...t, status: 'error' as const, error: errMsg } : t
-            );
-            responseParts.push({
-              functionResponse: {
-                name,
-                response: { error: errMsg }
-              }
-            });
-          }
-        }
-
-        currentContents.push({ role: 'user', parts: responseParts } as any);
-        loops++;
-      }
-
-      setActiveToolName(null);
       setMessages(prev => [
         ...prev,
         {
           id: Math.random().toString(36).substring(2, 9),
           sender: 'assistant',
-          text: finalReply || 'I have completed your request.',
-          timestamp: new Date(),
-          toolCalls: executedTools.length > 0 ? executedTools : undefined
+          text: response.text || 'I can help explain VaniScript, but I cannot execute MCP tools on this route.',
+          timestamp: new Date()
         }
       ]);
     } catch (error: any) {

@@ -8,6 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const React = require('react');
 const ReactDOMServer = require('react-dom/server');
+const ReactDOMClient = require('react-dom/client');
 const { JSDOM } = require('jsdom');
 require('tsx/cjs');
 
@@ -17,6 +18,8 @@ const {
 
 const STORE = '../src/stores/assistantStore.ts';
 const SIDEBAR = '../src/components/AssistantSidebar.tsx';
+const APP = '../src/App.tsx';
+const CHAT_SIDEBAR = '../src/components/ChatSidebar.tsx';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -284,6 +287,99 @@ test('copy and retry use the last turn without starting a second live stream', a
   assert.equal(starts, 2);
   assert.equal(store.getState().messages.filter((message) => message.role === 'user').length, 2);
 });
+test('Assistant sidebar exposes a localized Help Center entry and App wiring', async () => {
+  const { createAssistantStore } = await loadStore();
+  const { AssistantSidebar } = require(SIDEBAR);
+  const store = createAssistantStore({ start: () => createMockStream() });
+  let opened = 0;
+
+  const russianMarkup = ReactDOMServer.renderToStaticMarkup(
+    React.createElement(AssistantSidebar, {
+      isOpen: true,
+      onClose: () => {},
+      onOpenHelp: () => { opened += 1; },
+      helpLocale: 'ru',
+      store,
+    }),
+  );
+  assert.match(russianMarkup, /data-testid="assistant-open-help"/);
+  assert.match(russianMarkup, /Центр помощи/);
+
+  const appSource = fs.readFileSync(path.join(__dirname, APP), 'utf8');
+  assert.match(appSource, /<AssistantSidebar[\s\S]*?onOpenHelp=\{openHelpCenter\}/);
+  assert.match(appSource, /<AssistantSidebar[\s\S]*?helpLocale=\{settings\.helpLocale\}/);
+
+  const dom = new JSDOM('<!doctype html><main id="assistant-root"></main>', { url: 'http://localhost' });
+  const previousWindow = global.window;
+  const previousDocument = global.document;
+  const previousActEnvironment = global.IS_REACT_ACT_ENVIRONMENT;
+  try {
+    global.window = dom.window;
+    global.document = dom.window.document;
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    dom.window.HTMLElement.prototype.scrollIntoView = () => {};
+    const root = ReactDOMClient.createRoot(dom.window.document.querySelector('#assistant-root'));
+    await React.act(async () => {
+      root.render(React.createElement(AssistantSidebar, {
+        isOpen: true,
+        onClose: () => {},
+        onOpenHelp: () => { opened += 1; },
+        store,
+      }));
+    });
+    await React.act(async () => {
+      dom.window.document.querySelector('[data-testid="assistant-open-help"]').dispatchEvent(
+        new dom.window.MouseEvent('click', { bubbles: true }),
+      );
+    });
+    assert.equal(opened, 1);
+    await React.act(async () => {
+      root.unmount();
+    });
+    await sleep(0);
+  } finally {
+    if (previousWindow === undefined) delete global.window;
+    else global.window = previousWindow;
+    if (previousDocument === undefined) delete global.document;
+    else global.document = previousDocument;
+    if (previousActEnvironment === undefined) delete global.IS_REACT_ACT_ENVIRONMENT;
+    else global.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+    dom.window.close();
+  }
+});
+
+test('direct provider paths do not auto-claim MCP tool execution', async () => {
+  const { createAssistantStore } = await loadStore();
+  const { AssistantSidebar } = require(SIDEBAR);
+  const stream = createMockStream();
+  const store = createAssistantStore({ start: () => stream });
+  store.setDraft('How do I export subtitles?');
+  await store.send();
+  stream.emit('token', 'Open Help Center.');
+
+  const markup = ReactDOMServer.renderToStaticMarkup(
+    React.createElement(AssistantSidebar, {
+      isOpen: true,
+      onClose: () => {},
+      onOpenHelp: () => {},
+      store,
+    }),
+  );
+  assert.doesNotMatch(markup, /Running tool:/);
+  assert.equal(store.getState().runningTool, null);
+
+  const chatSource = fs.readFileSync(path.join(__dirname, CHAT_SIDEBAR), 'utf8');
+  const directApiStart = chatSource.indexOf('const handleSend =');
+  const grokStart = chatSource.indexOf('const handleSendGrok =');
+  assert.ok(directApiStart >= 0 && grokStart > directApiStart);
+  const directApiSource = chatSource.slice(directApiStart, grokStart);
+  assert.match(directApiSource, /DIRECT_API_SYSTEM_PROMPT/);
+  assert.doesNotMatch(directApiSource, /executeMcpTool|MCP_TOOL_DECLARATIONS/);
+  for (const toolName of ['list_help_topics', 'get_help_topic', 'search_help', 'get_contextual_help', 'get_onboarding_checklist']) {
+    assert.match(chatSource, new RegExp(`name: '${toolName}'`));
+  }
+});
+
 
 test('Assistant sidebar jsdom render shows selectors, cancel, preview, and challenge approve', async () => {
   const { createAssistantStore } = await loadStore();

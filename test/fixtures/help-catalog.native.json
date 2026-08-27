@@ -1,0 +1,222 @@
+{
+  "nativeTopicIDs": [
+    "getting-started",
+    "import-media",
+    "import-link",
+    "record-audio",
+    "configure-engine",
+    "manage-models",
+    "process-media",
+    "review-transcript",
+    "edit-cues",
+    "translate",
+    "glossary",
+    "export-documents",
+    "create-shorts",
+    "visual-editor",
+    "projects",
+    "settings-agents",
+    "embedded-chat",
+    "help-tour",
+    "troubleshoot-unavailable"
+  ],
+  "parity": {
+    "englishIDs": [
+      "getting-started",
+      "import-media",
+      "import-link",
+      "record-audio",
+      "configure-engine",
+      "manage-models",
+      "process-media",
+      "review-transcript",
+      "edit-cues",
+      "translate",
+      "glossary",
+      "export-documents",
+      "create-shorts",
+      "visual-editor",
+      "projects",
+      "settings-agents",
+      "embedded-chat",
+      "help-tour",
+      "troubleshoot-unavailable"
+    ],
+    "russianIDs": [
+      "getting-started",
+      "import-media",
+      "import-link",
+      "record-audio",
+      "configure-engine",
+      "manage-models",
+      "process-media",
+      "review-transcript",
+      "edit-cues",
+      "translate",
+      "glossary",
+      "export-documents",
+      "create-shorts",
+      "visual-editor",
+      "projects",
+      "settings-agents",
+      "embedded-chat",
+      "help-tour",
+      "troubleshoot-unavailable"
+    ]
+  },
+  "requiredTopicIDs": ["getting-started", "embedded-chat", "visual-editor"],
+  "representativeTopics": {
+    "getting-started": {
+      "category": "Getting Started",
+      "screen": "upload",
+      "en": {
+        "title": "Create your first project",
+        "summary": "The normal route is Upload, Config, Processing, Review, then Export.",
+        "requirements": [],
+        "steps": [
+          "Choose or record source media on Upload.",
+          "Confirm language and models on Config.",
+          "Click Initialize Engine and wait for Review.",
+          "Correct and approve every segment.",
+          "Open Export for documents or Shorts."
+        ],
+        "troubleshooting": [],
+        "relatedTopicIDs": ["import-media", "configure-engine", "review-transcript", "export-documents"]
+      },
+      "ru": {
+        "title": "Создание первого проекта",
+        "summary": "Обычный маршрут: Upload, Config, Processing, Review, затем Export.",
+        "requirements": [],
+        "steps": [
+          "Выберите или запишите исходное медиа на экране Upload.",
+          "Проверьте язык и модели на экране Config.",
+          "Нажмите Initialize Engine и дождитесь Review.",
+          "Исправьте и утвердите каждый сегмент.",
+          "Откройте Export для документов или Shorts."
+        ],
+        "troubleshooting": [],
+        "relatedTopicIDs": ["import-media", "configure-engine", "review-transcript", "export-documents"]
+      }
+    },
+    "export-documents": {
+      "category": "Export",
+      "screen": "export",
+      "en": {
+        "title": "Export transcript documents",
+        "summary": "Export original or translated content as TXT, SRT, VTT, or Markdown.",
+        "requirements": ["An active reviewed session. Translation exports require an active translation language."],
+        "steps": [
+          "Open Export, or click Complete & Export after the last segment.",
+          "In Document export, click the Original or Target button for the required format.",
+          "Choose the destination in the macOS save dialog."
+        ],
+        "troubleshooting": [],
+        "relatedTopicIDs": ["review-transcript", "create-shorts"]
+      },
+      "ru": {
+        "title": "Экспорт документов транскрипта",
+        "summary": "Экспортируйте исходный текст или перевод в TXT, SRT, VTT или Markdown.",
+        "requirements": ["Нужна активная проверенная сессия. Для экспорта перевода требуется выбранный язык перевода."],
+        "steps": [
+          "Откройте Export или нажмите Complete & Export после последнего сегмента.",
+          "В Document export нажмите кнопку Original или Target нужного формата.",
+          "Выберите папку назначения в системном окне сохранения macOS."
+        ],
+        "troubleshooting": [],
+        "relatedTopicIDs": ["review-transcript", "create-shorts"]
+      }
+    },
+    "visual-editor": {
+      "category": "Shorts",
+      "screen": "visualEditor",
+      "en": {
+        "title": "Edit a Short in Visual Editor",
+        "summary": "Fine-tune framing, subtitles, timing, cuts, graphic layers, and extra audio before render.",
+        "requirements": [],
+        "steps": [
+          "On a Shorts card, click Edit.",
+          "Adjust the clip timing and framing while checking the preview.",
+          "Edit subtitle style and segments; add cuts, background, logo, intro/outro, text, or audio tracks as needed.",
+          "Click Save, return to Export, select the clip, and render it."
+        ],
+        "troubleshooting": [],
+        "relatedTopicIDs": ["create-shorts"]
+      },
+      "ru": {
+        "title": "Редактирование Short в Visual Editor",
+        "summary": "Точно настройте кадрирование, субтитры, тайминг, cuts, графические слои и дополнительное аудио перед рендером.",
+        "requirements": [],
+        "steps": [
+          "На карточке Shorts нажмите Edit.",
+          "Настройте тайминг и кадрирование, проверяя preview.",
+          "При необходимости измените стиль и сегменты субтитров; добавьте cuts, фон, логотип, intro/outro, текстовые или аудиодорожки.",
+          "Нажмите Save, вернитесь в Export, выберите клип и запустите рендер."
+        ],
+        "troubleshooting": [],
+        "relatedTopicIDs": ["create-shorts"]
+      }
+    },
+    "settings-agents": {
+      "category": "Settings",
+      "screen": null,
+      "en": {
+        "title": "Connect an MCP agent",
+        "summary": "Enable the local MCP server, choose the preferred agent, and use the generated setup instructions.",
+        "requirements": [],
+        "steps": [
+          "Open Settings > Agents.",
+          "Turn on Enable MCP.",
+          "Turn on Allow Write Tools only when the agent may edit the active project.",
+          "Choose Preferred Agent and use Copy Setup for that client.",
+          "A green status means the client is currently connected; Active only selects the preferred profile."
+        ],
+        "troubleshooting": ["If the status is Ready, the server is available but that external client is not currently connected."],
+        "relatedTopicIDs": ["embedded-chat", "troubleshoot-unavailable"]
+      },
+      "ru": {
+        "title": "Подключение MCP-агента",
+        "summary": "Включите локальный MCP-сервер, выберите предпочтительного агента и используйте созданные инструкции подключения.",
+        "requirements": [],
+        "steps": [
+          "Откройте Settings > Agents.",
+          "Включите Enable MCP.",
+          "Включайте Allow Write Tools только когда агенту разрешено изменять активный проект.",
+          "Выберите Preferred Agent и используйте Copy Setup для этого клиента.",
+          "Зелёный статус означает, что клиент сейчас подключён; Active только выбирает предпочтительный профиль."
+        ],
+        "troubleshooting": ["Статус Ready означает, что сервер доступен, но внешний клиент сейчас не подключён."],
+        "relatedTopicIDs": ["embedded-chat", "troubleshoot-unavailable"]
+      }
+    },
+    "embedded-chat": {
+      "category": "Assistant",
+      "screen": null,
+      "en": {
+        "title": "Use the VaniScript AI Assistant",
+        "summary": "Ask how to use VaniScript, inspect the active project, or request an available MCP action directly in the app chat.",
+        "requirements": [],
+        "steps": [
+          "Open the AI Assistant panel.",
+          "Select MCP for the connected Codex route or API for the configured provider route.",
+          "Ask a concrete question, for example: How do I export SRT?",
+          "For edits, enable Allow Write Tools in Settings > Agents and describe the intended change precisely."
+        ],
+        "troubleshooting": [],
+        "relatedTopicIDs": ["settings-agents", "getting-started"]
+      },
+      "ru": {
+        "title": "Использование VaniScript AI Assistant",
+        "summary": "Задавайте вопросы по VaniScript, проверяйте активный проект или просите выполнить доступное MCP-действие прямо в чате приложения.",
+        "requirements": [],
+        "steps": [
+          "Откройте панель AI Assistant.",
+          "Выберите MCP для подключённого Codex или API для настроенного провайдера.",
+          "Задайте конкретный вопрос, например: Как экспортировать SRT?",
+          "Для изменений включите Allow Write Tools в Settings > Agents и точно опишите нужное действие."
+        ],
+        "troubleshooting": [],
+        "relatedTopicIDs": ["settings-agents", "getting-started"]
+      }
+    }
+  }
+}

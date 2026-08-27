@@ -180,7 +180,7 @@
 **Depends on:** P3A, P3B, P3C, P3D, P3E
 
 **Do:**
-- [ ] [P4.D1] Help/onboarding catalog: EN/RU search/context/tours
+- [x] [P4.D1] Help/onboarding catalog: EN/RU search/context/tours
 - [ ] [P4.D2] Usage/logging/diagnostics: redacted observability
 - [ ] [P4.D3] Large-project optimization: budgets/virtualization
 - [ ] [P4.D4] Cross-edition fixture suite: shared parity gate

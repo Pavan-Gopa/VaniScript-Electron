@@ -3,7 +3,7 @@ import { AppSettings, UsageStats } from '../types';
 import { DEFAULT_SETTINGS, saveUsage } from '../services/storage';
 import { useSettingsStore } from '../hooks/useSettingsStore';
 import type { Settings, AgentsSettings, UpdatesSettings } from '../../shared/contracts/settings';
-import { X, Eye, EyeOff, Download, Trash2, RefreshCw, Upload, Plus, CheckCircle2, ExternalLink } from 'lucide-react';
+import { X, Eye, EyeOff, Download, Trash2, RefreshCw, Upload, Plus, CheckCircle2, ExternalLink, HelpCircle } from 'lucide-react';
 import { getAvailableTranscriptionProviders, getAvailableTranslationProviders, ProviderOption } from '../lib/provider-registry';
 import { createGlossaryEntry } from '../lib/glossary';
 import { filterGlossaryEntries, GlossarySortMode, joinGlossaryEntries, listGlossaryCategories, sortGlossaryEntries } from '../lib/glossary-management';
@@ -49,6 +49,7 @@ interface Props {
   onClose: () => void;
   tabIndex?: number;
   onTabChange?: (tab: number) => void;
+  onOpenHelpCenter?: () => void;
 }
 
 const CLOUD_API_PROVIDERS = [
@@ -135,7 +136,7 @@ function renderProviderOptions(options: ProviderOption[]) {
   );
 }
 
-export function SettingsModal({ settings, usage, onPersist, onClose, tabIndex, onTabChange }: Props) {
+export function SettingsModal({ settings, usage, onPersist, onClose, tabIndex, onTabChange, onOpenHelpCenter }: Props) {
   const [s, setS] = useState<AppSettings>({ ...settings });
   const [localTab, setLocalTab] = useState(0);
   const tab = tabIndex !== undefined ? tabIndex : localTab;
@@ -951,7 +952,21 @@ export function SettingsModal({ settings, usage, onPersist, onClose, tabIndex, o
               <div className="s-section" style={{ marginTop: 16 }}>
                 <p className="s-section-title">Help & Guides</p>
                 <div className="s-card">
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Field label="Help language">
+                    <select
+                      className="s-input s-select"
+                      data-testid="help-language-picker"
+                      value={s.helpLocale ?? 'en'}
+                      onChange={(event) => {
+                        const helpLocale = event.currentTarget.value === 'ru' ? 'ru' : 'en';
+                        persistSettings({ ...s, helpLocale });
+                      }}
+                    >
+                      <option value="en">English</option>
+                      <option value="ru">Russian</option>
+                    </select>
+                  </Field>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
                     <div style={{ marginRight: 16 }}>
                       <span className="s-label" style={{ fontWeight: 600, display: 'block', fontSize: 13 }}>Interactive Onboarding Tour</span>
                       <span style={{ fontSize: 11, color: 'rgba(255, 255, 255, 0.45)', marginTop: 2, display: 'block' }}>
@@ -967,6 +982,9 @@ export function SettingsModal({ settings, usage, onPersist, onClose, tabIndex, o
                       <span style={{ fontSize: 12 }}>Enabled</span>
                     </label>
                   </div>
+                  <button type="button" className="btn-ghost-sm" onClick={() => onOpenHelpCenter?.()}>
+                    <HelpCircle size={14} /> Open Help Center
+                  </button>
                 </div>
               </div>
             </div>

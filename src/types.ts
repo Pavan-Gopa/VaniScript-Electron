@@ -64,6 +64,7 @@ export interface AppSettings {
   fontFamily: FontFamily;
   annotationMode?: boolean;
   completedOnboardingBuildId?: string;
+  helpLocale?: 'en' | 'ru';
   // Chunking
   chunkDurationMin: number;   // 2-20
   sliceMode: SliceMode;

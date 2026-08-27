@@ -5,13 +5,11 @@ onboarding:
   model_pairs_confirmed: true
   completed_at: 2026-08-21T00:00:00Z
 current_step: P4
-current_work_item_id: P4.D1
-current_work_item: >-
-  P3E media lane fully closed (D1-D5, O1/O2/J1/J2). Next: P4.D1 discovery
-  for the help/onboarding catalog (EN/RU search/context/tours), then cycle.
+current_work_item_id: P4.D2
+current_work_item: P4.D2 usage/logging/diagnostics — redacted observability discovery.
 step_description: >-
-  P0-P3E complete. Active pointer P4.D1 help/onboarding catalog;
-  P4 gates O1/O2/J1/J2 open until card completes.
+  P0-P3E complete; P4.D1 closed. Active pointer P4.D2 redacted observability;
+  P4 gates O1/O2/J1/J2 remain open until the full P4 hardening plan completes.
 completed_steps:
   - P0
   - P1
@@ -24,34 +22,22 @@ completed_steps:
 skipped_steps: []
 parked_steps: []
 implementation:
-  status: lane_closed_starting_p4
-  attempts: 1
+  status: discovery_pending
+  attempts: 0
   note: >-
-    P3E closed tester-green at aggregate 756/0 with all gates adjudicated.
-    P4.D1 discovery dispatches next.
-  target_files:
-    - Electron/src/App.tsx
-    - Electron/src/lib/review-format.ts
-    - Electron/src/lib/export-filename.ts
-    - Electron/electron/main.js
-    - Electron/electron/preload.js
-    - Electron/src/types.ts
-    - Electron/electron/main/projects/streamingBundle.js
-    - Electron/electron/main/projects/mcpExportStore.js
-    - Electron/electron/main/mcp/mcpTools/exportCatalog.js
-    - Electron/electron/main/mcp/mcpTools/readCatalog.js
+    P4.D1 closed after bugfix, approved re-review, Tester qa_green, and Main
+    independent verification. Advancing transactionally to P4.D2 discovery.
+  target_files: []
 retry_guard:
-  max_attempts_without_progress: 3
-  last_failure_signature: null
-omp:
-  last_result_artifact: history://P3ED5Tester1
-  active_agent: null
-  active_role: null
-  status: idle_between_items
-  role: tester
-  primary_agent: workflow-tester
-  evidence: history://P3ED5Tester1
-  omp_status_note: p3e_lane_closed_advancing_p4_d1
+  omp:
+    last_result_artifact: history://P4D1Tester2
+    active_agent: null
+    active_role: null
+    status: idle
+  role: scout
+  primary_agent: scout
+  evidence: history://P4D1Tester2
+  omp_status_note: p4_d1_closed_p4_d2_discovery_pending
 standing_order:
   human_instruction: >-
     STANDING ORDER (2026-08-22, supersedes all earlier pause directives):
@@ -103,12 +89,11 @@ security_audit:
 checkpoint:
   last_pre_tag: null
   last_post_tag: null
-  last_commit: b8a40b5
+  last_commit: 8686689
   note: >-
-    P3E.D4 product candidate plus closure-time workflow-memory mirror
-    committed and pushed as b8a40b5 on codex/v2-swift-import-compat.
-    Outer canonical state remains local-only; next closure mirror will
-    carry this hash.
+    P3E lane-closure product commit plus workflow-memory mirror pushed as
+    8686689 on codex/v2-swift-import-compat. Outer canonical state remains
+    local-only; next closure mirror will carry this hash.
 notes: |
   2026-08-21 canonical state repair: STEPS.md rewritten as Step Cards (P0..P5) with
   stable IDs <step>.D/O/J; current_step restored; completed_steps limited to

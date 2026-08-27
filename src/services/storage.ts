@@ -2,9 +2,14 @@ import { AppSettings, UsageStats } from '../types';
 import { createDefaultTranslationModelStateMap } from '../lib/llamacpp-model-catalog';
 import { DEFAULT_PROMPT_SETTINGS, normalizePromptSettings } from '../lib/prompt-presets';
 import { mergeStarterGlossary, normalizeGlossaryCategory, STARTER_GLOSSARY } from '../lib/starter-glossary';
+import { normalizeHelpLanguage } from '../../shared/help-catalog';
 
 const SETTINGS_KEY = 'vs_settings_v1';
 const USAGE_KEY = 'vs_usage_v1';
+
+function systemHelpLocale(): 'en' | 'ru' {
+  return normalizeHelpLanguage(typeof navigator !== 'undefined' ? navigator.language : undefined);
+}
 
 export const DEFAULT_SETTINGS: AppSettings = {
   geminiKey: '',
@@ -35,6 +40,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   glossary: STARTER_GLOSSARY,
   chatRoute: 'api',
   chatGrokModel: 'grok-4.5',
+  helpLocale: 'en',
 };
 
 const LEGACY_TRANSLATION_MODEL_IDS: Record<string, string> = {
@@ -108,7 +114,7 @@ function normalizeCloudProviderId(providerId: string | undefined, fallback: stri
 export function loadSettings(): AppSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
-    if (!raw) return { ...DEFAULT_SETTINGS, glossary: [...STARTER_GLOSSARY] };
+    if (!raw) return { ...DEFAULT_SETTINGS, helpLocale: systemHelpLocale(), glossary: [...STARTER_GLOSSARY] };
     const parsed = JSON.parse(raw);
     const parsedGlossary = Array.isArray(parsed.glossary)
       ? parsed.glossary.map((entry: any) => ({
@@ -123,6 +129,9 @@ export function loadSettings(): AppSettings {
       ...parsed,
       annotationMode: parsed.annotationMode !== false,
       completedOnboardingBuildId: typeof parsed.completedOnboardingBuildId === 'string' ? parsed.completedOnboardingBuildId : undefined,
+      helpLocale: Object.prototype.hasOwnProperty.call(parsed, 'helpLocale')
+        ? normalizeHelpLanguage(parsed.helpLocale)
+        : systemHelpLocale(),
       transcriptionProvider: normalizeCloudProviderId(parsed.transcriptionProvider, DEFAULT_SETTINGS.transcriptionProvider),
       translationProvider: normalizeTranslationProviderId(parsed.translationProvider),
       geminiBudgetUsd: Number(parsed.geminiBudgetUsd ?? 0) || 0,
@@ -139,12 +148,16 @@ export function loadSettings(): AppSettings {
       glossary: mergeStarterGlossary(parsedGlossary),
     };
   } catch {
-    return { ...DEFAULT_SETTINGS, glossary: [...STARTER_GLOSSARY] };
+    return { ...DEFAULT_SETTINGS, helpLocale: systemHelpLocale(), glossary: [...STARTER_GLOSSARY] };
   }
 }
 
 export function saveSettings(s: AppSettings): void {
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+  const canonical = {
+    ...s,
+    helpLocale: normalizeHelpLanguage(s.helpLocale, systemHelpLocale()),
+  };
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(canonical));
 }
 
 export function loadUsage(): UsageStats {

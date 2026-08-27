@@ -1,0 +1,228 @@
+{
+  "cases": [
+    {
+      "name": "upload",
+      "state": { "screen": "upload", "hasSource": false, "hasSession": false, "processingProgress": 0, "hasShortsPlans": false },
+      "expected": {
+        "en": {
+          "screen": "upload",
+          "title": "Start with a source",
+          "summary": "Import a local recording, capture audio, or download media from a supported link.",
+          "nextActions": [
+            "Click Upload Audio / Video for a file already on this Mac.",
+            "Use Record Audio Source for system audio or a microphone.",
+            "Use Import Link for a supported internet media URL."
+          ],
+          "recommendedTopicIDs": ["getting-started", "import-media", "record-audio", "import-link"]
+        },
+        "ru": {
+          "screen": "upload",
+          "title": "Начните с исходного файла",
+          "summary": "Импортируйте локальную запись, запишите аудио или загрузите медиа по поддерживаемой ссылке.",
+          "nextActions": [
+            "Нажмите Upload Audio / Video, если файл уже находится на этом Mac.",
+            "Используйте Record Audio Source для системного звука или микрофона.",
+            "Используйте Import Link для поддерживаемой интернет-ссылки."
+          ],
+          "recommendedTopicIDs": ["getting-started", "import-media", "record-audio", "import-link"]
+        }
+      }
+    },
+    {
+      "name": "config with source",
+      "state": { "screen": "config", "hasSource": true, "hasSession": false, "processingProgress": 0, "hasShortsPlans": false },
+      "expected": {
+        "en": {
+          "screen": "config",
+          "title": "Configure processing",
+          "summary": "Choose metadata, target language, transcription model, and translation model.",
+          "nextActions": ["Confirm the language and models, then click Initialize Engine."],
+          "recommendedTopicIDs": ["configure-engine", "manage-models", "process-media"]
+        },
+        "ru": {
+          "screen": "config",
+          "title": "Настройте обработку",
+          "summary": "Выберите метаданные, язык перевода, модель транскрибации и модель перевода.",
+          "nextActions": ["Проверьте язык и модели, затем нажмите Initialize Engine."],
+          "recommendedTopicIDs": ["configure-engine", "manage-models", "process-media"]
+        }
+      }
+    },
+    {
+      "name": "config without source",
+      "state": { "screen": "config", "hasSource": false, "hasSession": false, "processingProgress": 0, "hasShortsPlans": false },
+      "expected": {
+        "en": {
+          "screen": "config",
+          "title": "Configure processing",
+          "summary": "Choose metadata, target language, transcription model, and translation model.",
+          "nextActions": ["Return to Upload and choose a source file first."],
+          "recommendedTopicIDs": ["configure-engine", "manage-models", "process-media"]
+        },
+        "ru": {
+          "screen": "config",
+          "title": "Настройте обработку",
+          "summary": "Выберите метаданные, язык перевода, модель транскрибации и модель перевода.",
+          "nextActions": ["Вернитесь на Upload и сначала выберите исходный файл."],
+          "recommendedTopicIDs": ["configure-engine", "manage-models", "process-media"]
+        }
+      }
+    },
+    {
+      "name": "processing bounded progress",
+      "state": { "screen": "processing", "hasSource": true, "hasSession": false, "processingProgress": 0.37, "hasShortsPlans": false },
+      "expected": {
+        "en": {
+          "screen": "processing",
+          "title": "Processing is running",
+          "summary": "VaniScript is preparing the transcript and translation. Current progress: 37%.",
+          "nextActions": [
+            "Keep VaniScript open until Review appears.",
+            "If progress fails, open Settings > Models and verify the selected models."
+          ],
+          "recommendedTopicIDs": ["process-media", "manage-models", "troubleshoot-unavailable"]
+        },
+        "ru": {
+          "screen": "processing",
+          "title": "Выполняется обработка",
+          "summary": "VaniScript готовит транскрипт и перевод. Текущий прогресс: 37%.",
+          "nextActions": [
+            "Не закрывайте VaniScript до появления экрана Review.",
+            "Если обработка завершается ошибкой, откройте Settings > Models и проверьте выбранные модели."
+          ],
+          "recommendedTopicIDs": ["process-media", "manage-models", "troubleshoot-unavailable"]
+        }
+      }
+    },
+    {
+      "name": "review with session",
+      "state": { "screen": "review", "hasSource": true, "hasSession": true, "processingProgress": 1, "hasShortsPlans": false },
+      "expected": {
+        "en": {
+          "screen": "review",
+          "title": "Review and approve the transcript",
+          "summary": "Compare the source and translation, listen to the segment, edit cues, and approve completed work.",
+          "nextActions": [
+            "Review the current segment, edit text if needed, then click Approve & Next.",
+            "Use the view controls to show Source, Translation, or Dual mode."
+          ],
+          "recommendedTopicIDs": ["review-transcript", "edit-cues", "translate", "glossary"]
+        },
+        "ru": {
+          "screen": "review",
+          "title": "Проверьте и утвердите транскрипт",
+          "summary": "Сравнивайте исходный текст и перевод, слушайте сегмент, исправляйте cues и утверждайте готовый результат.",
+          "nextActions": [
+            "Проверьте текущий сегмент, при необходимости исправьте текст и нажмите Approve & Next.",
+            "Используйте переключатель вида для Source, Translation или Dual mode."
+          ],
+          "recommendedTopicIDs": ["review-transcript", "edit-cues", "translate", "glossary"]
+        }
+      }
+    },
+    {
+      "name": "review without session",
+      "state": { "screen": "review", "hasSource": false, "hasSession": false, "processingProgress": 0, "hasShortsPlans": false },
+      "expected": {
+        "en": {
+          "screen": "review",
+          "title": "Review and approve the transcript",
+          "summary": "Compare the source and translation, listen to the segment, edit cues, and approve completed work.",
+          "nextActions": [
+            "Start a session from Upload before using Review.",
+            "Use the view controls to show Source, Translation, or Dual mode."
+          ],
+          "recommendedTopicIDs": ["review-transcript"]
+        },
+        "ru": {
+          "screen": "review",
+          "title": "Проверьте и утвердите транскрипт",
+          "summary": "Сравнивайте исходный текст и перевод, слушайте сегмент, исправляйте cues и утверждайте готовый результат.",
+          "nextActions": [
+            "Перед работой в Review запустите сессию через Upload.",
+            "Используйте переключатель вида для Source, Translation или Dual mode."
+          ],
+          "recommendedTopicIDs": ["review-transcript"]
+        }
+      }
+    },
+    {
+      "name": "export with shorts",
+      "state": { "screen": "export", "hasSource": true, "hasSession": true, "processingProgress": 1, "hasShortsPlans": true },
+      "expected": {
+        "en": {
+          "screen": "export",
+          "title": "Export documents or create Shorts",
+          "summary": "Export the reviewed transcript or generate and render short vertical clips.",
+          "nextActions": [
+            "Use Document export for TXT, SRT, VTT, or Markdown.",
+            "Select the required clip cards and export ideas or videos."
+          ],
+          "recommendedTopicIDs": ["export-documents", "create-shorts", "visual-editor"]
+        },
+        "ru": {
+          "screen": "export",
+          "title": "Экспортируйте документы или создайте Shorts",
+          "summary": "Экспортируйте проверенный транскрипт или создайте и отрендерите короткие вертикальные клипы.",
+          "nextActions": [
+            "Используйте Document export для TXT, SRT, VTT или Markdown.",
+            "Выберите нужные карточки клипов и экспортируйте идеи или видео."
+          ],
+          "recommendedTopicIDs": ["export-documents", "create-shorts", "visual-editor"]
+        }
+      }
+    },
+    {
+      "name": "export without shorts",
+      "state": { "screen": "export", "hasSource": true, "hasSession": true, "processingProgress": 1, "hasShortsPlans": false },
+      "expected": {
+        "en": {
+          "screen": "export",
+          "title": "Export documents or create Shorts",
+          "summary": "Export the reviewed transcript or generate and render short vertical clips.",
+          "nextActions": [
+            "Use Document export for TXT, SRT, VTT, or Markdown.",
+            "In Shorts & Reels, click Find Moments before selecting clips."
+          ],
+          "recommendedTopicIDs": ["export-documents", "create-shorts", "visual-editor"]
+        },
+        "ru": {
+          "screen": "export",
+          "title": "Экспортируйте документы или создайте Shorts",
+          "summary": "Экспортируйте проверенный транскрипт или создайте и отрендерите короткие вертикальные клипы.",
+          "nextActions": [
+            "Используйте Document export для TXT, SRT, VTT или Markdown.",
+            "В разделе Shorts & Reels сначала нажмите Find Moments."
+          ],
+          "recommendedTopicIDs": ["export-documents", "create-shorts", "visual-editor"]
+        }
+      }
+    },
+    {
+      "name": "visual editor",
+      "state": { "screen": "visualEditor", "hasSource": true, "hasSession": true, "processingProgress": 1, "hasShortsPlans": true },
+      "expected": {
+        "en": {
+          "screen": "visualEditor",
+          "title": "Edit the selected clip",
+          "summary": "Adjust crop, timing, subtitles, cuts, background, logo, text, and audio layers.",
+          "nextActions": [
+            "Preview the clip after each timing or framing change.",
+            "Click Save to keep the editor state, then return to Export to render."
+          ],
+          "recommendedTopicIDs": ["visual-editor", "create-shorts"]
+        },
+        "ru": {
+          "screen": "visualEditor",
+          "title": "Отредактируйте выбранный клип",
+          "summary": "Настройте кадрирование, тайминг, субтитры, cuts, фон, логотип, текстовые и аудиодорожки.",
+          "nextActions": [
+            "Проверяйте preview после каждого изменения тайминга или кадрирования.",
+            "Нажмите Save, чтобы сохранить состояние редактора, затем вернитесь в Export для рендера."
+          ],
+          "recommendedTopicIDs": ["visual-editor", "create-shorts"]
+        }
+      }
+    }
+  ]
+}

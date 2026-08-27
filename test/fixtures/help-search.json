@@ -1,0 +1,62 @@
+{
+  "queries": [
+    {
+      "name": "russian export subtitles",
+      "query": "как экспортировать субтитры srt",
+      "language": "ru",
+      "limit": 3,
+      "expectedFirstID": "export-documents",
+      "expectedLanguage": "ru"
+    },
+    {
+      "name": "english MCP agent",
+      "query": "connect Codex MCP agent",
+      "language": "en",
+      "limit": 3,
+      "expectedFirstID": "settings-agents",
+      "expectedLanguage": "en"
+    },
+    {
+      "name": "cross-language Russian keyword",
+      "query": "экспорт",
+      "language": "en",
+      "limit": 3,
+      "expectedFirstID": "export-documents",
+      "expectedLanguage": "en",
+      "expectedFirstTitle": "Export transcript documents"
+    },
+    {
+      "name": "cross-language English keyword",
+      "query": "export",
+      "language": "ru",
+      "limit": 3,
+      "expectedFirstID": "create-shorts",
+      "expectedLanguage": "ru",
+      "expectedFirstTitle": "Поиск и экспорт Shorts"
+    }
+  ],
+  "tie": {
+    "query": "codex",
+    "language": "en",
+    "limit": 2,
+    "expectedIDs": ["embedded-chat", "settings-agents"]
+  },
+  "empty": {
+    "query": "   \t",
+    "language": "ru",
+    "limit": 3,
+    "expectedIDs": ["getting-started", "import-media", "import-link"]
+  },
+  "noMatch": {
+    "query": "quantum-banana-zxq-omega",
+    "language": "en",
+    "limit": 5,
+    "expectedIDs": []
+  },
+  "limits": [
+    { "query": "export", "language": "en", "limit": 0, "expectedCount": 1 },
+    { "query": "export", "language": "en", "limit": -4, "expectedCount": 1 },
+    { "query": "e", "language": "en", "limit": 99, "expectedCount": 10 },
+    { "query": "export", "language": "en", "limit": 3, "expectedCount": 3 }
+  ]
+}

@@ -254,6 +254,21 @@ export function SubtitleAlignmentEditor({
       return true;
     }
   });
+  const [helpLocale, setHelpLocale] = useState<'en' | 'ru'>(() => {
+    try {
+      return loadSettings().helpLocale ?? 'en';
+    } catch {
+      return 'en';
+    }
+  });
+  const handleHelpLocaleChange = useCallback((locale: 'en' | 'ru') => {
+    setHelpLocale(locale);
+    try {
+      saveSettings({ ...loadSettings(), helpLocale: locale });
+    } catch (e) {
+      console.error(e);
+    }
+  }, []);
   const [segments, setSegments] = useState<AlignedSubtitleSegment[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [currentSec, setCurrentSec] = useState(0);
@@ -3323,7 +3338,7 @@ export function SubtitleAlignmentEditor({
         {annotationMode && (
           <OnboardingTour
             activeScreen="alignment-editor"
-            settings={{ ...loadSettings(), annotationMode }}
+            settings={{ ...loadSettings(), annotationMode, helpLocale }}
             onToggleAnnotationMode={(enabled) => {
               setAnnotationMode(enabled);
               try {
@@ -3333,6 +3348,7 @@ export function SubtitleAlignmentEditor({
                 console.error(e);
               }
             }}
+            onHelpLocaleChange={handleHelpLocaleChange}
           />
         )}
         </div>

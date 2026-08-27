@@ -90,7 +90,7 @@ This exposes every VaniScript tool (read project state, edit transcript/translat
 ### B. Embedded Grok chat (in-app assistant)
 The VaniScript chat panel has a **route selector** in its header:
 
-* **API · Gemini** — the default; the assistant runs entirely through the Gemini API. This route is used *only* when explicitly selected and never as a silent fallback.
+* **API · Gemini** — the default; the assistant runs entirely through the Gemini API. This direct route has no MCP tool loop. It must never claim that it called a VaniScript MCP tool; use the Help Center entry point or answer from the local catalog instead.
 * **MCP · Grok** — VaniScript launches the locally installed `grok` CLI headless in the main process, pointed at the in-app MCP SSE server (`http://127.0.0.1:19789/sse`). Grok performs the agentic loop itself: it calls VaniScript tools through the existing MCP bridge (`onMcpCallTool` / `executeMcpTool`), and the streamed reply is rendered back into the chat panel.
 
 Requirements for the embedded route:
@@ -197,6 +197,34 @@ build exposes, among others:
 
 Every mutation can accept `expectedRevision` and `requestId`; long-running work returns a
 `jobId` you can follow with `get_job`, `list_jobs`, or `cancel_job`.
+
+## 8. Help and onboarding tools (all MCP clients)
+
+The Electron MCP server exposes five read-only catalog tools for external Codex, Grok, Qwen, and other MCP clients. They use the existing MCP request/result envelope and accept an optional `language` request field. `language` controls only the language of help output; it is **not** the transcript source language, translation target language, or active project translation language.
+
+| Tool | Input | Use |
+| --- | --- | --- |
+| `list_help_topics` | Optional `category`, `language` | Browse the catalog and discover stable topic IDs. |
+| `get_help_topic` | Required `topicId`, optional `language` | Read one topic's requirements, numbered instructions, troubleshooting, and related topic IDs. Use a topic ID returned by `search_help` or `list_help_topics`; unknown IDs return a not-found error. |
+| `search_help` | Required non-empty `query`, optional `language` and `limit` (1–10) | Find the best matching topics for a feature, screen, control, setting, or workflow. The result includes the canonical language, original query, bounded matches, and match count. |
+| `get_contextual_help` | Optional `language` | Read the current screen/state, next actions, and recommended topic IDs from the active project context. |
+| `get_onboarding_checklist` | Optional `language` | Read the complete first-project checklist with ordered steps and topic IDs. |
+
+### Search-first response contract
+
+For a how-to question about a VaniScript screen, feature, control, setting, or workflow:
+
+1. Call `search_help` **before answering**, passing `language: "en"` or `language: "ru"` to match the language of the latest user message (`ru` for Russian; `en` otherwise).
+2. If the answer depends on the user's current screen or project state, also call `get_contextual_help` with that same canonical language.
+3. If a beginner asks where to start or how to make a first project, call `get_onboarding_checklist` with that same canonical language.
+4. When a matching topic is selected, call `get_help_topic` with its returned `topicId` for the complete instructions. Do not invent a topic or silently substitute the first catalog entry when search has no match.
+5. Explain clicks and workflows in the user's language, but preserve the exact English button and screen labels returned by the tools (for example, `Initialize Engine`, `Approve & Next`, `Settings > Models`) so the user can find them in the UI.
+
+Do not confuse help/UI locale with `defaultSourceLang`, `defaultTargetLang`, a translation-language selector, or transcript content. An explicit MCP `language` takes precedence over persisted Help Center locale; invalid or missing values normalize to canonical `en`.
+
+The embedded `MCP · Grok` and `MCP · Qwen` routes may follow this tool contract because they run through the local MCP server. The direct `API · Gemini` route has no MCP loop and must not display, imply, or claim that a help tool (or any other MCP tool) ran. It should direct the user to Help Center/local catalog guidance instead. There is no heuristic help-intent classifier and no silent MCP-to-API fallback.
+
+---
 
 ### Security notes
 
