@@ -5,11 +5,11 @@ onboarding:
   model_pairs_confirmed: true
   completed_at: 2026-08-21T00:00:00Z
 current_step: P4
-current_work_item_id: P4.D2
-current_work_item: P4.D2 usage/logging/diagnostics — redacted observability discovery.
+current_work_item_id: P4.D3
+current_work_item: P4.D3 large-project optimization — performance budgets and virtualization discovery.
 step_description: >-
-  P0-P3E complete; P4.D1 closed. Active pointer P4.D2 redacted observability;
-  P4 gates O1/O2/J1/J2 remain open until the full P4 hardening plan completes.
+  P0-P3E complete; P4.D1 and P4.D2 closed. Active pointer P4.D3 large-project
+  performance budgets/virtualization; P4.O1/O2/J2 remain open.
 completed_steps:
   - P0
   - P1
@@ -25,22 +25,20 @@ implementation:
   status: discovery_pending
   attempts: 0
   note: >-
-    P4.D1 closed after bugfix, approved re-review, Tester qa_green, and Main
-    independent verification. Advancing transactionally to P4.D2 discovery.
+    P4.D2 closed after final Reviewer approval, Tester qa_green, and Main
+    independent 797/797 verification. Advancing transactionally to P4.D3.
   target_files: []
 retry_guard:
   omp:
-    last_result_artifact: history://P4D1Tester2
+    last_result_artifact: history://P4D2Tester1
     active_agent: null
     active_role: null
     status: idle
   role: scout
   primary_agent: scout
-  evidence: history://P4D1Tester2
-  omp_status_note: p4_d1_closed_p4_d2_discovery_pending
+  evidence: history://P4D2Tester1
+  omp_status_note: p4_d2_closed_p4_d3_discovery_pending
 standing_order:
-  human_instruction: >-
-    STANDING ORDER (2026-08-22, supersedes all earlier pause directives):
     «продолжать в том же духе до победного конца — полностью все шаги».
     Main runs the full remaining plan continuously: P3B.D1..D6, P3C.D1..D5,
     P3D.D1..D3, P3E.D1..D5, P4.D1..D5, P5.D1..D2 — each via full Coder ->

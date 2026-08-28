@@ -18,7 +18,35 @@
  */
 
 /** Current persisted settings schema version. Bump when the shape changes. */
-export const SETTINGS_SCHEMA_VERSION = 1;
+export const SETTINGS_SCHEMA_VERSION = 2;
+
+/** Version of the bounded Main-owned usage ledger stored in api.lastUsage. */
+export const USAGE_SCHEMA_VERSION = 1;
+
+export const USAGE_PURPOSES = Object.freeze([
+  'text',
+  'chat',
+  'translation',
+  'transcription',
+  'vision',
+  'review',
+  'polish',
+  'shorts',
+]);
+
+/** Provider pricing copied from the existing Settings UI (USD / 1M tokens). */
+export const USAGE_PRICING = Object.freeze({
+  'gemini-cloud': Object.freeze({
+    inputPerMillion: 0.3,
+    outputPerMillion: 2.5,
+    models: Object.freeze(['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-pro', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro']),
+  }),
+  'gpt-cloud': Object.freeze({
+    inputPerMillion: 2.5,
+    outputPerMillion: 10,
+    models: Object.freeze(['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'gpt-5']),
+  }),
+});
 
 const DEFAULT_SETTINGS = {
   schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -40,15 +68,7 @@ const DEFAULT_SETTINGS = {
   api: {
     providers: {},
     favoriteModels: [],
-    lastUsage: {
-      inputTokens: 0,
-      outputTokens: 0,
-      audioMinutes: 0,
-      requests: 0,
-      lastModel: null,
-      lastPurpose: null,
-      estimatedCost: 0,
-    },
+    lastUsage: createDefaultUsageLedger(),
   },
   appearance: {
     theme: 'system',
@@ -150,6 +170,380 @@ function numOrNull(v) {
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
 
+const MAX_USAGE_PROVIDERS = 128;
+const MAX_USAGE_MODELS = 64;
+const MAX_USAGE_PURPOSES = 16;
+const MAX_USAGE_DAYS = 366;
+const MAX_USAGE_OPERATION_HASHES = 1024;
+const MAX_USAGE_ID_LENGTH = 96;
+const MAX_USAGE_NUMBER = 1_000_000_000_000;
+const SAFE_USAGE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/u;
+
+function safeUsageId(value, fallback = 'unknown') {
+  if (typeof value !== 'string') return fallback;
+  const trimmed = value.trim().slice(0, MAX_USAGE_ID_LENGTH);
+  if (!trimmed || !SAFE_USAGE_ID.test(trimmed)) return fallback;
+  if (/^(?:sk-|pk-|bearer|eyJ|AIza|ghp_|xox[baprs]-)/i.test(trimmed)) return fallback;
+  return trimmed;
+}
+
+function usageNumber(value, fallback = 0) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.min(MAX_USAGE_NUMBER, Math.max(0, value));
+}
+
+function emptyUsageCounter() {
+  return {
+    requests: 0,
+    errors: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    audioMinutes: 0,
+    estimatedCost: 0,
+  };
+}
+
+function emptyProviderUsage() {
+  return {
+    ...emptyUsageCounter(),
+    lastUsed: null,
+    lastInputTokens: 0,
+    lastOutputTokens: 0,
+    models: {},
+    purposes: {},
+  };
+}
+
+function normalizeUsageCounter(input) {
+  const value = asObject(input) ?? {};
+  return {
+    requests: usageNumber(value.requests),
+    errors: usageNumber(value.errors),
+    inputTokens: usageNumber(value.inputTokens),
+    outputTokens: usageNumber(value.outputTokens),
+    audioMinutes: usageNumber(value.audioMinutes),
+    estimatedCost: usageNumber(value.estimatedCost),
+  };
+}
+
+function normalizeUsageMap(input, limit, valueFactory = normalizeUsageCounter) {
+  const source = asObject(input) ?? {};
+  const out = {};
+  for (const [rawId, rawValue] of Object.entries(source).slice(0, limit)) {
+    const id = safeUsageId(rawId);
+    if (id === 'unknown' && rawId !== 'unknown') continue;
+    out[id] = valueFactory(rawValue);
+  }
+  return out;
+}
+
+function normalizeProviderUsage(input) {
+  const value = asObject(input) ?? {};
+  const out = {
+    ...emptyProviderUsage(),
+    ...normalizeUsageCounter(value),
+    lastUsed: typeof value.lastUsed === 'string' && value.lastUsed.length > 0 ? value.lastUsed : null,
+    lastInputTokens: usageNumber(value.lastInputTokens),
+    lastOutputTokens: usageNumber(value.lastOutputTokens),
+    models: normalizeUsageMap(value.models, MAX_USAGE_MODELS),
+    purposes: normalizeUsageMap(value.purposes, MAX_USAGE_PURPOSES),
+  };
+  return out;
+}
+
+function normalizeDailyUsage(input) {
+  const source = asObject(input) ?? {};
+  const out = {};
+  for (const [date, value] of Object.entries(source).slice(-MAX_USAGE_DAYS)) {
+    if (!/^\d{4}-\d{2}-\d{2}$/u.test(date)) continue;
+    const row = asObject(value) ?? {};
+    out[date] = {
+      ...emptyUsageCounter(),
+      ...normalizeUsageCounter(row),
+      providers: normalizeUsageMap(row.providers, MAX_USAGE_PROVIDERS, normalizeProviderUsage),
+    };
+  }
+  return out;
+}
+
+/** Return a fresh empty Main-owned usage ledger. */
+export function createDefaultUsageLedger() {
+  return {
+    schemaVersion: USAGE_SCHEMA_VERSION,
+    inputTokens: 0,
+    outputTokens: 0,
+    audioMinutes: 0,
+    requests: 0,
+    errors: 0,
+    estimatedCost: 0,
+    lastProvider: null,
+    lastModel: null,
+    lastPurpose: null,
+    lastUsed: null,
+    lastInputTokens: 0,
+    lastOutputTokens: 0,
+    providers: {},
+    daily: {},
+    recentOperationHashes: [],
+  };
+}
+
+/** Normalize an unknown usage document into the bounded ledger shape. */
+export function normalizeUsageLedger(input) {
+  const raw = asObject(input) ?? {};
+  const ledger = createDefaultUsageLedger();
+  ledger.inputTokens = usageNumber(raw.inputTokens);
+  ledger.outputTokens = usageNumber(raw.outputTokens);
+  ledger.audioMinutes = usageNumber(raw.audioMinutes);
+  ledger.requests = usageNumber(raw.requests ?? raw.sessions);
+  ledger.errors = usageNumber(raw.errors);
+  ledger.estimatedCost = usageNumber(raw.estimatedCost);
+  ledger.lastProvider = raw.lastProvider == null ? null : safeUsageId(raw.lastProvider, null);
+  ledger.lastModel = raw.lastModel == null ? null : safeUsageId(raw.lastModel, null);
+  ledger.lastPurpose = USAGE_PURPOSES.includes(raw.lastPurpose) ? raw.lastPurpose : null;
+  ledger.lastUsed = typeof raw.lastUsed === 'string' && raw.lastUsed.length > 0 ? raw.lastUsed : null;
+  ledger.lastInputTokens = usageNumber(raw.lastInputTokens);
+  ledger.lastOutputTokens = usageNumber(raw.lastOutputTokens);
+  ledger.providers = normalizeUsageMap(raw.providers, MAX_USAGE_PROVIDERS, normalizeProviderUsage);
+  ledger.daily = normalizeDailyUsage(raw.daily);
+  ledger.recentOperationHashes = Array.isArray(raw.recentOperationHashes)
+    ? raw.recentOperationHashes
+      .filter((value) => typeof value === 'string' && /^[0-9a-f]{64}$/u.test(value))
+      .slice(-MAX_USAGE_OPERATION_HASHES)
+    : [];
+  return ledger;
+}
+
+function usageModelHasPricing(_providerId, modelId, pricing) {
+  if (!pricing) return false;
+  if (!modelId) return true;
+  if (!Array.isArray(pricing.models)) return false;
+  return pricing.models.includes(modelId);
+}
+
+function usageCost(providerId, modelId, inputTokens, outputTokens) {
+  const pricing = USAGE_PRICING[providerId];
+  if (!usageModelHasPricing(providerId, modelId, pricing)) return 0;
+  return ((inputTokens * pricing.inputPerMillion) + (outputTokens * pricing.outputPerMillion)) / 1_000_000;
+}
+
+function operationHash(operationId) {
+  // Keep this module dependency-free and deterministic. The digest is not a
+  // security boundary; it only prevents duplicate completion notifications.
+  let hash = 2166136261;
+  for (const char of String(operationId)) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  const first = (hash >>> 0).toString(16).padStart(8, '0');
+  return `${first}${first}${first}${first}${first}${first}${first}${first}`.slice(0, 64);
+}
+
+/** Record one terminal logical operation without mutating the input ledger. */
+export function recordUsage(ledgerInput, input, now = new Date()) {
+  const ledger = normalizeUsageLedger(ledgerInput);
+  const request = asObject(input) ?? {};
+  const operationId = typeof request.operationId === 'string' ? request.operationId : '';
+  const opHash = operationHash(operationId || `${request.providerId}:${request.purpose}:${now.toISOString()}`);
+  if (ledger.recentOperationHashes.includes(opHash)) return ledger;
+  ledger.recentOperationHashes.push(opHash);
+  if (ledger.recentOperationHashes.length > MAX_USAGE_OPERATION_HASHES) {
+    ledger.recentOperationHashes.splice(0, ledger.recentOperationHashes.length - MAX_USAGE_OPERATION_HASHES);
+  }
+
+  const providerId = safeUsageId(request.providerId);
+  const modelId = request.modelId == null ? null : safeUsageId(request.modelId, null);
+  const purpose = USAGE_PURPOSES.includes(request.purpose) ? request.purpose : 'text';
+  const outcome = request.outcome === 'success' ? 'success' : 'error';
+  const inputTokens = outcome === 'success' ? usageNumber(request.inputTokens) : 0;
+  const outputTokens = outcome === 'success' ? usageNumber(request.outputTokens) : 0;
+  const audioMinutes = outcome === 'success' ? usageNumber(request.audioMinutes) : 0;
+  const estimatedCost = outcome === 'success' ? usageCost(providerId, modelId, inputTokens, outputTokens) : 0;
+  const timestamp = now instanceof Date && Number.isFinite(now.getTime()) ? now.toISOString() : new Date().toISOString();
+  const day = timestamp.slice(0, 10);
+
+  const provider = ledger.providers[providerId] ?? emptyProviderUsage();
+  const model = provider.models[modelId || 'unknown'] ?? emptyUsageCounter();
+  const purposeCounter = provider.purposes[purpose] ?? emptyUsageCounter();
+  const daily = ledger.daily[day] ?? { ...emptyUsageCounter(), providers: {} };
+  const dailyProvider = daily.providers[providerId] ?? emptyProviderUsage();
+  const dailyModel = dailyProvider.models[modelId || 'unknown'] ?? emptyUsageCounter();
+  const dailyPurpose = dailyProvider.purposes[purpose] ?? emptyUsageCounter();
+
+  const apply = (counter) => {
+    if (outcome === 'success') counter.requests += 1;
+    else counter.errors += 1;
+    counter.inputTokens += inputTokens;
+    counter.outputTokens += outputTokens;
+    counter.audioMinutes += audioMinutes;
+    counter.estimatedCost += estimatedCost;
+  };
+  apply(ledger);
+  apply(provider);
+  apply(model);
+  apply(purposeCounter);
+  apply(daily);
+  apply(dailyProvider);
+  apply(dailyModel);
+  apply(dailyPurpose);
+
+  if (outcome === 'success') {
+    provider.lastUsed = timestamp;
+    provider.lastInputTokens = inputTokens;
+    provider.lastOutputTokens = outputTokens;
+    ledger.lastProvider = providerId;
+    ledger.lastModel = modelId;
+    ledger.lastPurpose = purpose;
+    ledger.lastUsed = timestamp;
+    ledger.lastInputTokens = inputTokens;
+    ledger.lastOutputTokens = outputTokens;
+    dailyProvider.lastUsed = timestamp;
+    dailyProvider.lastInputTokens = inputTokens;
+    dailyProvider.lastOutputTokens = outputTokens;
+  }
+  provider.models[modelId || 'unknown'] = model;
+  provider.purposes[purpose] = purposeCounter;
+  dailyProvider.models[modelId || 'unknown'] = dailyModel;
+  dailyProvider.purposes[purpose] = dailyPurpose;
+  daily.providers[providerId] = dailyProvider;
+  ledger.providers[providerId] = provider;
+  ledger.daily[day] = daily;
+  const days = Object.keys(ledger.daily).sort();
+  if (days.length > MAX_USAGE_DAYS) {
+    for (const stale of days.slice(0, days.length - MAX_USAGE_DAYS)) delete ledger.daily[stale];
+  }
+  return ledger;
+}
+
+function inDateRange(date, range) {
+  if (!range || typeof range !== 'object') return true;
+  if (typeof range.from === 'string' && date < range.from.slice(0, 10)) return false;
+  if (typeof range.to === 'string' && date > range.to.slice(0, 10)) return false;
+  return true;
+}
+
+function mergeUsageProjection(target, source) {
+  for (const key of ['requests', 'errors', 'inputTokens', 'outputTokens', 'audioMinutes', 'estimatedCost']) {
+    target[key] += usageNumber(source?.[key]);
+  }
+}
+
+/** Build a text-free usage projection; operation hashes are never returned. */
+export function projectUsage(ledgerInput, range) {
+  const ledger = normalizeUsageLedger(ledgerInput);
+  const hasRange = Boolean(range && (range.from || range.to));
+  const out = {
+    schemaVersion: USAGE_SCHEMA_VERSION,
+    inputTokens: 0,
+    outputTokens: 0,
+    audioMinutes: 0,
+    requests: 0,
+    errors: 0,
+    estimatedCost: 0,
+    lastProvider: null,
+    lastModel: null,
+    lastPurpose: null,
+    lastUsed: null,
+    lastInputTokens: 0,
+    lastOutputTokens: 0,
+    providers: {},
+    daily: {},
+  };
+  const rows = Object.entries(ledger.daily).filter(([date]) => !hasRange || inDateRange(date, range));
+  const providerMerge = (providerId, source) => {
+    const destination = out.providers[providerId] ?? emptyProviderUsage();
+    mergeUsageProjection(destination, source);
+    if (source?.lastUsed && (!destination.lastUsed || source.lastUsed > destination.lastUsed)) {
+      destination.lastUsed = source.lastUsed;
+      destination.lastInputTokens = source.lastInputTokens;
+      destination.lastOutputTokens = source.lastOutputTokens;
+    }
+    for (const [modelId, model] of Object.entries(source?.models ?? {})) {
+      const modelDestination = destination.models[modelId] ?? emptyUsageCounter();
+      mergeUsageProjection(modelDestination, model);
+      destination.models[modelId] = modelDestination;
+    }
+    for (const [purpose, purposeCounter] of Object.entries(source?.purposes ?? {})) {
+      const purposeDestination = destination.purposes[purpose] ?? emptyUsageCounter();
+      mergeUsageProjection(purposeDestination, purposeCounter);
+      destination.purposes[purpose] = purposeDestination;
+    }
+    out.providers[providerId] = destination;
+  };
+  if (!hasRange) {
+    mergeUsageProjection(out, ledger);
+    out.lastProvider = ledger.lastProvider;
+    out.lastModel = ledger.lastModel;
+    out.lastPurpose = ledger.lastPurpose;
+    out.lastUsed = ledger.lastUsed;
+    out.lastInputTokens = ledger.lastInputTokens;
+    out.lastOutputTokens = ledger.lastOutputTokens;
+    for (const [providerId, provider] of Object.entries(ledger.providers)) {
+      providerMerge(providerId, provider);
+    }
+    for (const [date, row] of rows) out.daily[date] = structuredClone(row);
+  } else {
+    for (const [date, row] of rows) {
+      out.daily[date] = structuredClone(row);
+      mergeUsageProjection(out, row);
+      for (const [providerId, provider] of Object.entries(row.providers ?? {})) {
+        providerMerge(providerId, provider);
+      }
+    }
+  }
+  return out;
+}
+
+/** Convert a legacy vs_usage_v1 provider map into the new ledger. */
+export function migrateLegacyUsage(input) {
+  const raw = asObject(input) ?? {};
+  const ledger = createDefaultUsageLedger();
+  if (Object.keys(raw).some((key) => ['sessions', 'requests', 'inputTokens', 'outputTokens', 'audioMinutes'].includes(key))) {
+    const provider = emptyProviderUsage();
+    provider.requests = usageNumber(raw.requests ?? raw.sessions);
+    provider.errors = usageNumber(raw.errors);
+    provider.inputTokens = usageNumber(raw.inputTokens);
+    provider.outputTokens = usageNumber(raw.outputTokens);
+    provider.audioMinutes = usageNumber(raw.audioMinutes);
+    provider.estimatedCost = usageNumber(raw.estimatedCost);
+    provider.lastUsed = typeof raw.lastUsed === 'string' && raw.lastUsed ? raw.lastUsed : null;
+    provider.lastInputTokens = usageNumber(raw.lastInputTokens);
+    provider.lastOutputTokens = usageNumber(raw.lastOutputTokens);
+    ledger.providers.legacy = provider;
+    mergeUsageProjection(ledger, provider);
+    ledger.lastProvider = 'legacy';
+    ledger.lastUsed = provider.lastUsed;
+    ledger.lastInputTokens = provider.lastInputTokens;
+    ledger.lastOutputTokens = provider.lastOutputTokens;
+    return normalizeUsageLedger(ledger);
+  }
+  for (const [rawProvider, rawValue] of Object.entries(raw).slice(0, MAX_USAGE_PROVIDERS)) {
+    if (!asObject(rawValue)) continue;
+    const providerId = safeUsageId(rawProvider);
+    if (providerId === 'unknown' && rawProvider !== 'unknown') continue;
+    const value = rawValue;
+    const provider = emptyProviderUsage();
+    provider.requests = usageNumber(value.requests ?? value.sessions);
+    provider.errors = usageNumber(value.errors);
+    provider.inputTokens = usageNumber(value.inputTokens);
+    provider.outputTokens = usageNumber(value.outputTokens);
+    provider.audioMinutes = usageNumber(value.audioMinutes);
+    provider.estimatedCost = usageNumber(value.estimatedCost);
+    provider.lastUsed = typeof value.lastUsed === 'string' && value.lastUsed ? value.lastUsed : null;
+    provider.lastInputTokens = usageNumber(value.lastInputTokens);
+    provider.lastOutputTokens = usageNumber(value.lastOutputTokens);
+    ledger.providers[providerId] = provider;
+    mergeUsageProjection(ledger, provider);
+    if (provider.lastUsed && (!ledger.lastUsed || provider.lastUsed > ledger.lastUsed)) {
+      ledger.lastUsed = provider.lastUsed;
+      ledger.lastProvider = providerId;
+      ledger.lastInputTokens = provider.lastInputTokens;
+      ledger.lastOutputTokens = provider.lastOutputTokens;
+    }
+  }
+  return normalizeUsageLedger(ledger);
+}
+
 function normalizeAgents(input) {
   const base = createDefaultSettings().agents;
   const a = asObject(input);
@@ -208,22 +602,19 @@ function normalizeApi(input) {
   if (!a) return base;
   const rawProviders = asObject(a.providers) ?? {};
   const providers = {};
-  for (const [id, value] of Object.entries(rawProviders)) {
-    providers[id] = normalizeProvider(value, id);
+  for (const [id, value] of Object.entries(rawProviders).slice(0, MAX_USAGE_PROVIDERS)) {
+    const normalizedId = safeUsageId(id);
+    if (normalizedId === 'unknown' && id !== 'unknown') continue;
+    providers[normalizedId] = normalizeProvider(value, normalizedId);
   }
-  const u = asObject(a.lastUsage) ?? {};
+  const rawUsage = asObject(a.lastUsage) ?? {};
+  const looksLikeLedger = Object.prototype.hasOwnProperty.call(rawUsage, 'providers')
+    || Object.prototype.hasOwnProperty.call(rawUsage, 'daily')
+    || Object.prototype.hasOwnProperty.call(rawUsage, 'schemaVersion');
   return {
     providers,
-    favoriteModels: strArray(a.favoriteModels, base.favoriteModels),
-    lastUsage: {
-      inputTokens: num(u.inputTokens, 0, 0),
-      outputTokens: num(u.outputTokens, 0, 0),
-      audioMinutes: num(u.audioMinutes, 0, 0),
-      requests: num(u.requests, 0, 0),
-      lastModel: strOrNull(u.lastModel),
-      lastPurpose: strOrNull(u.lastPurpose),
-      estimatedCost: num(u.estimatedCost, 0, 0),
-    },
+    favoriteModels: strArray(a.favoriteModels, base.favoriteModels).slice(0, 256),
+    lastUsage: looksLikeLedger ? normalizeUsageLedger(rawUsage) : migrateLegacyUsage(rawUsage),
   };
 }
 
@@ -358,14 +749,30 @@ export function normalizeSettings(input) {
  * v0 represents an unversioned/legacy file (no `schemaVersion`).
  */
 const MIGRATIONS = {
-  0: (data) => ({ ...data, schemaVersion: SETTINGS_SCHEMA_VERSION }),
+  0: (data) => ({ ...data, schemaVersion: 1 }),
+  1: (data) => {
+    const api = asObject(data.api) ?? {};
+    const rawUsage = asObject(api.lastUsage) ?? {};
+    const looksLikeLedger = (
+      Object.prototype.hasOwnProperty.call(rawUsage, 'providers')
+      || Object.prototype.hasOwnProperty.call(rawUsage, 'daily')
+      || Object.prototype.hasOwnProperty.call(rawUsage, 'schemaVersion')
+    );
+    return {
+      ...data,
+      schemaVersion: SETTINGS_SCHEMA_VERSION,
+      api: {
+        ...api,
+        lastUsage: looksLikeLedger ? normalizeUsageLedger(rawUsage) : migrateLegacyUsage(rawUsage),
+      },
+    };
+  },
 };
 
 /**
  * Apply sequential migrations to an unknown payload, then normalize.
  *
- * @returns the migrated settings, whether a migration ran, and the version
- *          the payload started from.
+ * @returns {{ settings: object, migrated: boolean, fromVersion: number }}
  */
 export function migrateSettings(raw) {
   const obj = asObject(raw);

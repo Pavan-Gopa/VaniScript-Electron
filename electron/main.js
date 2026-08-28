@@ -7,11 +7,19 @@ const os = require('os');
 const crypto = require('crypto');
 const { pathToFileURL } = require('url');
 const { spawn, fork, execSync } = require('child_process');
-const log = require('electron-log');
+const electronLog = require('electron-log');
 const {
   removeTranslationModel,
   resolveInstalledModelPath,
 } = require('./llamacpp-model-store');
+const settingsStore = require('./main/storage/settingsStore.js');
+const {
+  configureElectronLog,
+  createObservability,
+  createLegacyAuditRecorder,
+  safeIpcError,
+  safeMcpError,
+} = require('./main/observability.js');
 const {
   renderShortClipWithHyperFrames,
 } = require('./hyperframes-renderer');
@@ -31,6 +39,7 @@ const {
 } = require('./main/projects/streamingBundle');
 const windowManager = require('./main/windows/window-manager');
 const { handleMigrateLegacy } = require('./main/storage/migrationHandler');
+const vault = require('./main/storage/vault.js');
 const { invokeProvider } = require('./main/providers/router');
 const { manageModels, MODELS_MANAGE_CHANNEL } = require('./main/models/modelManager.js');
 const { registerAppLifecycle } = require('./main/bootstrap/app-lifecycle');
@@ -44,11 +53,34 @@ for (const stream of [process.stdout, process.stderr]) {
   });
 }
 
-// ─── Logging ─────────────────────────────────────────────────────────────────
-log.initialize();
-log.transports.file.level = 'info';
-log.transports.console.level = 'debug';
-log.info('VaniScript starting up...');
+const configuredLogPath = configureElectronLog(electronLog, {
+  userDataPath: app.getPath('userData'),
+});
+const observability = createObservability({
+  sink: electronLog,
+  settingsStore: {
+    readSettings: () => settingsStore.readSettings(),
+    writeSettings: (settings) => settingsStore.writeSettings(settings),
+  },
+  appInfo: () => ({
+    appVersion: app.getVersion(),
+    electronVersion: process.versions.electron,
+    platform: process.platform,
+    arch: process.arch,
+  }),
+  capabilities: () => {
+    const registry = require('./main/platform/capabilityRegistry.js').createCapabilityRegistry();
+    return { capabilities: registry.getAll(), host: registry.getHost() };
+  },
+  models: () => scanSharedLocalModels(),
+  clock: () => new Date(),
+  logsAvailable: () => Boolean(configuredLogPath),
+});
+const safeLogger = observability.logger;
+windowManager.setLogger(safeLogger);
+vault.setLogger(safeLogger);
+safeLogger.info({ category: 'runtime', event: 'runtime.startup' });
+const safeErrorText = (error, code = 'INTERNAL') => safeIpcError(error, code).message;
 
 const recordingSessions = new Map();
 const linkImportJobs = new Map();
@@ -56,7 +88,7 @@ const hyperframesExportSession = createHyperFramesExportSession({
   app,
   renderShortClip: renderShortClipWithHyperFrames,
   getFfmpegPath,
-  log,
+  logger: safeLogger,
   sendEvent: (payload) => {
     windowManager.getMainWindow()?.webContents.send('hyperframes:export-progress', payload);
   },
@@ -71,23 +103,23 @@ function getFfmpegPath() {
       path.join(resourcesPath, 'ffmpeg-bin', 'ffmpeg.exe'),
     ];
     for (const c of candidates) {
-      if (fs.existsSync(c)) { log.info('Using packaged ffmpeg:', c); return c; }
+      if (fs.existsSync(c)) { safeLogger.info({ category: 'ffmpeg', event: 'ffmpeg.path-selected', data: { phase: 'packaged', path: c } }); return c; }
     }
   }
   // Development: use ffmpeg-static
   try {
     const staticPath = require('ffmpeg-static');
     if (staticPath && fs.existsSync(staticPath)) {
-      log.info('Using ffmpeg-static:', staticPath);
+      safeLogger.info({ category: 'ffmpeg', event: 'ffmpeg.path-selected', data: { phase: 'static', path: staticPath } });
       return staticPath;
     }
   } catch (e) {
-    log.warn('ffmpeg-static not available:', e.message);
+    safeLogger.warn({ category: 'ffmpeg', event: 'ffmpeg.path-unavailable', data: { phase: 'static' }, error: e });
   }
   // System fallback
   const systemPaths = ['/usr/local/bin/ffmpeg', '/opt/homebrew/bin/ffmpeg', '/usr/bin/ffmpeg', 'ffmpeg'];
   for (const p of systemPaths) {
-    if (p === 'ffmpeg' || fs.existsSync(p)) { log.info('Using system ffmpeg:', p); return p; }
+    if (p === 'ffmpeg' || fs.existsSync(p)) { safeLogger.info({ category: 'ffmpeg', event: 'ffmpeg.path-selected', data: { phase: 'system', path: p } }); return p; }
   }
   return 'ffmpeg';
 }
@@ -104,7 +136,7 @@ function getYtDlpPath() {
     for (const candidate of candidates) {
       if (fs.existsSync(candidate)) {
         try { if (process.platform !== 'win32') fs.chmodSync(candidate, 0o755); } catch {}
-        log.info('Using packaged yt-dlp:', candidate);
+        safeLogger.info({ category: 'runtime', event: 'runtime.binary-selected', data: { type: 'yt-dlp', path: candidate } });
         return candidate;
       }
     }
@@ -121,7 +153,7 @@ function getYtDlpPath() {
   for (const candidate of devCandidates) {
     if (candidate === 'yt-dlp' || fs.existsSync(candidate)) {
       try { if (candidate !== 'yt-dlp' && process.platform !== 'win32') fs.chmodSync(candidate, 0o755); } catch {}
-      log.info('Using yt-dlp:', candidate);
+      safeLogger.info({ category: 'runtime', event: 'runtime.binary-selected', data: { type: 'yt-dlp', path: candidate } });
       return candidate;
     }
   }
@@ -144,7 +176,7 @@ function getYtDlpJavaScriptRuntimeArgs() {
     }
   }
 
-  log.warn('No Node.js runtime found for yt-dlp JavaScript challenges; YouTube downloads may be slow or incomplete.');
+  safeLogger.warn({ category: 'runtime', event: 'runtime.binary-unavailable', data: { type: 'yt-dlp-javascript' } });
   return [];
 }
 
@@ -218,8 +250,8 @@ function broadcastSharedLocalModels() {
     }
     return { ok: true, ...payload };
   } catch (error) {
-    log.warn('Failed to scan shared local models:', error.message || String(error));
-    return { ok: false, error: error.message || String(error), entries: [] };
+    safeLogger.warn({ category: 'runtime', event: 'runtime.models-scan-failed', error });
+    return { ok: false, error: safeErrorText(error, 'MODEL_UNAVAILABLE'), entries: [] };
   }
 }
 
@@ -724,8 +756,8 @@ function startLocalWhisperWorker() {
     stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
   });
 
-  child.stdout?.on('data', (d) => log.info('[Local Whisper STDOUT]', String(d).trim()));
-  child.stderr?.on('data', (d) => log.warn('[Local Whisper STDERR]', String(d).trim()));
+  child.stdout?.on('data', () => safeLogger.info({ category: 'worker', event: 'worker.stdout', data: { worker: 'local-whisper', stream: 'stdout' } }));
+  child.stderr?.on('data', () => safeLogger.warn({ category: 'worker', event: 'worker.stderr', data: { worker: 'local-whisper', stream: 'stderr' } }));
 
   child.on('message', (m) => {
     if (!m || !m.type) return;
@@ -795,8 +827,8 @@ function startLocalParakeetWorker() {
     stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
   });
 
-  child.stdout?.on('data', (d) => log.info('[Local Parakeet STDOUT]', String(d).trim()));
-  child.stderr?.on('data', (d) => log.warn('[Local Parakeet STDERR]', String(d).trim()));
+  child.stdout?.on('data', () => safeLogger.info({ category: 'worker', event: 'worker.stdout', data: { worker: 'local-parakeet', stream: 'stdout' } }));
+  child.stderr?.on('data', () => safeLogger.warn({ category: 'worker', event: 'worker.stderr', data: { worker: 'local-parakeet', stream: 'stderr' } }));
 
   child.on('message', (m) => {
     if (!m || !m.type) return;
@@ -872,17 +904,17 @@ function startLocalTranslationWorker() {
     stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
   });
 
-  child.stdout?.on('data', (d) => log.info('[Local Translation STDOUT]', String(d).trim()));
-  child.stderr?.on('data', (d) => log.warn('[Local Translation STDERR]', String(d).trim()));
+  child.stdout?.on('data', () => safeLogger.info({ category: 'worker', event: 'worker.stdout', data: { worker: 'local-translation', stream: 'stdout' } }));
+  child.stderr?.on('data', () => safeLogger.warn({ category: 'worker', event: 'worker.stderr', data: { worker: 'local-translation', stream: 'stderr' } }));
 
   child.on('message', (m) => {
     if (!m || !m.type) return;
     if (m.type === 'log') {
       const level = typeof m.level === 'string' ? m.level : 'info';
       const message = m.message || '[Local Translation]';
-      if (level === 'warn') log.warn('[Local Translation]', message);
-      else if (level === 'error') log.error('[Local Translation]', message);
-      else log.info('[Local Translation]', message);
+      if (level === 'warn') safeLogger.warn({ category: 'worker', event: 'worker.message', data: { worker: 'local-translation', level: 'warn' } });
+      else if (level === 'error') safeLogger.error({ category: 'worker', event: 'worker.message', data: { worker: 'local-translation', level: 'error' } });
+      else safeLogger.info({ category: 'worker', event: 'worker.message', data: { worker: 'local-translation', level: 'info' } });
       return;
     }
     if (m.type === 'download-progress') {
@@ -921,8 +953,7 @@ function startLocalTranslationWorker() {
     if (m.type === 'translation_error') {
       const entry = localTranslationPending.get(m.id);
       if (!entry) return;
-      localTranslationPending.delete(m.id);
-      log.warn('[Local Translation ERROR]', m.error || 'Local translation failed');
+      safeLogger.warn({ category: 'worker', event: 'worker.translation-failed', data: { worker: 'local-translation' }, error: new Error('worker translation failed') });
       entry.reject(new Error(m.error || 'Local translation failed'));
     }
   });
@@ -965,7 +996,7 @@ function getTempDir() {
   const dir = path.join(app.getPath('userData'), 'temp');
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
-    log.info('Created temp dir:', dir);
+    safeLogger.info({ category: 'runtime', event: 'runtime.temp-created', data: { path: dir } });
   }
   return dir;
 }
@@ -975,10 +1006,10 @@ function cleanupTempDir() {
     const dir = path.join(app.getPath('userData'), 'temp');
     if (fs.existsSync(dir)) {
       fs.rmSync(dir, { recursive: true, force: true });
-      log.info('Cleaned up temp dir:', dir);
+      safeLogger.info({ category: 'runtime', event: 'runtime.temp-cleaned', data: { path: dir } });
     }
   } catch (e) {
-    log.warn('Failed to cleanup temp dir:', e);
+    safeLogger.warn({ category: 'runtime', event: 'runtime.temp-cleanup-failed', error: e });
   }
 }
 
@@ -1051,7 +1082,7 @@ ipcMain.handle('fs:writeFile', async (_, { filePath, content }) => {
     fs.writeFileSync(filePath, content, 'utf-8');
     return { success: true };
   } catch (e) {
-    return { success: false, error: e.message };
+    return { success: false, error: safeErrorText(e) };
   }
 });
 
@@ -1062,12 +1093,12 @@ ipcMain.handle('fs:deleteFiles', async (_, { filePaths }) => {
       try {
         if (fs.existsSync(filePath)) fs.rmSync(filePath, { recursive: false, force: true });
       } catch (error) {
-        log.warn('Could not delete export artifact:', filePath, error.message || String(error));
+        safeLogger.warn({ category: 'storage', event: 'storage.delete-failed', data: { operation: 'delete' }, error });
       }
     }
     return { success: true };
   } catch (e) {
-    return { success: false, error: e.message };
+    return { success: false, error: safeErrorText(e) };
   }
 });
 
@@ -1075,7 +1106,7 @@ ipcMain.handle('fs:readTextFile', async (_, { filePath }) => {
   try {
     return { success: true, content: fs.readFileSync(filePath, 'utf8') };
   } catch (e) {
-    return { success: false, error: e.message };
+    return { success: false, error: safeErrorText(e) };
   }
 });
 
@@ -1088,7 +1119,7 @@ ipcMain.handle('fs:writeTempTextFile', async (_, { fileName, content }) => {
     fs.writeFileSync(filePath, String(content || ''), 'utf8');
     return { success: true, filePath };
   } catch (e) {
-    return { success: false, error: e.message };
+    return { success: false, error: safeErrorText(e) };
   }
 });
 
@@ -1099,7 +1130,7 @@ ipcMain.handle('fs:createTempPath', async (_, { fileName }) => {
     const safeFileName = safeName(path.basename(fileName || `vaniscript_${Date.now()}.tmp`), 'temp.tmp');
     return { success: true, filePath: path.join(tempDir, `${Date.now()}_${safeFileName}`) };
   } catch (e) {
-    return { success: false, error: e.message };
+    return { success: false, error: safeErrorText(e) };
   }
 });
 
@@ -1112,29 +1143,25 @@ ipcMain.handle('ffmpeg:getPath', () => {
 function runFfmpeg(args) {
   return new Promise(resolve => {
     const ffmpegPath = getFfmpegPath();
-    log.info('FFmpeg cmd:', ffmpegPath, args.join(' '));
-    let stderr = '';
     let proc;
+    let stderr = '';
     try {
       proc = spawn(ffmpegPath, args);
     } catch (e) {
-      return resolve({ success: false, error: e.message, stderr: '' });
+      return resolve({ success: false, error: safeErrorText(e, 'PROVIDER_ERROR'), stderr: '' });
     }
     proc.stderr.on('data', d => { stderr += d.toString(); });
     proc.on('close', code => {
       if (code === 0) {
         resolve({ success: true, stderr });
       } else {
-        log.error(`FFmpeg exit ${code}:`, stderr.slice(-800));
-        // Extract the actual error line from stderr
-        const lines = stderr.split('\n').filter(l => l.includes('Error') || l.includes('error') || l.includes('Invalid') || l.includes('No such'));
-        const errMsg = lines.length > 0 ? lines[lines.length - 1].trim() : `FFmpeg exited with code ${code}`;
-        resolve({ success: false, error: errMsg, stderr: stderr.slice(-800) });
+        safeLogger.error({ category: 'ffmpeg', event: 'ffmpeg.failed', data: { statusCode: code }, error: Object.assign(new Error('ffmpeg failed'), { code: 'PROVIDER_ERROR' }) });
+        resolve({ success: false, error: safeErrorText({ code: 'PROVIDER_ERROR' }, 'PROVIDER_ERROR'), stderr });
       }
     });
     proc.on('error', e => {
-      log.error('FFmpeg spawn error:', e);
-      resolve({ success: false, error: e.message, stderr });
+      safeLogger.error({ category: 'ffmpeg', event: 'ffmpeg.spawn-failed', error: e });
+      resolve({ success: false, error: safeErrorText(e, 'PROVIDER_ERROR'), stderr });
     });
   });
 }
@@ -1222,7 +1249,7 @@ function cleanupRecentPartialFiles(dir, startedAtMs) {
       }
     }
   } catch (error) {
-    log.warn('Could not clean partial link import files:', error?.message || String(error));
+    safeLogger.warn({ category: 'storage', event: 'storage.partial-files-cleanup-failed', error });
   }
 }
 
@@ -1329,8 +1356,6 @@ function importLinkWithYtDlp({ url, mode = 'video', jobId }) {
 
   const runStrategy = (strategy, index) => new Promise((resolve) => {
     const args = [...strategy.args, importUrl];
-    let stdout = '';
-    let stderr = '';
     let resolvedPath = '';
     let lastProgress = 0;
     let lastOutputAt = Date.now();
@@ -1339,7 +1364,7 @@ function importLinkWithYtDlp({ url, mode = 'video', jobId }) {
     let stalled = false;
     let proc;
     try {
-      log.info(`Starting link import ${id} with ${strategy.key} strategy:`, ytDlpPath, args.join(' '));
+      safeLogger.info({ category: 'runtime', event: 'runtime.link-import-started', data: { operation: 'link-import', strategy: strategy.key } });
       proc = spawn(ytDlpPath, args, {
         env: {
           ...process.env,
@@ -1347,7 +1372,7 @@ function importLinkWithYtDlp({ url, mode = 'video', jobId }) {
         },
       });
     } catch (error) {
-      resolve({ success: false, error: error?.message || String(error), retryable: index < strategies.length - 1 });
+      resolve({ success: false, error: safeErrorText(error, 'PROVIDER_ERROR'), retryable: index < strategies.length - 1 });
       return;
     }
 
@@ -1406,8 +1431,7 @@ function importLinkWithYtDlp({ url, mode = 'video', jobId }) {
     const handleOutput = (chunk, source) => {
       const text = chunk.toString();
       lastOutputAt = Date.now();
-      if (source === 'stderr') stderr += text;
-      else stdout += text;
+      // Keep process output in bounded parser buffers only; never retain or emit it.
       let buffer = (source === 'stderr' ? stderrBuffer : stdoutBuffer) + text.replace(/\r/g, '\n');
       const lines = buffer.split(/\n/);
       buffer = lines.pop() || '';
@@ -1440,13 +1464,13 @@ function importLinkWithYtDlp({ url, mode = 'video', jobId }) {
     proc.stderr.on('data', (chunk) => handleOutput(chunk, 'stderr'));
     proc.on('error', (error) => {
       clearInterval(heartbeat);
-      log.error(`Link import ${id} ${strategy.key} spawn error:`, error);
-      emitLinkImportProgress({ jobId: id, status: 'error', progress: lastProgress, message: error?.message || String(error) });
-      resolve({ success: false, error: error?.message || String(error), stderr, retryable: index < strategies.length - 1 });
+      safeLogger.error({ category: 'runtime', event: 'runtime.link-import-failed', data: { operation: 'spawn', strategy: strategy.key }, error });
+      emitLinkImportProgress({ jobId: id, status: 'error', progress: lastProgress, message: safeErrorText(error, 'PROVIDER_ERROR') });
+      resolve({ success: false, error: safeErrorText(error, 'PROVIDER_ERROR'), stderr: '', retryable: index < strategies.length - 1 });
     });
     proc.on('close', (code, signal) => {
       clearInterval(heartbeat);
-      log.info(`Link import ${id} ${strategy.key} closed: code=${code} signal=${signal} progress=${lastProgress}`);
+      safeLogger.info({ category: 'runtime', event: 'runtime.link-import-closed', data: { strategy: strategy.key, statusCode: code, progress: lastProgress } });
       if (signal === 'SIGTERM' || signal === 'SIGKILL') {
         if (stalled) {
           resolve({ success: false, stalled: true, retryable: index < strategies.length - 1, error: `${strategy.label} was throttled or stalled.` });
@@ -1461,15 +1485,13 @@ function importLinkWithYtDlp({ url, mode = 'video', jobId }) {
         return;
       }
       if (code !== 0) {
-        const lines = stderr.split('\n').map((line) => line.trim()).filter(Boolean);
-        const message = lines.findLast?.((line) => /error/i.test(line)) || lines.at(-1) || `yt-dlp exited with code ${code}`;
-        log.warn(`Link import ${id} ${strategy.key} failed:`, message, stderr.slice(-1200));
-        resolve({ success: false, error: message, stderr: stderr.slice(-1600), retryable: index < strategies.length - 1 });
+        safeLogger.warn({ category: 'runtime', event: 'runtime.link-import-failed', data: { strategy: strategy.key, statusCode: code } });
+        resolve({ success: false, error: safeErrorText({ code: 'PROVIDER_ERROR' }, 'PROVIDER_ERROR'), stderr: '', retryable: index < strategies.length - 1 });
         return;
       }
       const filePath = (resolvedPath && fs.existsSync(resolvedPath)) ? resolvedPath : latestFileInDirectory(outputDir, startedAtMs);
       if (!filePath) {
-        resolve({ success: false, retryable: index < strategies.length - 1, error: 'Import finished, but no media file was found.', stderr: stderr.slice(-1600), stdout: stdout.slice(-1600) });
+        resolve({ success: false, retryable: index < strategies.length - 1, error: safeErrorText({ code: 'NOT_FOUND' }, 'NOT_FOUND'), stderr: '', stdout: '' });
         return;
       }
       emitLinkImportProgress({ jobId: id, status: 'complete', progress: 100, message: 'Import complete.' });
@@ -1567,7 +1589,7 @@ async function finishRecordingSession(id) {
       '-ac', '2',
       outputPath,
     ]);
-    if (!result.success) return { success: false, error: result.error, stderr: result.stderr };
+    if (!result.success) return { success: false, error: result.error, stderr: '' };
     return {
       success: true,
       path: outputPath,
@@ -1577,7 +1599,7 @@ async function finishRecordingSession(id) {
     };
   } finally {
     try { if (fs.existsSync(session.tempPath)) fs.rmSync(session.tempPath, { force: true }); } catch (error) {
-      log.warn('Could not remove temporary recording:', session.tempPath, error.message || String(error));
+      safeLogger.warn({ category: 'storage', event: 'storage.recording-cleanup-failed', data: { operation: 'recording' }, error });
     }
   }
 }
@@ -1610,8 +1632,8 @@ ipcMain.handle('recording:start', async (_, { mimeType, fileBaseName } = {}) => 
     const session = createRecordingSession({ mimeType, fileBaseName });
     return { success: true, sessionId: session.id };
   } catch (e) {
-    log.error('recording:start failed:', e);
-    return { success: false, error: e?.message ?? String(e) };
+    safeLogger.error({ category: 'runtime', event: 'runtime.recording-start-failed', error: e });
+    return { success: false, error: safeErrorText(e) };
   }
 });
 
@@ -1625,8 +1647,8 @@ ipcMain.handle('recording:appendChunk', async (_, { sessionId, chunk }) => {
     session.bytes += buffer.length;
     return { success: true, bytes: session.bytes };
   } catch (e) {
-    log.error('recording:appendChunk failed:', e);
-    return { success: false, error: e?.message ?? String(e) };
+    safeLogger.error({ category: 'runtime', event: 'runtime.recording-append-failed', error: e });
+    return { success: false, error: safeErrorText(e) };
   }
 });
 
@@ -1634,8 +1656,8 @@ ipcMain.handle('recording:finish', async (_, { sessionId }) => {
   try {
     return await finishRecordingSession(sessionId);
   } catch (e) {
-    log.error('recording:finish failed:', e);
-    return { success: false, error: e?.message ?? String(e) };
+    safeLogger.error({ category: 'runtime', event: 'runtime.recording-finish-failed', error: e });
+    return { success: false, error: safeErrorText(e) };
   }
 });
 
@@ -1643,8 +1665,8 @@ ipcMain.handle('recording:preview', async (_, { sessionId }) => {
   try {
     return getRecordingPreview(sessionId);
   } catch (e) {
-    log.error('recording:preview failed:', e);
-    return { success: false, error: e?.message ?? String(e) };
+    safeLogger.error({ category: 'runtime', event: 'runtime.recording-preview-failed', error: e });
+    return { success: false, error: safeErrorText(e) };
   }
 });
 
@@ -1652,8 +1674,8 @@ ipcMain.handle('recording:cancel', async (_, { sessionId }) => {
   try {
     return cancelRecordingSession(sessionId);
   } catch (e) {
-    log.error('recording:cancel failed:', e);
-    return { success: false, error: e?.message ?? String(e) };
+    safeLogger.error({ category: 'runtime', event: 'runtime.recording-cancel-failed', error: e });
+    return { success: false, error: safeErrorText(e) };
   }
 });
 
@@ -1663,7 +1685,7 @@ ipcMain.handle('recording:openFolder', async () => {
     await shell.openPath(directory);
     return { success: true, directory };
   } catch (e) {
-    return { success: false, error: e?.message ?? String(e) };
+    return { success: false, error: safeErrorText(e) };
   }
 });
 
@@ -1671,8 +1693,8 @@ ipcMain.handle('link-import:start', async (_, { url, mode, jobId } = {}) => {
   try {
     return await importLinkWithYtDlp({ url, mode, jobId });
   } catch (e) {
-    log.error('link-import:start failed:', e);
-    return { success: false, error: e?.message ?? String(e) };
+    safeLogger.error({ category: 'runtime', event: 'runtime.link-import-handler-failed', error: e });
+    return { success: false, error: safeErrorText(e, 'PROVIDER_ERROR') };
   }
 });
 
@@ -1685,7 +1707,7 @@ ipcMain.handle('link-import:cancel', async (_, { jobId } = {}) => {
     }
     return { success: true };
   } catch (e) {
-    return { success: false, error: e?.message ?? String(e) };
+    return { success: false, error: safeErrorText(e) };
   }
 });
 
@@ -1695,7 +1717,7 @@ ipcMain.handle('link-import:openFolder', async () => {
     await shell.openPath(directory);
     return { success: true, directory };
   } catch (e) {
-    return { success: false, error: e?.message ?? String(e) };
+    return { success: false, error: safeErrorText(e) };
   }
 });
 
@@ -1723,17 +1745,17 @@ ipcMain.handle('ffmpeg:convertToWav', async (_, { inputPath }) => {
 
     // Check input exists
     if (!fs.existsSync(inputPath)) {
-      return { success: false, error: `Input file not found: ${inputPath}` };
+      return { success: false, error: safeErrorText({ code: 'NOT_FOUND' }, 'NOT_FOUND') };
     }
 
     const args = ['-y', '-i', inputPath, '-vn', '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', outputPath];
     const result = await runFfmpeg(args);
 
     if (result.success) return { success: true, outputPath };
-    return { success: false, error: result.error, stderr: result.stderr };
+    return { success: false, error: result.error, stderr: '' };
   } catch (e) {
-    log.error('ffmpeg:convertToWav handler failed:', e);
-    return { success: false, error: e?.message ?? String(e) };
+    safeLogger.error({ category: 'ffmpeg', event: 'ffmpeg.convert-wav-failed', error: e });
+    return { success: false, error: safeErrorText(e, 'PROVIDER_ERROR'), stderr: '' };
   }
 });
 
@@ -1743,7 +1765,7 @@ ipcMain.handle('ffmpeg:extractAudioForTranscription', async (_, { inputPath }) =
     fs.mkdirSync(tempDir, { recursive: true });
     const outputPath = path.join(tempDir, `video_audio_${Date.now()}.wav`);
     if (!fs.existsSync(inputPath)) {
-      return { success: false, error: `Input file not found: ${inputPath}` };
+      return { success: false, error: safeErrorText({ code: 'NOT_FOUND' }, 'NOT_FOUND') };
     }
     const result = await runFfmpeg([
       '-y',
@@ -1755,10 +1777,10 @@ ipcMain.handle('ffmpeg:extractAudioForTranscription', async (_, { inputPath }) =
       outputPath,
     ]);
     if (result.success) return { success: true, outputPath };
-    return { success: false, error: result.error, stderr: result.stderr };
+    return { success: false, error: result.error, stderr: '' };
   } catch (e) {
-    log.error('ffmpeg:extractAudioForTranscription handler failed:', e);
-    return { success: false, error: e?.message ?? String(e) };
+    safeLogger.error({ category: 'ffmpeg', event: 'ffmpeg.extract-audio-failed', error: e });
+    return { success: false, error: safeErrorText(e, 'PROVIDER_ERROR'), stderr: '' };
   }
 });
 
@@ -1783,7 +1805,7 @@ ipcMain.handle('ffmpeg:sliceChunks', async (_, { inputPath, cutPoints }) => {
 
       const result = await runFfmpeg(args);
       if (!result.success) {
-        log.warn(`Chunk ${i} failed, skipping:`, result.error);
+        safeLogger.warn({ category: 'ffmpeg', event: 'ffmpeg.chunk-failed', data: { index: i } });
         continue;
       }
       chunkPaths.push(outPath);
@@ -1791,8 +1813,8 @@ ipcMain.handle('ffmpeg:sliceChunks', async (_, { inputPath, cutPoints }) => {
 
     return { success: chunkPaths.length > 0, chunkPaths };
   } catch (e) {
-    log.error('ffmpeg:sliceChunks handler failed:', e);
-    return { success: false, chunkPaths: [], error: e?.message ?? String(e) };
+    safeLogger.error({ category: 'ffmpeg', event: 'ffmpeg.slice-chunks-failed', error: e });
+    return { success: false, chunkPaths: [], error: safeErrorText(e, 'PROVIDER_ERROR') };
   }
 });
 
@@ -1813,7 +1835,7 @@ ipcMain.handle('ffmpeg:getDuration', async (_, { inputPath }) => {
 ipcMain.handle('ffmpeg:getVideoInfo', async (_, { inputPath }) => {
   const stderr = await new Promise((resolve) => {
     const ffmpegPath = getFfmpegPath();
-    log.info('FFmpeg probe cmd:', ffmpegPath, '-hide_banner -i', inputPath);
+    safeLogger.info({ category: 'ffmpeg', event: 'ffmpeg.probe-started', data: { operation: 'video-info' } });
     let collected = '';
     let proc;
     try {
@@ -1850,7 +1872,7 @@ ipcMain.handle('ffmpeg:extractWaveformPeaks', async (_, {
 }) => {
   try {
     if (!inputPath || !fs.existsSync(inputPath)) {
-      return { success: false, error: `Input file not found: ${inputPath}` };
+      return { success: false, error: safeErrorText({ code: 'NOT_FOUND' }, 'NOT_FOUND') };
     }
 
     const ffmpegPath = getFfmpegPath();
@@ -1868,7 +1890,7 @@ ipcMain.handle('ffmpeg:extractWaveformPeaks', async (_, {
       'pipe:1',
     ];
 
-    log.info('FFmpeg waveform cmd:', ffmpegPath, args.join(' '));
+    safeLogger.info({ category: 'ffmpeg', event: 'ffmpeg.waveform-started', data: { operation: 'waveform' } });
     const result = await new Promise(resolve => {
       let stderr = '';
       const chunks = [];
@@ -1876,22 +1898,22 @@ ipcMain.handle('ffmpeg:extractWaveformPeaks', async (_, {
       try {
         proc = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
       } catch (e) {
-        resolve({ success: false, error: e.message, stderr: '' });
+        resolve({ success: false, error: safeErrorText(e, 'PROVIDER_ERROR'), stderr: '' });
         return;
       }
       proc.stdout.on('data', d => chunks.push(Buffer.from(d)));
       proc.stderr.on('data', d => { stderr += d.toString(); });
-      proc.on('error', e => resolve({ success: false, error: e.message, stderr }));
+      proc.on('error', e => resolve({ success: false, error: safeErrorText(e, 'PROVIDER_ERROR'), stderr: '' }));
       proc.on('close', code => {
         if (code !== 0) {
-          resolve({ success: false, error: `FFmpeg exited with code ${code}`, stderr: stderr.slice(-800) });
+          resolve({ success: false, error: safeErrorText({ code: 'PROVIDER_ERROR' }, 'PROVIDER_ERROR'), stderr: '' });
           return;
         }
-        resolve({ success: true, buffer: Buffer.concat(chunks), stderr });
+        resolve({ success: true, buffer: Buffer.concat(chunks), stderr: '' });
       });
     });
 
-    if (!result.success) return result;
+    if (!result.success) return { ...result, error: safeErrorText({ code: 'PROVIDER_ERROR' }, 'PROVIDER_ERROR'), stderr: '' };
     const sampleCount = Math.floor(result.buffer.byteLength / 4);
     if (sampleCount === 0) return { success: false, error: 'No waveform samples returned.' };
 
@@ -1908,8 +1930,8 @@ ipcMain.handle('ffmpeg:extractWaveformPeaks', async (_, {
     const maxPeak = Math.max(0.0001, ...peaks);
     return { success: true, peaks: peaks.map(peak => peak / maxPeak) };
   } catch (e) {
-    log.error('ffmpeg:extractWaveformPeaks failed:', e);
-    return { success: false, error: e.message || String(e) };
+    safeLogger.error({ category: 'ffmpeg', event: 'ffmpeg.waveform-failed', error: e });
+    return { success: false, error: safeErrorText(e, 'PROVIDER_ERROR') };
   }
 });
 
@@ -1944,8 +1966,8 @@ ipcMain.handle('ffmpeg:renderShortPreviewFrame', async (_, {
     const result = await runFfmpeg(args);
     return result.success ? { success: true, outputPath } : result;
   } catch (e) {
-    log.error('ffmpeg:renderShortPreviewFrame failed:', e);
-    return { success: false, error: e.message || String(e) };
+    safeLogger.error({ category: 'ffmpeg', event: 'ffmpeg.preview-frame-failed', error: e });
+    return { success: false, error: safeErrorText(e, 'PROVIDER_ERROR') };
   }
 });
 
@@ -1999,8 +2021,8 @@ ipcMain.handle('ffmpeg:exportShortClip', async (_, {
     const result = await runFfmpeg(args.filter(Boolean));
     return result.success ? { success: true, outputPath } : result;
   } catch (e) {
-    log.error('ffmpeg:exportShortClip failed:', e);
-    return { success: false, error: e.message || String(e) };
+    safeLogger.error({ category: 'ffmpeg', event: 'ffmpeg.export-clip-failed', error: e });
+    return { success: false, error: safeErrorText(e, 'PROVIDER_ERROR') };
   }
 });
 
@@ -2101,7 +2123,7 @@ async function getSourceMediaInfoHelper(inputPath, originalURL, title, durationS
       importedAt: new Date().toISOString()
     };
   } catch (err) {
-    log.error('getSourceMediaInfoHelper failed:', err);
+    safeLogger.error({ category: 'runtime', event: 'runtime.media-info-failed', error: err });
     return null;
   }
 }
@@ -2113,18 +2135,18 @@ ipcMain.handle('fs:readFileBuffer', async (_, { filePath }) => {
     const data = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
     return { success: true, data, byteOffset: 0, byteLength: buf.byteLength };
   } catch (e) {
-    return { success: false, error: e.message };
+    return { success: false, error: safeErrorText(e) };
   }
 });
 
 ipcMain.handle('fs:pathToFileUrl', async (_, { filePath }) => {
   try {
     if (!filePath || !fs.existsSync(filePath)) {
-      return { success: false, error: `File not found: ${filePath}` };
+      return { success: false, error: safeErrorText({ code: 'NOT_FOUND' }, 'NOT_FOUND') };
     }
     return { success: true, url: pathToFileURL(filePath).href };
   } catch (e) {
-    return { success: false, error: e.message };
+    return { success: false, error: safeErrorText(e) };
   }
 });
 
@@ -2158,7 +2180,7 @@ ipcMain.handle('project:list', async () => {
   try {
     return { ok: true, projects: listProjects() };
   } catch (error) {
-    return { ok: false, error: error.message || String(error) };
+    return { ok: false, error: safeErrorText(error) };
   }
 });
 
@@ -2167,7 +2189,7 @@ ipcMain.handle('project:save', async (_event, project) => {
     const saved = saveProjectRecord(project);
     return { ok: true, project: saved };
   } catch (error) {
-    return { ok: false, error: error.message || String(error) };
+    return { ok: false, error: safeErrorText(error) };
   }
 });
 
@@ -2194,13 +2216,13 @@ ipcMain.handle('project:load', async (_event, { id }) => {
             saveProjectRecord(project);
           }
         } catch (err) {
-          log.warn('Failed to retrospectively probe media:', err);
+          safeLogger.warn({ category: 'runtime', event: 'runtime.media-probe-failed', error: err });
         }
       }
     }
     return { ok: true, project };
   } catch (error) {
-    return { ok: false, error: error.message || String(error) };
+    return { ok: false, error: safeErrorText(error) };
   }
 });
 
@@ -2209,7 +2231,7 @@ ipcMain.handle('project:delete', async (_event, { id }) => {
     fs.rmSync(projectDir(id), { recursive: true, force: true });
     return { ok: true };
   } catch (error) {
-    return { ok: false, error: error.message || String(error) };
+    return { ok: false, error: safeErrorText(error) };
   }
 });
 
@@ -2219,7 +2241,7 @@ ipcMain.handle('project:clearAll', async () => {
     fs.mkdirSync(projectsRootDir(), { recursive: true });
     return { ok: true };
   } catch (error) {
-    return { ok: false, error: error.message || String(error) };
+    return { ok: false, error: safeErrorText(error) };
   }
 });
 
@@ -2289,9 +2311,112 @@ ipcMain.handle('settings:migrateLegacy', async (_event, payload) => {
     return {
       ok: false,
       errorCode: 'INTERNAL',
-      error: error instanceof Error ? error.message : String(error),
+      error: safeErrorText(error),
     };
   }
+});
+
+// ─── IPC: Main-owned usage ledger ────────────────────────────────────────────
+const usagePurposes = new Set(['text', 'chat', 'translation', 'transcription', 'vision', 'review', 'polish', 'shorts']);
+function normalizeUsageRange(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const range = {};
+  if (typeof input.from === 'string') range.from = input.from.slice(0, 10);
+  if (typeof input.to === 'string') range.to = input.to.slice(0, 10);
+  return Object.keys(range).length > 0 ? range : undefined;
+}
+function normalizeUsageRecordInput(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  if (typeof input.operationId !== 'string' || !input.operationId.trim()) return null;
+  if (typeof input.providerId !== 'string' || !input.providerId.trim()) return null;
+  if (!usagePurposes.has(input.purpose)) return null;
+  if (input.outcome !== 'success' && input.outcome !== 'error') return null;
+  return {
+    operationId: input.operationId,
+    providerId: input.providerId,
+    ...(typeof input.modelId === 'string' ? { modelId: input.modelId } : {}),
+    purpose: input.purpose,
+    outcome: input.outcome,
+    ...(Number.isFinite(Number(input.inputTokens)) ? { inputTokens: Number(input.inputTokens) } : {}),
+    ...(Number.isFinite(Number(input.outputTokens)) ? { outputTokens: Number(input.outputTokens) } : {}),
+    ...(Number.isFinite(Number(input.audioMinutes)) ? { audioMinutes: Number(input.audioMinutes) } : {}),
+    ...(typeof input.errorCode === 'string' ? { errorCode: input.errorCode } : {}),
+  };
+}
+ipcMain.handle('usage:get', async (_event, range) => ({
+  ok: true,
+  usage: observability.usage.get(normalizeUsageRange(range)),
+}));
+ipcMain.handle('usage:record', async (_event, input) => {
+  const normalized = normalizeUsageRecordInput(input);
+  return {
+    ok: true,
+    usage: normalized ? observability.usage.record(normalized) : observability.usage.get(),
+  };
+});
+ipcMain.handle('usage:reset', async () => ({
+  ok: true,
+  usage: observability.usage.reset(),
+}));
+ipcMain.handle('usage:export', async (_event, range) => {
+  try {
+    const result = await dialog.showSaveDialog(windowManager.getMainWindow(), {
+      defaultPath: 'VaniScript-usage.json',
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    });
+    if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
+    fs.writeFileSync(result.filePath, JSON.stringify(observability.usage.export(normalizeUsageRange(range)), null, 2), {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
+    return { ok: true };
+  } catch (error) {
+    safeLogger.error({ category: 'usage', event: 'usage.export-failed', error });
+    return { ok: false, error: safeIpcError(error) };
+  }
+});
+
+// ─── IPC: Safe diagnostics ──────────────────────────────────────────────────
+ipcMain.handle('diagnostics:get', async () => ({
+  ok: true,
+  snapshot: observability.diagnostics.snapshot(),
+}));
+ipcMain.handle('diagnostics:export', async () => {
+  try {
+    const result = await dialog.showSaveDialog(windowManager.getMainWindow(), {
+      defaultPath: 'VaniScript-diagnostics.json',
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    });
+    if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
+    const snapshot = observability.diagnostics.snapshot();
+    fs.writeFileSync(result.filePath, JSON.stringify(snapshot, null, 2), {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
+    return { ok: true };
+  } catch (error) {
+    safeLogger.error({ category: 'diagnostics', event: 'diagnostics.export-failed', error });
+    return { ok: false, error: safeIpcError(error) };
+  }
+});
+ipcMain.handle('diagnostics:openLogs', async () => {
+  try {
+    if (!configuredLogPath) return { ok: false, error: safeIpcError({ code: 'NOT_FOUND' }) };
+    const errorText = await shell.openPath(configuredLogPath);
+    if (errorText) return { ok: false, error: safeIpcError({ code: 'NOT_FOUND' }) };
+    return { ok: true };
+  } catch (error) {
+    safeLogger.error({ category: 'diagnostics', event: 'diagnostics.open-logs-failed', error });
+    return { ok: false, error: safeIpcError(error) };
+  }
+});
+
+ipcMain.handle('renderer:report', async (_event, payload = {}) => {
+  const level = payload?.level === 'warn' ? 'warn' : payload?.level === 'debug' ? 'debug' : 'error';
+  const event = typeof payload?.event === 'string' ? payload.event : 'renderer.error';
+  const code = typeof payload?.code === 'string' ? payload.code : 'INTERNAL';
+  safeLogger[level]({ category: 'renderer', event, data: { code } });
+  return { ok: true };
 });
 
 // ─── IPC: Cloud provider routing (secure proxy) ───────────────────────────────
@@ -2300,13 +2425,34 @@ ipcMain.handle('settings:migrateLegacy', async (_event, payload) => {
 // App-level errors cross IPC as a resolved envelope carrying the AppError marker
 // (Electron drops the thrown error's prototype/flag during serialization).
 ipcMain.handle('provider:invoke', async (_event, request) => {
+  const operationId = typeof request?.operationId === 'string' && request.operationId.length > 0
+    ? request.operationId
+    : crypto.randomUUID();
+  const purpose = usagePurposes.has(request?.purpose) ? request.purpose : 'text';
   try {
-    return await invokeProvider(request);
+    const result = await invokeProvider(request);
+    observability.usage.record({
+      operationId,
+      providerId: result.providerId,
+      modelId: result.model,
+      purpose,
+      outcome: 'success',
+      inputTokens: result.usage?.promptTokens,
+      outputTokens: result.usage?.completionTokens,
+    });
+    return result;
   } catch (err) {
-    if (err && err.isAppError) {
-      return { __appError: true, code: err.code, message: err.message, details: err.details };
-    }
-    return { __appError: true, code: 'INTERNAL', message: err && err.message ? err.message : 'Unknown error', details: String(err) };
+    observability.usage.record({
+      operationId,
+      providerId: request?.providerId || 'unknown',
+      modelId: request?.modelId,
+      purpose,
+      outcome: 'error',
+      errorCode: safeIpcError(err).code,
+    });
+    const safe = safeIpcError(err);
+    observability.recordError(err, { category: 'provider', event: 'provider.invoke-failed', correlation: { operationId } });
+    return safe;
   }
 });
 
@@ -2319,9 +2465,9 @@ ipcMain.handle(MODELS_MANAGE_CHANNEL, async (_event, request) => {
     return { ok: true, result: await manageModels(request) };
   } catch (err) {
     if (err && err.isAppError) {
-      return { ok: false, error: { code: err.code, message: err.message, details: err.details } };
+      return { ok: false, error: safeIpcError(err) };
     }
-    return { ok: false, error: { code: 'INTERNAL', message: err && err.message ? err.message : 'Unknown error', details: String(err) } };
+    return { ok: false, error: safeIpcError(err) };
   }
 });
 
@@ -2345,7 +2491,7 @@ ipcMain.handle('local-models:reconcile', async (_event, { asrIds = [], translati
 
     return { ok: true, asr, translation };
   } catch (error) {
-    return { ok: false, asr: {}, translation: {}, error: error.message || String(error) };
+    return { ok: false, asr: {}, translation: {}, error: safeErrorText(error, 'MODEL_UNAVAILABLE') };
   }
 });
 
@@ -2360,7 +2506,7 @@ ipcMain.handle('local-asr:installModel', async (_event, { modelId }) => {
     broadcastSharedLocalModels();
     return { ok: true, id: modelId, path: result?.path ?? null };
   } catch (e) {
-    return { ok: false, id: modelId, error: e?.message ?? String(e) };
+    return { ok: false, id: modelId, error: safeErrorText(e, 'MODEL_UNAVAILABLE') };
   }
 });
 
@@ -2375,7 +2521,7 @@ ipcMain.handle('local-asr:removeModel', async (_event, { modelId }) => {
     broadcastSharedLocalModels();
     return result;
   } catch (e) {
-    return { ok: false, id: modelId, error: e?.message ?? String(e) };
+    return { ok: false, id: modelId, error: safeErrorText(e, 'MODEL_UNAVAILABLE') };
   }
 });
 
@@ -2385,7 +2531,7 @@ ipcMain.handle('local-translation:installModel', async (_event, { modelId }) => 
     broadcastSharedLocalModels();
     return { ok: true, id: modelId, path: result.path ?? null };
   } catch (error) {
-    return { ok: false, id: modelId, error: error.message || String(error) };
+    return { ok: false, id: modelId, error: safeErrorText(error, 'MODEL_UNAVAILABLE') };
   }
 });
 
@@ -2395,7 +2541,7 @@ ipcMain.handle('local-translation:removeModel', async (_event, { modelId }) => {
     broadcastSharedLocalModels();
     return { ok: true, id: modelId };
   } catch (error) {
-    return { ok: false, id: modelId, error: error.message || String(error) };
+    return { ok: false, id: modelId, error: safeErrorText(error, 'MODEL_UNAVAILABLE') };
   }
 });
 
@@ -2404,7 +2550,7 @@ ipcMain.handle('local-translation:resolveModelPath', async (_event, { modelId })
     const modelPath = resolveInstalledModelPath(resolveLocalTranslationStorageDir(), modelId);
     return { ok: true, id: modelId, path: modelPath ?? null };
   } catch (error) {
-    return { ok: false, id: modelId, error: error.message || String(error) };
+    return { ok: false, id: modelId, error: safeErrorText(error, 'MODEL_UNAVAILABLE') };
   }
 });
 
@@ -2420,41 +2566,47 @@ ipcMain.handle('local-model:getDownloadStatus', async (_event, { kind, modelId }
 
     return { ok: true, kind, modelId, ...summarizeWhisperModel(modelId) };
   } catch (error) {
-    return { ok: false, kind, modelId, error: error.message || String(error) };
+    return { ok: false, kind, modelId, error: safeErrorText(error, 'MODEL_UNAVAILABLE') };
   }
 });
 
 ipcMain.handle('local-translation:translateText', async (_event, payload) => {
-  const modelPath = resolveInstalledModelPath(resolveLocalTranslationStorageDir(), payload?.modelId);
-  if (!modelPath) {
-    throw new Error(`Local translation model ${payload?.modelId || ''} is not installed. Download it in Settings.`);
+  try {
+    const modelPath = resolveInstalledModelPath(resolveLocalTranslationStorageDir(), payload?.modelId);
+    if (!modelPath) {
+      throw new Error('Local translation model is not installed.');
+    }
+    return await callLocalTranslationWorker({ type: 'translate_text', ...payload });
+  } catch (error) {
+    observability.recordError(error, { category: 'worker', event: 'worker.translation-failed' });
+    throw new Error(safeErrorText(error, 'MODEL_UNAVAILABLE'));
   }
-  return callLocalTranslationWorker({ type: 'translate_text', ...payload });
 });
 
 ipcMain.handle('local-asr:transcribeChunk', async (_event, { modelId, chunkPath, options = {} }) => {
-  if (!chunkPath || !fs.existsSync(chunkPath)) throw new Error(`Chunk file not found: ${chunkPath}`);
-  if (isParakeetModel(modelId)) {
-    const parakeetStatus = summarizeParakeetModel(modelId);
-    if (parakeetStatus.status !== 'downloaded') {
-      throw new Error(`Local ASR model ${modelId} is not installed. Download it in Settings.`);
+  try {
+    if (!chunkPath || !fs.existsSync(chunkPath)) throw new Error('Chunk file is not available.');
+    if (isParakeetModel(modelId)) {
+      const parakeetStatus = summarizeParakeetModel(modelId);
+      if (parakeetStatus.status !== 'downloaded') throw new Error('Local ASR model is not installed.');
+      const wavBuffer = fs.readFileSync(chunkPath);
+      const pcm = decodeWavToFloat32(wavBuffer);
+      return await callLocalParakeetWorker({
+        type: 'transcribe',
+        modelId: PARAKEET_MODEL_MAP[modelId],
+        audioData: Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength),
+      });
     }
-    const wavBuffer = fs.readFileSync(chunkPath);
-    const pcm = decodeWavToFloat32(wavBuffer);
-    return callLocalParakeetWorker({
-      type: 'transcribe',
-      modelId: PARAKEET_MODEL_MAP[modelId],
-      audioData: Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength),
-    });
+    const whisperStatus = summarizeWhisperModel(modelId);
+    if (whisperStatus.status !== 'downloaded') throw new Error('Local ASR model is not installed.');
+    return await callLocalWhisperWorker({ type: 'transcribe_chunk', modelId, chunkPath, options });
+  } catch (error) {
+    observability.recordError(error, { category: 'worker', event: 'worker.transcription-failed' });
+    throw new Error(safeErrorText(error, 'MODEL_UNAVAILABLE'));
   }
-  const whisperStatus = summarizeWhisperModel(modelId);
-  if (whisperStatus.status !== 'downloaded') {
-    throw new Error(`Local ASR model ${modelId} is not installed. Download it in Settings.`);
-  }
-  return callLocalWhisperWorker({ type: 'transcribe_chunk', modelId, chunkPath, options });
 });
 
-log.info('VaniScript main process ready');
+safeLogger.info({ category: 'runtime', event: 'runtime.ready', data: { status: 'ready' } });
 
 // ─── MCP Server & Renderer IPC Bridge ───────────────────────────────────────
 let mcpHttpServer = null;
@@ -2493,14 +2645,31 @@ function isLoopbackOrigin(origin) {
 function startMcpServer() {
   const http = require('http');
   const { parse: parseUrl } = require('url');
+  const mcpLogger = typeof safeLogger !== 'undefined'
+    ? safeLogger
+    : {
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+    };
+  const mcpAudit = typeof observability !== 'undefined' && observability?.audit?.record
+    ? observability.audit
+    : null;
+  const recordLegacyAudit = mcpAudit && typeof createLegacyAuditRecorder === 'function'
+    ? createLegacyAuditRecorder(mcpAudit, () => new Date())
+    : () => {};
+  const mcpSafeError = typeof safeMcpError === 'function'
+    ? safeMcpError
+    : () => ({ code: 'MCP_INTERNAL', message: 'MCP request failed.' });
 
   // Generate a fresh session token so only holders of it can use the MCP server.
   mcpAccessToken = crypto.randomBytes(32).toString('hex');
-  log.info('MCP access token generated for this session');
+  mcpLogger.info({ category: 'mcp', event: 'mcp.token-generated', data: { state: 'ready' } });
 
   mcpHttpServer = http.createServer((req, res) => {
     const parsed = parseUrl(req.url, true);
     const pathname = parsed.pathname;
+    const peer = req.socket?.remoteAddress || 'loopback';
 
     // CORS: allow only loopback origins (parity with AS isAllowedOrigin).
     // Native MCP clients send no Origin header, so fall back to '*'.
@@ -2524,6 +2693,8 @@ function startMcpServer() {
       if (!isMcpAuthorized(req)) {
         res.writeHead(401, { 'Content-Type': 'text/plain' });
         res.end('Unauthorized');
+        mcpLogger.warn({ category: 'mcp', event: 'mcp.request-denied', data: { route: '/sse', method: req.method, outcome: 'denied' } });
+        recordLegacyAudit({ peer, route: '/sse', method: req.method, outcome: 'denied', mcpCode: 'MCP_UNAUTHORIZED', reason: 'unauthorized', requestId: req.headers['x-request-id'] });
         return;
       }
       res.writeHead(200, {
@@ -2540,10 +2711,11 @@ function startMcpServer() {
 
       req.on('close', () => {
         activeSseConnections.delete(sessionId);
-        log.info(`MCP SSE client disconnected: ${sessionId}`);
+        recordLegacyAudit({ peer, route: '/sse', method: 'GET', outcome: 'success', reason: null, requestId: req.headers['x-request-id'] });
+        mcpLogger.info({ category: 'mcp', event: 'mcp.sse-disconnected', data: { route: '/sse', outcome: 'success' } });
       });
       
-      log.info(`MCP SSE client connected: ${sessionId}`);
+      mcpLogger.info({ category: 'mcp', event: 'mcp.sse-connected', data: { route: '/sse', outcome: 'success' } });
       return;
     }
 
@@ -2551,6 +2723,8 @@ function startMcpServer() {
       if (!isMcpAuthorized(req)) {
         res.writeHead(401, { 'Content-Type': 'text/plain' });
         res.end('Unauthorized');
+        mcpLogger.warn({ category: 'mcp', event: 'mcp.request-denied', data: { route: '/message', method: req.method, outcome: 'denied' } });
+        recordLegacyAudit({ peer, route: '/message', method: req.method, outcome: 'denied', mcpCode: 'MCP_UNAUTHORIZED', reason: 'unauthorized', requestId: req.headers['x-request-id'] });
         return;
       }
       const sessionId = parsed.query.sessionId;
@@ -2559,7 +2733,7 @@ function startMcpServer() {
       req.on('end', async () => {
         try {
           const rpc = JSON.parse(body);
-          log.info(`MCP JSON-RPC request for session ${sessionId}:`, rpc.method);
+          mcpLogger.info({ category: 'mcp', event: 'mcp.request-received', data: { route: '/message', method: req.method, state: 'parsed' } });
 
           // Standard SSE protocol: POST receives immediate 202, actual response goes via SSE
           res.writeHead(202);
@@ -2567,7 +2741,8 @@ function startMcpServer() {
 
           const sseResponse = activeSseConnections.get(sessionId);
           if (!sseResponse) {
-            log.error(`No active SSE connection for session ${sessionId}`);
+            mcpLogger.warn({ category: 'mcp', event: 'mcp.session-missing', data: { route: '/message', outcome: 'rejected' } });
+            recordLegacyAudit({ peer, route: '/message', method: req.method, outcome: 'rejected', mcpCode: 'MCP_NOT_FOUND', reason: 'missing_window', tool: rpc.method, requestId: req.headers['x-request-id'] });
             return;
           }
 
@@ -2587,11 +2762,13 @@ function startMcpServer() {
               }
             };
             sseResponse.write(`event: message\ndata: ${JSON.stringify(response)}\n\n`);
+            recordLegacyAudit({ peer, route: '/message', method: req.method, outcome: 'success', reason: null, tool: 'initialize', requestId: req.headers['x-request-id'] });
             return;
           }
 
           if (rpc.method === 'notifications/initialized') {
-            return; // no response
+            recordLegacyAudit({ peer, route: '/message', method: req.method, outcome: 'success', reason: null, tool: 'notifications/initialized', requestId: req.headers['x-request-id'] });
+            return;
           }
 
           if (rpc.method === 'tools/list') {
@@ -2692,6 +2869,7 @@ function startMcpServer() {
               }
             };
             sseResponse.write(`event: message\ndata: ${JSON.stringify(response)}\n\n`);
+            recordLegacyAudit({ peer, route: '/message', method: req.method, outcome: 'success', reason: null, tool: 'tools/list', requestId: req.headers['x-request-id'] });
             return;
           }
 
@@ -2714,19 +2892,24 @@ function startMcpServer() {
                   id: rpc.id,
                   result: {
                     content: [
-                      { type: 'text', text: JSON.stringify(result, null, 2) }
-                    ]
-                  }
+                      { type: 'text', text: JSON.stringify(result, null, 2) },
+                    ],
+                  },
                 };
               } catch (error) {
-                log.error(`MCP tool "${name}" failed in Main:`, error.message || String(error));
+                const safe = mcpSafeError(error, 'MCP_INTERNAL');
+                mcpLogger.error({ category: 'mcp', event: 'mcp.tool-failed', data: { tool: name, outcome: 'rejected' }, error });
+                recordLegacyAudit({ peer, route: '/message', method: req.method, outcome: 'rejected', mcpCode: safe.code, reason: 'server_error', tool: name, requestId: req.headers['x-request-id'] });
                 response = {
                   jsonrpc: '2.0',
                   id: rpc.id,
-                  error: mcpToolRpcError(error)
+                  error: { ...mcpToolRpcError({ ...error, code: safe.code, message: safe.message }), message: safe.message },
                 };
+                sseResponse.write(`event: message\ndata: ${JSON.stringify(response)}\n\n`);
+                return;
               }
               sseResponse.write(`event: message\ndata: ${JSON.stringify(response)}\n\n`);
+              recordLegacyAudit({ peer, route: '/message', method: req.method, outcome: 'success', reason: null, tool: name, requestId: req.headers['x-request-id'] });
               return;
             }
             if (!windowManager.getMainWindow()) {
@@ -2736,12 +2919,16 @@ function startMcpServer() {
                 error: { code: -32603, message: 'VaniScript main window is not active.' }
               };
               sseResponse.write(`event: message\ndata: ${JSON.stringify(errResponse)}\n\n`);
+              mcpLogger.warn({ category: 'mcp', event: 'mcp.window-missing', data: { route: '/message', outcome: 'rejected' } });
+              recordLegacyAudit({ peer, route: '/message', method: req.method, outcome: 'rejected', mcpCode: 'MCP_CAPABILITY_UNAVAILABLE', reason: 'missing_window', tool: name, requestId: req.headers['x-request-id'] });
               return;
             }
 
             const requestId = crypto.randomUUID();
             pendingMcpRequests.set(requestId, {
               resolve: (result) => {
+                const pending = pendingMcpRequests.get(requestId);
+                if (pending?.timeout) clearTimeout(pending.timeout);
                 const response = {
                   jsonrpc: '2.0',
                   id: rpc.id,
@@ -2751,18 +2938,35 @@ function startMcpServer() {
                     ]
                   }
                 };
+                recordLegacyAudit({ peer, route: '/message', method: req.method, outcome: 'success', reason: null, tool: name, requestId: req.headers['x-request-id'] || requestId });
                 sseResponse.write(`event: message\ndata: ${JSON.stringify(response)}\n\n`);
               },
               reject: (error) => {
+                const safe = mcpSafeError(error, 'MCP_INTERNAL');
+                const pending = pendingMcpRequests.get(requestId);
+                if (pending?.timeout) clearTimeout(pending.timeout);
                 const response = {
                   jsonrpc: '2.0',
                   id: rpc.id,
-                  error: { code: -32603, message: error.message || String(error) }
+                  error: { code: -32603, message: safe.message },
                 };
+                mcpLogger.error({ category: 'mcp', event: 'mcp.renderer-tool-failed', data: { tool: name, outcome: 'rejected' }, error });
+                recordLegacyAudit({ peer, route: '/message', method: req.method, outcome: 'rejected', mcpCode: safe.code, reason: 'renderer_rejected', tool: name, requestId: req.headers['x-request-id'] || requestId });
                 sseResponse.write(`event: message\ndata: ${JSON.stringify(response)}\n\n`);
-              }
+              },
+              timeout: setTimeout(() => {
+                if (!pendingMcpRequests.has(requestId)) return;
+                pendingMcpRequests.delete(requestId);
+                const response = {
+                  jsonrpc: '2.0',
+                  id: rpc.id,
+                  error: { code: -32603, message: 'MCP request timed out.' },
+                };
+                mcpLogger.warn({ category: 'mcp', event: 'mcp.request-timeout', data: { tool: name, outcome: 'timeout' } });
+                recordLegacyAudit({ peer, route: '/message', method: req.method, outcome: 'timeout', mcpCode: 'MCP_REQUEST_TIMEOUT', reason: 'timeout', tool: name, requestId: req.headers['x-request-id'] || requestId });
+                try { sseResponse.write(`event: message\ndata: ${JSON.stringify(response)}\n\n`); } catch { /* disconnected client */ }
+              }, 15_000),
             });
-
             // Forward tool call to React renderer
             windowManager.getMainWindow().webContents.send('mcp:call-tool', { name, arguments: args, requestId });
             return;
@@ -2772,11 +2976,17 @@ function startMcpServer() {
           const unhandled = {
             jsonrpc: '2.0',
             id: rpc.id,
-            error: { code: -32601, message: `Method not found: ${rpc.method}` }
+            error: { code: -32601, message: 'Method not found.' }
           };
+          recordLegacyAudit({ peer, route: '/message', method: req.method, outcome: 'rejected', mcpCode: 'MCP_METHOD_NOT_FOUND', reason: 'server_error', tool: rpc.method, requestId: req.headers['x-request-id'] });
           sseResponse.write(`event: message\ndata: ${JSON.stringify(unhandled)}\n\n`);
         } catch (err) {
-          log.error('Error parsing JSON-RPC request:', err);
+          mcpLogger.error({ category: 'mcp', event: 'mcp.request-parse-failed', data: { route: '/message', outcome: 'rejected' }, error: err });
+          if (!res.headersSent) {
+            res.writeHead(400, { 'Content-Type': 'text/plain' });
+            res.end('Invalid request');
+          }
+          recordLegacyAudit({ peer, route: '/message', method: req.method, outcome: 'rejected', mcpCode: 'MCP_INVALID_REQUEST', reason: 'parse_failed', requestId: req.headers['x-request-id'] });
         }
       });
       return;
@@ -2784,14 +2994,17 @@ function startMcpServer() {
 
     res.writeHead(404);
     res.end();
+    mcpLogger.warn({ category: 'mcp', event: 'mcp.route-not-found', data: { route: pathname, method: req.method, outcome: 'rejected' } });
+    recordLegacyAudit({ peer, route: pathname, method: req.method, outcome: 'rejected', mcpCode: 'MCP_NOT_FOUND', reason: 'server_error', requestId: req.headers['x-request-id'] });
   });
 
   mcpHttpServer.listen(19789, '127.0.0.1', () => {
-    log.info('MCP HTTP/SSE Server listening on http://127.0.0.1:19789/sse');
+    mcpLogger.info({ category: 'mcp', event: 'mcp.server-listening', data: { route: '/sse', status: 'ready' } });
   });
 
   mcpHttpServer.on('error', (err) => {
-    log.error('MCP Server error:', err);
+    mcpLogger.error({ category: 'mcp', event: 'mcp.server-error', data: { route: '/sse' }, error: err });
+    recordLegacyAudit({ peer: 'loopback', route: '/sse', method: 'SERVER', outcome: 'rejected', mcpCode: 'MCP_INTERNAL', reason: 'server_error' });
   });
 }
 
@@ -2799,9 +3012,9 @@ function stopMcpServer() {
   if (mcpHttpServer) {
     try {
       mcpHttpServer.close();
-      log.info('MCP HTTP/SSE Server closed.');
+      mcpLogger.info({ category: 'mcp', event: 'mcp.server-closed', data: { route: '/sse', status: 'closed' } });
     } catch (e) {
-      log.error('Error closing MCP server:', e);
+      mcpLogger.error({ category: 'mcp', event: 'mcp.server-close-failed', data: { route: '/sse' }, error: e });
     }
     mcpHttpServer = null;
   }
@@ -2958,13 +3171,12 @@ ipcMain.handle('grok:chat', async (event, { messages, systemPrompt, model } = {}
     }
   });
 
-  child.stderr.on('data', (d) => {
-    log.warn('[grok stderr]', String(d).trim());
-  });
+  child.stderr.on('data', () => safeLogger.warn({ category: 'agent', event: 'agent.stderr', data: { agent: 'grok', stream: 'stderr' } }));
 
   child.on('error', (err) => {
     try { fs.unlinkSync(promptFile); } catch { /* ignore */ }
-    sender.send('grok:error', { error: 'launchFailed', message: `Could not start Grok: ${err.message}` });
+    safeLogger.error({ category: 'agent', event: 'agent.launch-failed', data: { agent: 'grok' }, error: err });
+    sender.send('grok:error', { error: 'launchFailed', message: 'Could not start Grok.' });
   });
 
   child.on('close', (code) => {
@@ -3118,12 +3330,11 @@ ipcMain.handle('qwen:chat', async (event, { messages, systemPrompt, model } = {}
     }
   });
 
-  child.stderr.on('data', (d) => {
-    log.warn('[qwen stderr]', String(d).trim());
-  });
+  child.stderr.on('data', () => safeLogger.warn({ category: 'agent', event: 'agent.stderr', data: { agent: 'qwen', stream: 'stderr' } }));
 
   child.on('error', (err) => {
-    sender.send('qwen:error', { error: 'launchFailed', message: `Could not start Qwen: ${err.message}` });
+    safeLogger.error({ category: 'agent', event: 'agent.launch-failed', data: { agent: 'qwen' }, error: err });
+    sender.send('qwen:error', { error: 'launchFailed', message: 'Could not start Qwen.' });
   });
 
   child.on('close', (code) => {
@@ -3147,7 +3358,7 @@ ipcMain.handle('mcp:tool-response', async (_event, { requestId, success, result,
     if (success) {
       pending.resolve(result);
     } else {
-      pending.reject(new Error(error));
+      pending.reject(new Error(safeErrorText({ code: 'PROVIDER_ERROR' }, 'PROVIDER_ERROR')));
     }
   }
 });

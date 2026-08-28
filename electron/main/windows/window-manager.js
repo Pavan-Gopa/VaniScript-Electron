@@ -3,7 +3,17 @@
 const { app, BrowserWindow, Menu, Tray, nativeImage, session, desktopCapturer } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const log = require('electron-log');
+let logger = {
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+  debug: () => {},
+};
+
+function setLogger(next) {
+  if (!next || typeof next.info !== 'function') return;
+  logger = next;
+}
 
 const APP_NAME = 'VaniScript-Electron';
 
@@ -51,11 +61,10 @@ function revealMainWindow(reason) {
   if (process.platform === 'darwin') {
     app.focus({ steal: true });
   }
-  log.info('Main window reveal', {
-    reason,
-    visible: mainWindow.isVisible(),
-    focused: mainWindow.isFocused(),
-    bounds: mainWindow.getBounds(),
+  logger.info({
+    category: 'runtime',
+    event: 'runtime.window-revealed',
+    data: { reason, visible: mainWindow.isVisible(), focused: mainWindow.isFocused(), bounds: mainWindow.getBounds() },
   });
 }
 
@@ -212,42 +221,42 @@ function createWindow(onRendererReady) {
   const builtIndexPath = path.join(__dirname, '..', '..', '..', 'dist', 'index.html');
 
   if (devServerUrl) {
-    log.info('Loading renderer from dev server:', devServerUrl);
+    logger.info({ category: 'renderer', event: 'renderer.load-started', data: { source: devServerUrl } });
     mainWindow.loadURL(devServerUrl);
     // mainWindow.webContents.openDevTools();
   } else {
-    log.info('Loading renderer from built file:', builtIndexPath);
+    logger.info({ category: 'renderer', event: 'renderer.load-started', data: { source: builtIndexPath } });
     mainWindow.loadFile(builtIndexPath);
   }
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
-    log.error('Renderer failed to load', { errorCode, errorDescription, validatedURL });
+    logger.error({ category: 'renderer', event: 'renderer.load-failed', data: { errorCode, sourceId: validatedURL } });
     revealMainWindow('renderer-failed-load');
   });
 
   mainWindow.webContents.on('did-finish-load', () => {
-    log.info('Renderer finished loading');
+    logger.info({ category: 'renderer', event: 'renderer.loaded', data: { phase: 'finish' } });
     revealMainWindow('renderer-finished-load');
     if (typeof onRendererReady === 'function') onRendererReady();
   });
 
   mainWindow.webContents.on('dom-ready', () => {
-    log.info('Renderer DOM ready');
+    logger.info({ category: 'renderer', event: 'renderer.loaded', data: { phase: 'dom' } });
     revealMainWindow('renderer-dom-ready');
   });
 
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
-    log.error('Renderer process gone', details);
+    logger.error({ category: 'renderer', event: 'renderer.process-gone', data: { phase: 'gone' } });
   });
 
   mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
-    const payload = `[renderer:${level}] ${message} (${sourceId}:${line})`;
-    if (level >= 2) log.warn(payload);
-    else log.info(payload);
+    const payload = { level, line, sourceId: sourceId || '' };
+    if (level >= 2) logger.warn({ category: 'renderer', event: 'renderer.console-warning', data: payload });
+    else logger.info({ category: 'renderer', event: 'renderer.console', data: payload });
   });
 
   mainWindow.once('ready-to-show', () => {
-    log.info('Main window ready to show');
+    logger.info({ category: 'runtime', event: 'runtime.window-ready', data: { phase: 'ready-to-show' } });
     revealMainWindow('ready-to-show');
   });
 
@@ -281,7 +290,7 @@ function configureDisplayMediaCapture() {
         audio: request.audioRequested && process.platform === 'win32' ? 'loopback' : undefined,
       });
     } catch (error) {
-      log.error('Display media request failed:', error);
+      logger.error({ category: 'runtime', event: 'runtime.display-capture-failed', error });
     }
   }, { useSystemPicker: true });
 }
@@ -291,6 +300,7 @@ module.exports = {
   RENDERER_WEB_PREFERENCES,
   getMainWindow,
   getIsQuitting,
+  setLogger,
   setIsQuitting,
   createVaniScriptIcon,
   revealMainWindow,

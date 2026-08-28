@@ -191,7 +191,7 @@ export function trackUsage(
       lastOutputTokens: delta.outputTokens ?? 0,
     },
   };
-  saveUsage(updated);
+  if (!(typeof window !== 'undefined' && window.electronAPI?.usageRecord)) saveUsage(updated);
   return updated;
 }
 

@@ -96,6 +96,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getPlatform: () => ipcRenderer.invoke('app:getPlatform'),
   getUserDataPath: () => ipcRenderer.invoke('app:getUserDataPath'),
   getSystemMemoryInfo: () => ipcRenderer.invoke('system:getMemoryInfo'),
+
+  // ─── Main-owned usage ledger / safe diagnostics ──────────────────────────
+  usageGet: (range) => ipcRenderer.invoke('usage:get', range),
+  usageRecord: (input) => ipcRenderer.invoke('usage:record', input),
+  usageReset: () => ipcRenderer.invoke('usage:reset'),
+  usageExport: (range) => ipcRenderer.invoke('usage:export', range),
+  diagnosticsGet: () => ipcRenderer.invoke('diagnostics:get'),
+  diagnosticsExport: () => ipcRenderer.invoke('diagnostics:export'),
+  diagnosticsOpenLogs: () => ipcRenderer.invoke('diagnostics:openLogs'),
+  reportRendererEvent: (payload) => ipcRenderer.invoke('renderer:report', payload),
   onOpenSettings: (callback) => {
     const handler = () => callback();
     ipcRenderer.on('app:open-settings', handler);

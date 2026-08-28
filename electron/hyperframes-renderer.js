@@ -370,18 +370,17 @@ function runFfmpeg(ffmpegPath, args, log, abortSignal) {
       return;
     }
     const proc = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    let stderr = '';
-    let stdout = '';
+    proc.stdout.on('data', () => {});
+    proc.stderr.on('data', () => {});
     const onAbort = () => {
       try { proc.kill('SIGTERM'); } catch {}
       reject(new Error('render_cancelled'));
     };
     abortSignal?.addEventListener('abort', onAbort, { once: true });
-    proc.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
-    proc.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
     proc.on('error', (error) => {
       abortSignal?.removeEventListener('abort', onAbort);
-      reject(error);
+      log?.error?.({ category: 'hyperframes', event: 'hyperframes.ffmpeg-failed', data: { phase: 'spawn' }, error });
+      reject(Object.assign(new Error('HyperFrames render failed.'), { code: 'PROVIDER_ERROR' }));
     });
     proc.on('close', (code) => {
       abortSignal?.removeEventListener('abort', onAbort);
@@ -389,9 +388,9 @@ function runFfmpeg(ffmpegPath, args, log, abortSignal) {
         reject(new Error('render_cancelled'));
         return;
       }
-      if (code === 0) return resolve({ stdout, stderr });
-      if (log) log.error('HyperFrames ffmpeg failed:', { code, args: args.join(' '), stderr });
-      reject(new Error(stderr.trim() || stdout.trim() || `ffmpeg exited with code ${code}`));
+      if (code === 0) return resolve({ ok: true });
+      log?.error?.({ category: 'hyperframes', event: 'hyperframes.ffmpeg-failed', data: { statusCode: code } });
+      reject(Object.assign(new Error('HyperFrames render failed.'), { code: 'PROVIDER_ERROR' }));
     });
   });
 }
@@ -437,11 +436,10 @@ async function createBrowserSafeProxy({
     : path.join(assetsDir, 'source-browser.mp4');
   const proxyStat = cacheDir ? safeStat(proxyPath) : null;
   if (proxyStat && proxyStat.size > 1024) {
-    log.info('HyperFrames proxy cache hit:', {
-      proxyPath,
-      size: proxyStat.size,
-      scaleWidth,
-      durationSec,
+    log?.info?.({
+      category: 'hyperframes',
+      event: 'hyperframes.proxy-cache-hit',
+      data: { path: proxyPath, size: proxyStat.size, width: scaleWidth, duration: durationSec },
     });
     return proxyPath;
   }
@@ -498,7 +496,7 @@ async function createBrowserSafeProxy({
     if (cacheDir) safeUnlink(outputPath);
     if (isAbortError(error)) throw error;
     if (process.platform !== 'darwin') throw error;
-    log.warn('HyperFrames proxy hardware encode failed, retrying with libx264.', error.message || String(error));
+    log?.warn?.({ category: 'hyperframes', event: 'hyperframes.proxy-fallback', data: { codec: 'libx264' }, error });
     await runFfmpeg(ffmpegPath, [...baseArgs, ...inputArgs, ...outputArgs, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', outputPath], log, abortSignal);
     if (cacheDir) {
       fs.renameSync(outputPath, proxyPath);
@@ -545,11 +543,10 @@ async function createBlurBackgroundProxy({
   const blurPath = path.join(cacheDir, `${cacheKey}.mp4`);
   const blurStat = safeStat(blurPath);
   if (blurStat && blurStat.size > 1024) {
-    log.info('HyperFrames blur background cache hit:', {
-      blurPath,
-      size: blurStat.size,
-      proxySize: `${proxyWidth}x${proxyHeight}`,
-      proxySigma,
+    log?.info?.({
+      category: 'hyperframes',
+      event: 'hyperframes.blur-cache-hit',
+      data: { path: blurPath, size: blurStat.size, width: proxyWidth, height: proxyHeight, sigma: proxySigma },
     });
     return blurPath;
   }
@@ -580,7 +577,7 @@ async function createBlurBackgroundProxy({
     safeUnlink(tmpPath);
     if (isAbortError(error)) throw error;
     if (process.platform !== 'darwin') throw error;
-    log.warn('HyperFrames blur background hardware encode failed, retrying with libx264.', error.message || String(error));
+    log?.warn?.({ category: 'hyperframes', event: 'hyperframes.blur-fallback', data: { codec: 'libx264' }, error });
     const fallbackArgs = [
       '-y',
       '-i', sourcePath,
@@ -1275,9 +1272,10 @@ async function renderShortClipWithHyperFrames({
     abortSignal,
   });
   throwIfAborted(abortSignal);
-  log.info('HyperFrames proxy prepared:', {
-    ms: Date.now() - proxyStartedAt,
-    browserSafeSourcePath,
+  log?.info?.({
+    category: 'hyperframes',
+    event: 'hyperframes.proxy-prepared',
+    data: { duration: Date.now() - proxyStartedAt, path: browserSafeSourcePath },
   });
   onProgress?.({ status: 'processing', progress: 0.08, stage: 'proxy', message: 'Prepared browser-safe video proxy' });
 
@@ -1300,19 +1298,21 @@ async function renderShortClipWithHyperFrames({
         log,
         abortSignal,
       });
-      log.info('HyperFrames blur background proxy prepared:', {
-        ms: Date.now() - blurProxyStartedAt,
-        blurBackgroundPath,
+      log?.info?.({
+        category: 'hyperframes',
+        event: 'hyperframes.blur-prepared',
+        data: { duration: Date.now() - blurProxyStartedAt, path: blurBackgroundPath },
       });
     } catch (error) {
       if (isAbortError(error)) throw error;
-      log.warn('HyperFrames blur background proxy failed; falling back to CSS blur.', error.message || String(error));
+      log?.warn?.({ category: 'hyperframes', event: 'hyperframes.blur-fallback-css', data: { quality: qualityPreset }, error });
       blurBackgroundPath = '';
     }
   } else if (blurEnabled) {
-    log.info('HyperFrames precomputed blur background disabled; using CSS blur for export fidelity.', {
-      qualityPreset,
-      outputSize: `${normalizedProject.width}x${normalizedProject.height}`,
+    log?.info?.({
+      category: 'hyperframes',
+      event: 'hyperframes.blur-css',
+      data: { quality: qualityPreset, width: normalizedProject.width, height: normalizedProject.height },
     });
   }
   throwIfAborted(abortSignal);
@@ -1343,7 +1343,7 @@ async function renderShortClipWithHyperFrames({
           '-q:v', '2',
           introBgPath,
         ];
-        log.info('Extracting static background frame for intro:', introArgs.join(' '));
+        log?.info?.({ category: 'hyperframes', event: 'hyperframes.static-frame-started', data: { label: 'intro' } });
         await extractRequiredFrame('intro', introArgs, introBgPath);
       }
 
@@ -1358,20 +1358,20 @@ async function renderShortClipWithHyperFrames({
           '-q:v', '2',
           outroBgPath,
         ];
-        log.info('Extracting static background frame for outro:', outroArgs.join(' '));
+        log?.info?.({ category: 'hyperframes', event: 'hyperframes.static-frame-started', data: { label: 'outro' } });
         await extractRequiredFrame('outro', outroArgs, outroBgPath);
       }
     } catch (err) {
       if (isAbortError(err)) throw err;
-      log.error('Failed to extract static background frames for intro/outro:', err);
+      log?.error?.({ category: 'hyperframes', event: 'hyperframes.static-frame-failed', data: { outcome: 'rejected' }, error: err });
       throw err?.code === 'STATIC_FRAME_FAILED'
         ? err
-        : createRenderError('STATIC_FRAME_FAILED', `Failed to extract required static background frame: ${err?.message || String(err)}`, err);
+        : createRenderError('STATIC_FRAME_FAILED', 'Failed to extract required static background frame.');
     } finally {
-      log.info('HyperFrames static backgrounds prepared:', {
-        ms: Date.now() - staticStartedAt,
-        hasIntro,
-        hasOutro,
+      log?.info?.({
+        category: 'hyperframes',
+        event: 'hyperframes.static-backgrounds-prepared',
+        data: { duration: Date.now() - staticStartedAt, hasIntro, hasOutro },
       });
     }
   }
@@ -1457,22 +1457,24 @@ async function renderShortClipWithHyperFrames({
       },
     });
 
-    log.info('HyperFrames export settings:', {
-      quality,
-      format: format === 'mov' ? 'mov' : 'mp4',
-      fps: renderProject.fps,
-      size: `${renderProject.width}x${renderProject.height}`,
-      durationSec: renderProject.durationSec,
-      durationFrames: Math.ceil(renderProject.durationSec * renderFps),
-      introDuration,
-      outroDuration,
-      trimmedVideoDuration,
-      workers,
-      useGpu: true,
-      proxyCacheDir,
-      blurBackgroundProxy: !!blurBackgroundPath,
-      projectDir,
-      htmlPath,
+    log?.info?.({
+      category: 'hyperframes',
+      event: 'hyperframes.export-started',
+      data: {
+        quality,
+        format: format === 'mov' ? 'mov' : 'mp4',
+        fps: renderProject.fps,
+        width: renderProject.width,
+        height: renderProject.height,
+        duration: renderProject.durationSec,
+        durationFrames: Math.ceil(renderProject.durationSec * renderFps),
+        introDuration,
+        outroDuration,
+        trimmedVideoDuration,
+        workers,
+        useGpu: true,
+        blurBackgroundProxy: !!blurBackgroundPath,
+      },
     });
 
     const renderStartedAt = Date.now();
@@ -1483,18 +1485,16 @@ async function renderShortClipWithHyperFrames({
         stage: currentJob.currentStage || 'render',
         message,
       });
-      log.info('HyperFrames progress:', {
-        status: currentJob.status,
-        progress: Math.round((currentJob.progress || 0) * 100),
-        stage: currentJob.currentStage,
-        message,
+      log?.info?.({
+        category: 'hyperframes',
+        event: 'hyperframes.progress',
+        data: { status: currentJob.status, progress: Math.round((currentJob.progress || 0) * 100), stage: currentJob.currentStage },
       });
     }, abortSignal);
-    log.info('HyperFrames render completed:', {
-      ms: Date.now() - renderStartedAt,
-      totalMs: Date.now() - totalStartedAt,
-      perfSummary: job.perfSummary || null,
-      outputPath,
+    log?.info?.({
+      category: 'hyperframes',
+      event: 'hyperframes.completed',
+      data: { duration: Date.now() - renderStartedAt, total: Date.now() - totalStartedAt, status: 'success' },
     });
 
     return { success: true, outputPath };

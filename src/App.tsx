@@ -587,6 +587,7 @@ export default function App() {
   const shortsExportCancelRequestedRef = useRef(false);
   const shortsExportEventGateRef = useRef<ShortsExportEventGate | null>(null);
   const keyRepeatRef = useRef<Record<string, number>>({});
+  const usageSequenceRef = useRef(0);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   // Media review coordinator (P3E.D2): owns every source/translation
@@ -761,9 +762,9 @@ export default function App() {
   const legacyMigration = useLegacySettingsMigration();
   useEffect(() => {
     if (legacyMigration.status === 'migrated') {
-      console.info('[migration] legacy settings migrated to disk store');
+      void window.electronAPI?.reportRendererEvent?.({ level: 'debug', event: 'renderer.migration-complete', code: 'INTERNAL' });
     } else if (legacyMigration.status === 'failed') {
-      console.warn('[migration] legacy settings migration failed; will retry on next launch', legacyMigration.detail);
+      void window.electronAPI?.reportRendererEvent?.({ level: 'warn', event: 'renderer.migration-failed', code: 'INTERNAL' });
     }
   }, [legacyMigration.status, legacyMigration.detail]);
 
@@ -897,7 +898,7 @@ export default function App() {
 
       const result = await window.electronAPI.readFileBuffer({ filePath: currentAudioPath });
       if (!result.success) {
-        console.error('Failed to read audio for player:', result.error || currentAudioPath);
+        void window.electronAPI?.reportRendererEvent?.({ event: 'renderer.audio-read-failed', code: 'PROVIDER_ERROR' });
         if (!cancelled) {
           setAudioSrc('');
           setAudioStatus('error');
@@ -1180,15 +1181,59 @@ export default function App() {
 
   const recordCloudUsage = useCallback((
     providerId: string,
-    delta: { inputText?: string; outputText?: string; inputTokens?: number; outputTokens?: number; audioMinutes?: number }
+    delta: {
+      inputText?: string;
+      outputText?: string;
+      inputTokens?: number;
+      outputTokens?: number;
+      audioMinutes?: number;
+      operationId?: string;
+      modelId?: string;
+      purpose?: 'text' | 'chat' | 'translation' | 'transcription' | 'vision' | 'review' | 'polish' | 'shorts';
+    }
   ) => {
     if (!isCloudProvider(providerId)) return;
-    setUsage((prev) => trackUsage(prev, providerId, {
-      inputTokens: delta.inputTokens ?? estimateTokens(delta.inputText ?? ''),
-      outputTokens: delta.outputTokens ?? estimateTokens(delta.outputText ?? ''),
-      audioMinutes: delta.audioMinutes ?? 0,
-    }));
+    const inputTokens = delta.inputTokens ?? estimateTokens(delta.inputText ?? '');
+    const outputTokens = delta.outputTokens ?? estimateTokens(delta.outputText ?? '');
+    const purpose = delta.purpose ?? 'text';
+    const operationId = delta.operationId || `renderer-${providerId}-${Date.now()}-${++usageSequenceRef.current}`;
+    setUsage((prev) => trackUsage(prev, providerId, { inputTokens, outputTokens, audioMinutes: delta.audioMinutes ?? 0 }));
+    const bridge = window.electronAPI;
+    if (bridge?.usageRecord) {
+      void bridge.usageRecord({
+        operationId,
+        providerId,
+        ...(delta.modelId ? { modelId: delta.modelId } : {}),
+        purpose,
+        outcome: 'success',
+        inputTokens,
+        outputTokens,
+        audioMinutes: delta.audioMinutes ?? 0,
+      }).catch(() => {});
+    }
   }, []);
+  useEffect(() => {
+    const bridge = window.electronAPI;
+    if (!bridge?.usageGet) return undefined;
+    let active = true;
+    void bridge.usageGet().then((result) => {
+      if (!active || !result?.usage?.providers) return;
+      const projected: UsageStats = {};
+      for (const [providerId, counter] of Object.entries(result.usage.providers)) {
+        projected[providerId] = {
+          sessions: counter.requests,
+          inputTokens: counter.inputTokens,
+          outputTokens: counter.outputTokens,
+          audioMinutes: counter.audioMinutes,
+          lastUsed: counter.lastUsed || '',
+          lastInputTokens: counter.lastInputTokens,
+          lastOutputTokens: counter.lastOutputTokens,
+        };
+      }
+      setUsage(projected);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [legacyMigration.status]);
 
   useEffect(() => {
     if (editingProviders.length === 0) return;
@@ -1383,7 +1428,13 @@ export default function App() {
           throw new Error(`Unsupported editing model: ${providerId}`);
       }
 
-      recordCloudUsage(providerId, { inputText: selection.selectedText, outputText: polished });
+      recordCloudUsage(providerId, {
+        inputText: selection.selectedText,
+        outputText: polished,
+        operationId: `polish:${operation.id}`,
+        modelId: providerId,
+        purpose: 'polish',
+      });
     }
 
     const latest = sessionRef.current;
@@ -1493,6 +1544,9 @@ export default function App() {
           inputTokens: Math.ceil((chunkDurationSec / 60) * 1000),
           outputText: original,
           audioMinutes: chunkDurationSec / 60,
+          operationId: `transcription:${operation.id}:source`,
+          modelId: cfg.transcriptionProvider,
+          purpose: 'transcription',
         });
       } else if (cfg.transcriptionProvider === 'gpt-cloud') {
         let blob: Blob;
@@ -1524,6 +1578,9 @@ export default function App() {
           inputTokens: Math.ceil((chunkDurationSec / 60) * 1000),
           outputText: original,
           audioMinutes: chunkDurationSec / 60,
+          operationId: `transcription:${operation.id}:source`,
+          modelId: cfg.transcriptionProvider,
+          purpose: 'transcription',
         });
       } else if (cfg.transcriptionProvider === 'claude-cloud') {
         throw new Error('Claude Cloud transcription is not implemented yet.');
@@ -1576,6 +1633,9 @@ export default function App() {
         recordCloudUsage(cfg.translationProvider, {
           inputText: stripMetadataBlock(original),
           outputText: translated,
+          operationId: `transcription:${operation.id}:translation`,
+          modelId: cfg.translationProvider,
+          purpose: 'translation',
         });
         translated = normalizeRelativeTimestamps(translated, chunkStartSec, chunkStartSec + chunkDurationSec);
         if (settingsRef.current.glossary.length > 0) {
@@ -1607,7 +1667,7 @@ export default function App() {
       if (next) setSession(next);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`Chunk ${chunkIndex} failed:`, err);
+      void window.electronAPI?.reportRendererEvent?.({ event: 'renderer.chunk-failed', code: 'PROVIDER_ERROR' });
       const currentSession = sessionRef.current;
       if (!currentSession) return;
       const next = review.failTranscription(currentSession, operation, message || 'Transcription failed');
@@ -1666,7 +1726,7 @@ export default function App() {
       void runTranscription(begun.operation, adopted.chunks[0].filePath, cfg, transcriptionApiKey, adopted.chunks[0].startSec, adopted.chunks[0].durationSec);
 
     } catch (err) {
-      console.error('Engine start failed:', err);
+      void window.electronAPI?.reportRendererEvent?.({ event: 'renderer.engine-start-failed', code: 'PROVIDER_ERROR' });
       const message = err instanceof Error ? err.message : String(err);
       setProcMsg(`Error: ${message}`);
       setTimeout(() => setScreen('config'), 3000);
@@ -1784,6 +1844,9 @@ export default function App() {
       recordCloudUsage(activeConfig.translationProvider, {
         inputText: stripMetadataBlock(chunk.original),
         outputText: translated,
+        operationId: `retry:${begun.operation.id}`,
+        modelId: activeConfig.translationProvider,
+        purpose: 'translation',
       });
       translated = normalizeRelativeTimestamps(translated, chunk.startSec, chunk.endSec);
       if (settingsRef.current.glossary.length > 0) {
@@ -1857,6 +1920,9 @@ export default function App() {
           recordCloudUsage(providerId, {
             inputText: stripMetadataBlock(chunk.original),
             outputText: translated,
+            operationId: `sweep:${operation.id}`,
+            modelId: providerId,
+            purpose: 'translation',
           });
           translated = normalizeRelativeTimestamps(translated, chunk.startSec, chunk.endSec);
           if (settingsRef.current.glossary.length > 0) {
@@ -1882,7 +1948,7 @@ export default function App() {
           });
           if (next) setSession(next);
         } catch (error) {
-          console.warn(`Add Translation skipped segment ${index + 1}:`, error);
+          void window.electronAPI?.reportRendererEvent?.({ level: 'warn', event: 'renderer.translation-skipped', code: 'PROVIDER_ERROR' });
         }
       }
     } finally {
@@ -2112,7 +2178,13 @@ export default function App() {
       if (!response.ok) throw new Error(`Gemini Shorts/Reels error: ${response.status} ${response.statusText}`);
       const json = await response.json();
       const text = json.candidates?.[0]?.content?.parts?.map((part: { text?: string }) => part.text || '').join('') || '';
-      recordCloudUsage(providerId, { inputText: prompt, outputText: text });
+      recordCloudUsage(providerId, {
+        inputText: prompt,
+        outputText: text,
+        operationId: `shorts:${Date.now()}`,
+        modelId: 'gemini-2.5-flash',
+        purpose: 'shorts',
+      });
       return text;
     }
 
@@ -2135,7 +2207,13 @@ export default function App() {
       if (!response.ok) throw new Error(`OpenAI Shorts/Reels error: ${response.status} ${response.statusText}`);
       const json = await response.json();
       const text = json.choices?.[0]?.message?.content || '';
-      recordCloudUsage(providerId, { inputText: prompt, outputText: text });
+      recordCloudUsage(providerId, {
+        inputText: prompt,
+        outputText: text,
+        operationId: `shorts:${Date.now()}`,
+        modelId: 'gpt-4o-mini',
+        purpose: 'shorts',
+      });
       return text;
     }
 
@@ -2229,7 +2307,7 @@ export default function App() {
         return next;
       });
     } catch (error) {
-      console.error('Shorts/Reels planning failed.', error);
+      void window.electronAPI?.reportRendererEvent?.({ event: 'renderer.shorts-failed', code: 'PROVIDER_ERROR' });
       alert(`Shorts/Reels planning failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setShortsBusy(false);
@@ -2886,7 +2964,7 @@ export default function App() {
       });
       download(artifact.content, artifact.fileName);
     } catch (error) {
-      console.error('Export failed.', error);
+      void window.electronAPI?.reportRendererEvent?.({ event: 'renderer.export-failed', code: 'OUTPUT_COLLISION' });
       alert(`Export failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
@@ -3529,7 +3607,7 @@ export default function App() {
                   onError={(event) => {
                     const code = event.currentTarget.error?.code;
                     const detail = code ? `Audio element error code ${code}` : 'Audio element could not decode the current source.';
-                    console.error('Audio playback error:', detail, currentAudioPath);
+                    void window.electronAPI?.reportRendererEvent?.({ event: 'renderer.audio-playback-failed', code: 'PROVIDER_ERROR' });
                     setAudioStatus('error');
                     setAudioError(detail);
                   }}

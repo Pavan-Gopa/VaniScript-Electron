@@ -49,6 +49,15 @@ const OBFUSCATION_TAG = 'obf1';
 let injectedSafeStorage = null; // override safeStorage detection
 let configuredVaultPath = null; // override the on-disk location
 let warnedAboutFallback = false; // emit the fallback warning at most once
+let vaultLogger = {
+  warn: () => globalThis.console?.warn?.(
+    '[vault] safeStorage unavailable — using obfuscation fallback.',
+  ),
+};
+
+function setLogger(next) {
+  if (next && typeof next.warn === 'function') vaultLogger = next;
+}
 
 // --- safeStorage detection ------------------------------------------------
 
@@ -169,16 +178,13 @@ function resolveBackend(doc) {
   if (isSystemVaultAvailable()) {
     return { type: 'safe', safe: getSystemSafeStorage() };
   }
-  // Fallback path: warn once so the unsafe condition is observable.
   if (!warnedAboutFallback) {
     warnedAboutFallback = true;
-    // eslint-disable-next-line no-console
-    console.warn(
-      '[vault] safeStorage unavailable — using obfuscation fallback. ' +
-        'Secrets are NOT protected by the OS keychain. Run on a platform with a ' +
-        'system vault (macOS Keychain, Windows Credential Manager, libsecret) ' +
-        'for real protection.',
-    );
+    vaultLogger.warn({
+      category: 'storage',
+      event: 'storage.fallback',
+      data: { backend: 'obfuscation', state: 'safe-storage-unavailable' },
+    });
   }
   const salt =
     doc && typeof doc.salt === 'string'
@@ -369,6 +375,7 @@ module.exports = {
   isSystemVaultAvailable,
   setVaultPath,
   setSafeStorage,
+  setLogger,
   resetConfig,
   VAULT_FILENAME,
 };

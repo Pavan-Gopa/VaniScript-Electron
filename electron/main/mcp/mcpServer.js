@@ -12,8 +12,9 @@ const http = require('node:http');
 const crypto = require('node:crypto');
 const { URL } = require('node:url');
 const defaultVault = require('../storage/vault.js');
-const { createMutationCatalog } = require('./mcpTools/mutationCatalog.js');
 const { createReadCatalog } = require('./mcpTools/readCatalog.js');
+const { createMutationCatalog } = require('./mcpTools/mutationCatalog.js');
+const { safeAuditRecord, safeMcpError } = require('../observability.js');
 
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 19789;
@@ -359,6 +360,9 @@ class McpServer {
         ? { vaultPath: options.vaultPath }
         : undefined
     );
+    this.observability = options.observability && typeof options.observability.audit?.record === 'function'
+      ? options.observability
+      : null;
     this.registryKey = typeof options.registryKey === 'string' && options.registryKey.length > 0
       ? options.registryKey
       : TOKEN_REGISTRY_KEY;
@@ -694,18 +698,26 @@ class McpServer {
         && ['unknown_or_expired', 'challenge_mismatch', 'not_approved'].includes(rawReason)
         ? rawReason
         : null;
-    const record = {
+    const record = safeAuditRecord({
       timestamp: new Date().toISOString(),
       peer: ctx.peer,
       route: ctx.route,
+      method: ctx.method,
       tool: ctx.tool,
       outcome,
       mcpCode,
       reason,
       tokenIdHash: ctx.tokenRecord ? sha256(ctx.tokenRecord.tokenId) : null,
       requestIdHash: ctx.requestId ? sha256(ctx.requestId) : null,
-    };
-    this.auditRecords.push(record);
+    });
+    let centralRecord = record;
+    try {
+      const candidate = this.observability?.audit.record(record);
+      if (candidate && typeof candidate === 'object') centralRecord = candidate;
+    } catch {
+      // The MCP response/audit must remain operational if telemetry is down.
+    }
+    this.auditRecords.push(centralRecord);
     if (this.auditRecords.length > this.auditRetention) {
       this.auditRecords.splice(0, this.auditRecords.length - this.auditRetention);
     }
@@ -737,7 +749,7 @@ class McpServer {
       projectId: ctx.projectId,
       projectRevision: ctx.projectRevision,
     };
-    if (error) envelope.error = error.toJSON ? error.toJSON() : error;
+    if (error) envelope.error = safeMcpError(error, error.code || MCP_ERROR_CODES.INTERNAL);
     else envelope.result = result;
     return envelope;
   }
@@ -823,6 +835,7 @@ class McpServer {
     }
     const method = safeMethod(payload.method);
     if (!method) throw mcpError(MCP_ERROR_CODES.INVALID_REQUEST, 'MCP request method is required.');
+    ctx.method = method;
     ctx.tool = method;
     const params = payload.params && typeof payload.params === 'object' && !Array.isArray(payload.params)
       ? payload.params

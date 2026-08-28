@@ -23,6 +23,21 @@ import {
   type SettingsUpdateResult,
   CAPABILITIES_GET_COMMAND,
   type CapabilitiesGetResult,
+  USAGE_GET_COMMAND,
+  USAGE_RECORD_COMMAND,
+  USAGE_RESET_COMMAND,
+  USAGE_EXPORT_COMMAND,
+  DIAGNOSTICS_GET_COMMAND,
+  DIAGNOSTICS_EXPORT_COMMAND,
+  DIAGNOSTICS_OPEN_LOGS_COMMAND,
+  type UsageGetResult,
+  type UsageRecordRequest,
+  type UsageRecordResult,
+  type UsageResetResult,
+  type UsageExportResult,
+  type DiagnosticsGetResult,
+  type DiagnosticsExportResult,
+  type DiagnosticsOpenLogsResult,
 } from '../../shared/contracts/ipc.ts';
 import {
   DOCUMENT_EXPORT_COMMAND,
@@ -91,6 +106,22 @@ const METHOD_REGISTRY: Record<string, MethodSpec> = {
     },
   },
   'capabilities:get': { validateArgs: (a) => a === undefined || a === null },
+  [USAGE_GET_COMMAND]: { validateArgs: (a) => a === undefined || a === null || (typeof a === 'object' && !Array.isArray(a)) },
+  [USAGE_RECORD_COMMAND]: {
+    validateArgs: (a) => {
+      if (!a || typeof a !== 'object' || Array.isArray(a)) return false;
+      const input = a as Partial<UsageRecordRequest>;
+      return typeof input.operationId === 'string'
+        && typeof input.providerId === 'string'
+        && typeof input.purpose === 'string'
+        && (input.outcome === 'success' || input.outcome === 'error');
+    },
+  },
+  [USAGE_RESET_COMMAND]: { validateArgs: (a) => a === undefined || a === null },
+  [USAGE_EXPORT_COMMAND]: { validateArgs: (a) => a === undefined || a === null || (typeof a === 'object' && !Array.isArray(a)) },
+  [DIAGNOSTICS_GET_COMMAND]: { validateArgs: (a) => a === undefined || a === null },
+  [DIAGNOSTICS_EXPORT_COMMAND]: { validateArgs: (a) => a === undefined || a === null },
+  [DIAGNOSTICS_OPEN_LOGS_COMMAND]: { validateArgs: (a) => a === undefined || a === null },
   [DOCUMENT_EXPORT_COMMAND]: {
     validateArgs: (a) => {
       if (a === null || typeof a !== 'object' || Array.isArray(a)) return false;
@@ -162,6 +193,13 @@ export interface ElectronApi {
   updateSettings(args: SettingsUpdateRequest): Promise<SettingsUpdateResult>;
   exportDocument(args: DocumentExportRequest): Promise<DocumentExportResult>;
   invokeProvider(args: ProviderInvokeRequest): Promise<ProviderInvokeResult>;
+  getUsage(range?: { from?: string; to?: string }): Promise<UsageGetResult>;
+  recordUsage(args: UsageRecordRequest): Promise<UsageRecordResult>;
+  resetUsage(): Promise<UsageResetResult>;
+  exportUsage(range?: { from?: string; to?: string }): Promise<UsageExportResult>;
+  getDiagnostics(): Promise<DiagnosticsGetResult>;
+  exportDiagnostics(): Promise<DiagnosticsExportResult>;
+  openDiagnosticsLogs(): Promise<DiagnosticsOpenLogsResult>;
   getBatchState(): Promise<BatchQueueSnapshot>;
   listBatchProfiles(args?: { limit?: number; offset?: number; enabled?: boolean }): Promise<{ profiles: BatchProfile[] }>;
   createBatchProfile(args: BatchProfileInput): Promise<{ profile: BatchProfile }>;
@@ -249,6 +287,17 @@ export function createTypedIpcBridge(
     const envelope = createRequest<Command>(buildCommand(method, args), options);
     ipc.send(IPC_DISPATCH_CHANNEL, envelope);
   }
+  function invokeRaw<R = unknown>(method: string, args?: unknown): Promise<R> {
+    validateLocalArgs(method, args);
+    return ipc.invoke(method, args).then((response) => {
+      if (isAppErrorEnvelope(response)) {
+        throw new IpcBridgeError(
+          createAppError(response.code, response.message, response.details),
+        );
+      }
+      return response as R;
+    });
+  }
 
   return {
     invoke,
@@ -279,6 +328,13 @@ export function createTypedIpcBridge(
         return response as ProviderInvokeResult;
       });
     },
+    getUsage: (range) => invokeRaw<UsageGetResult>(USAGE_GET_COMMAND, range),
+    recordUsage: (args) => invokeRaw<UsageRecordResult>(USAGE_RECORD_COMMAND, args),
+    resetUsage: () => invokeRaw<UsageResetResult>(USAGE_RESET_COMMAND),
+    exportUsage: (range) => invokeRaw<UsageExportResult>(USAGE_EXPORT_COMMAND, range),
+    getDiagnostics: () => invokeRaw<DiagnosticsGetResult>(DIAGNOSTICS_GET_COMMAND),
+    exportDiagnostics: () => invokeRaw<DiagnosticsExportResult>(DIAGNOSTICS_EXPORT_COMMAND),
+    openDiagnosticsLogs: () => invokeRaw<DiagnosticsOpenLogsResult>(DIAGNOSTICS_OPEN_LOGS_COMMAND),
     getBatchState: () => invoke<BatchQueueSnapshot>(BATCH_COMMANDS.getState),
     listBatchProfiles: (args) =>
       invoke<{ profiles: BatchProfile[] }>(BATCH_COMMANDS.listProfiles, args),

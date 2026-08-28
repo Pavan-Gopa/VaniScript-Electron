@@ -4,6 +4,15 @@ import type {
   ShortsExportSnapshot,
   ShortsExportTerminalEvent,
 } from './lib/shorts-export-contract';
+import type {
+  UsageProjection,
+  UsageRecordInput,
+  DiagnosticsSnapshot,
+  DiagnosticsGetResult,
+  DiagnosticsExportResult,
+  DiagnosticsOpenLogsResult,
+  UsageExportResult,
+} from '../shared/contracts/observability';
 export type HyperFramesExportStartFailure = Readonly<{
   success: false;
   error?: string;
@@ -392,6 +401,14 @@ declare global {
       getPlatform: () => Promise<string>;
       getUserDataPath: () => Promise<string>;
       getSystemMemoryInfo: () => Promise<{ totalBytes: number; freeBytes: number; platform: string; arch: string }>;
+      usageGet: (range?: { from?: string; to?: string }) => Promise<{ ok: true; usage: UsageProjection }>;
+      usageRecord: (input: UsageRecordInput) => Promise<{ ok: true; usage: UsageProjection }>;
+      usageReset: () => Promise<{ ok: true; usage: UsageProjection }>;
+      usageExport: (range?: { from?: string; to?: string }) => Promise<UsageExportResult>;
+      diagnosticsGet: () => Promise<DiagnosticsGetResult>;
+      diagnosticsExport: () => Promise<DiagnosticsExportResult>;
+      diagnosticsOpenLogs: () => Promise<DiagnosticsOpenLogsResult>;
+      reportRendererEvent?: (payload: { level?: 'warn' | 'debug' | 'error'; event?: string; code?: string }) => Promise<{ ok: true }>;
       onOpenSettings: (callback: () => void) => () => void;
       openPath: (path: string) => Promise<string>;
       showItemInFolder: (path: string) => Promise<void>;

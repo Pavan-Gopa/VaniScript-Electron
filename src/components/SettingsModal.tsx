@@ -1399,7 +1399,15 @@ export function SettingsModal({ settings, usage, onPersist, onClose, tabIndex, o
                     </div>
                   );
                 })}
-                <button className="btn-danger-sm" style={{ marginTop: 12 }} onClick={() => { saveUsage({}); window.location.reload(); }}>Reset Statistics</button>
+                <button className="btn-danger-sm" style={{ marginTop: 12 }} onClick={async () => {
+                  if (window.electronAPI?.usageReset) await window.electronAPI.usageReset();
+                  else saveUsage({});
+                  window.location.reload();
+                }}>Reset Statistics</button>
+                <button className="btn-ghost-sm" style={{ marginTop: 8 }} onClick={async () => {
+                  const result = await window.electronAPI?.diagnosticsExport?.();
+                  if (result && !result.ok && !result.cancelled) alert(result.error?.message || 'Diagnostics export failed.');
+                }}>Export Safe Diagnostics</button>
               </div>
             </div>
           )}

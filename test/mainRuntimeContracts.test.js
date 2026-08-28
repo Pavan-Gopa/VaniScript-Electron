@@ -75,7 +75,7 @@ test('settings runtime defaults, normalizes, and migrates', () => {
   const { SETTINGS_SCHEMA_VERSION, createDefaultSettings, normalizeSettings, migrateSettings } =
     settingsRuntime;
 
-  assert.equal(SETTINGS_SCHEMA_VERSION, 1);
+  assert.equal(SETTINGS_SCHEMA_VERSION, 2);
 
   const defaults = createDefaultSettings();
   assert.equal(defaults.agents.permissions.mutate, false);
@@ -97,6 +97,14 @@ test('settings runtime defaults, normalizes, and migrates', () => {
   assert.equal(legacy.migrated, true);
   assert.equal(legacy.settings.schemaVersion, SETTINGS_SCHEMA_VERSION);
   assert.equal(legacy.settings.agents.preferredAgent, 'qwen');
+  const legacyV1 = migrateSettings({
+    schemaVersion: 1,
+    api: { lastUsage: { 'gemini-cloud': { sessions: 2, inputTokens: 5 } } },
+  });
+  assert.equal(legacyV1.fromVersion, 1);
+  assert.equal(legacyV1.migrated, true);
+  assert.equal(legacyV1.settings.schemaVersion, 2);
+  assert.equal(legacyV1.settings.api.lastUsage.requests, 2);
 });
 
 test('provider runtime publishes the bridge command consumed by the router', () => {
@@ -194,7 +202,7 @@ test('settings store reads defaults, persists canonically, and recovers corrupti
   assert.equal(result.source, 'defaults');
   assert.equal(result.recovered, false);
   assert.equal(result.settings.schemaVersion, settingsStore.SETTINGS_SCHEMA_VERSION);
-  assert.equal(settingsStore.SETTINGS_SCHEMA_VERSION, 1);
+  assert.equal(settingsStore.SETTINGS_SCHEMA_VERSION, 2);
 
   // Partial writes persist as fully normalized documents.
   settingsStore.writeSettings(

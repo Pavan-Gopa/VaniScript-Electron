@@ -19,9 +19,17 @@ import type { SETTINGS_SCHEMA_VERSION } from './settings-runtime.js';
 
 export {
   SETTINGS_SCHEMA_VERSION,
+  USAGE_SCHEMA_VERSION,
+  USAGE_PURPOSES,
+  USAGE_PRICING,
   createDefaultSettings,
+  createDefaultUsageLedger,
   normalizeSettings,
+  normalizeUsageLedger,
   migrateSettings,
+  migrateLegacyUsage,
+  recordUsage,
+  projectUsage,
 } from './settings-runtime.js';
 
 export type SettingsSchemaVersion = typeof SETTINGS_SCHEMA_VERSION;
@@ -63,15 +71,42 @@ export interface CloudProviderSettings {
   budget: ProviderBudget;
 }
 
-export interface UsageSnapshot {
+export interface UsageCounter {
+  requests: number;
+  errors: number;
   inputTokens: number;
   outputTokens: number;
   audioMinutes: number;
-  requests: number;
-  lastModel: string | null;
-  lastPurpose: string | null;
   estimatedCost: number;
 }
+
+export interface UsageProvider extends UsageCounter {
+  lastUsed: string | null;
+  lastInputTokens: number;
+  lastOutputTokens: number;
+  models: Record<string, UsageCounter>;
+  purposes: Record<string, UsageCounter>;
+}
+
+export interface UsageDay extends UsageCounter {
+  providers: Record<string, UsageProvider>;
+}
+
+export interface UsageLedger extends UsageCounter {
+  schemaVersion: 1;
+  lastProvider: string | null;
+  lastModel: string | null;
+  lastPurpose: string | null;
+  lastUsed: string | null;
+  lastInputTokens: number;
+  lastOutputTokens: number;
+  providers: Record<string, UsageProvider>;
+  daily: Record<string, UsageDay>;
+  recentOperationHashes: string[];
+}
+
+/** Compatibility name retained for existing `api.lastUsage` consumers. */
+export type UsageSnapshot = UsageLedger;
 
 export interface ApiSettings {
   providers: Record<string, CloudProviderSettings>;

@@ -19,6 +19,11 @@ import {
   type CapabilityReport,
   type HostSummary,
 } from './capabilities.ts';
+import type {
+  DiagnosticsSnapshot,
+  UsageProjection,
+  UsageRecordInput,
+} from './observability.ts';
 
 /** Current envelope wire format version. Bump on breaking changes. */
 export const PROTOCOL_VERSION = 1 as const;
@@ -217,6 +222,59 @@ export interface SettingsUpdateRequest {
 export interface SettingsUpdateResult {
   settings: Settings;
   revision?: string;
+}
+
+// ─── Main-owned usage ledger and safe diagnostics ───────────────────────────
+export const USAGE_GET_COMMAND = 'usage:get' as const;
+export const USAGE_RECORD_COMMAND = 'usage:record' as const;
+export const USAGE_RESET_COMMAND = 'usage:reset' as const;
+export const USAGE_EXPORT_COMMAND = 'usage:export' as const;
+export const DIAGNOSTICS_GET_COMMAND = 'diagnostics:get' as const;
+export const DIAGNOSTICS_EXPORT_COMMAND = 'diagnostics:export' as const;
+export const DIAGNOSTICS_OPEN_LOGS_COMMAND = 'diagnostics:openLogs' as const;
+
+export interface UsageRangeRequest {
+  from?: string;
+  to?: string;
+}
+
+export interface UsageGetResult {
+  ok: true;
+  usage: UsageProjection;
+}
+
+export interface UsageRecordRequest extends UsageRecordInput {}
+
+export interface UsageRecordResult {
+  ok: true;
+  usage: UsageProjection;
+}
+
+export interface UsageResetResult {
+  ok: true;
+  usage: UsageProjection;
+}
+
+export interface UsageExportResult {
+  ok: boolean;
+  cancelled?: boolean;
+  error?: AppError;
+}
+
+export interface DiagnosticsGetResult {
+  ok: true;
+  snapshot: DiagnosticsSnapshot;
+}
+
+export interface DiagnosticsExportResult {
+  ok: boolean;
+  cancelled?: boolean;
+  error?: AppError;
+}
+
+export interface DiagnosticsOpenLogsResult {
+  ok: boolean;
+  error?: AppError;
 }
 // ─── Platform capability registry (CAP-01) ──────────────────────────────────
 // Returns a structured capability report (never a bare boolean) plus a host

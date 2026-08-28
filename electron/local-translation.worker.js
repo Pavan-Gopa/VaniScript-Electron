@@ -128,7 +128,7 @@ async function ensureServer(modelId, modelPath, ctxSize = 8192) {
   child.on('exit', (code, signal) => {
     if (SERVER_STATE?.child === child) {
       SERVER_STATE = null;
-      process.send?.({ type: 'log', level: 'warn', message: `llama-server exited (${code ?? signal ?? 'unknown'}): ${stderr.slice(-1000)}`, args: [] });
+      process.send?.({ type: 'log', level: 'warn', code: 'PROVIDER_ERROR', message: 'Local translation server exited; retry may be attempted.', args: [] });
     }
   });
 
@@ -188,10 +188,10 @@ async function runServerTranslation(state, message) {
         runtimeName: 'llama-server',
       };
     }
-    process.send?.({ type: 'log', level: 'warn', message: `Chat completion produced empty output for ${message.mode} request; retrying with legacy completion endpoint.`, args: [] });
+    process.send?.({ type: 'log', level: 'warn', code: 'PROVIDER_ERROR', message: 'Local translation returned empty output; retrying.', args: [] });
   } else if (chatResponse.status !== 404) {
     const body = await chatResponse.text().catch(() => '');
-    process.send?.({ type: 'log', level: 'warn', message: `Chat completion failed (${chatResponse.status} ${chatResponse.statusText}); retrying with legacy completion endpoint. ${body.slice(0, 400)}`, args: [] });
+    process.send?.({ type: 'log', level: 'warn', code: 'PROVIDER_ERROR', message: 'Local translation request failed; retrying.', args: [] });
   }
 
   const prompt = message.mode === 'custom'
@@ -260,7 +260,7 @@ async function translateText(message) {
   } catch (error) {
     const errorMessage = error?.message || String(error);
     if (/empty output|completion failed/i.test(errorMessage)) {
-      process.send?.({ type: 'log', level: 'warn', message: `Retrying local translation after server reset for ${message.mode} request: ${errorMessage}`, args: [] });
+      process.send?.({ type: 'log', level: 'warn', code: 'PROVIDER_ERROR', message: 'Retrying local translation after server reset.', args: [] });
       stopServer();
       server = await ensureServer(message.modelId, modelPath, ctxSize);
       result = await runServerTranslation(server, message);
@@ -307,9 +307,9 @@ process.on('message', async (message) => {
     }
   } catch (error) {
     if (message?.type === 'install_model') {
-      process.send?.({ type: 'download-failed', modelId: message.modelId, error: error?.message || String(error) });
+      process.send?.({ type: 'download-failed', modelId: message.modelId, code: 'MODEL_UNAVAILABLE', error: 'Local translation model download failed.' });
       return;
     }
-    process.send?.({ type: 'translation_error', id: message?.id, error: error?.message || String(error) });
+    process.send?.({ type: 'translation_error', id: message?.id, code: 'PROVIDER_ERROR', error: 'Local translation failed.' });
   }
 });

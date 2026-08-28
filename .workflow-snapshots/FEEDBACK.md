@@ -1369,3 +1369,13 @@
 - **Main final verification**: repeated all Tester commands independently with the same results: 3/3, 53/53, 3/3, 3/3, compile exit 0.
 - **Card closed**: P4.D1 checked; P4-level O1/O2/J1/J2 remain open for D2-D5.
 - **Next Step**: P4.D2 Usage/logging/diagnostics — redacted observability discovery.
+
+
+## P4.D2 — Redacted Observability CLOSED
+- **Implementation**: central dependency-free sink-level redaction and structured rotation; Main-owned settings-backed usage ledger with v1 migration, idempotent operation/retry/chunk counting, reset/export; allowlisted partial-failure diagnostics; both preload contracts; renderer/worker/FFmpeg/HyperFrames/provider/vault boundaries; shared modular and production legacy-MCP audit/error handling.
+- **Review**: initial review found four concrete gaps; CoderFix2 closed production gaps (legacy catalog catch return, diagnostics capabilities, sink-failure counting, renderer/server-error audit branches); final test-only discriminator fix made legacy audit coverage detect same-tool success siblings. Final Reviewer `P4D2Reviewer3`: **approved**, zero findings.
+- **QA**: `P4D2Tester1` **qa_green**. Full Electron suite **797/797**, focused P4.D2 tests **23/23**, adversarial leak matrix **29/29**; compile clean. Raw SSE probe confirmed authorized endpoint delivery; one discarded hand-rolled branch probe hang was harness-only.
+- **Main verification**: full suite independently **797/797**, compile clean. Vite build passed; electron-builder created signed macOS artifacts but publish metadata stopped on missing `GH_TOKEN`, and notarization was skipped because notarize options were unavailable.
+- **Gates**: `[x] P4.D2`; `[x] P4.J1`. P4.O1 remains open pending D3 performance evidence; P4.O2 and P4.J2 remain open.
+- **Closure**: product closure push follows this transaction with `.workflow-snapshots/{STATE.yaml,STEPS.md,FEEDBACK.md}`; outer canonical workflow root remains local-only.
+- **Next Step**: P4.D3 large-project optimization — performance budgets and virtualization discovery.

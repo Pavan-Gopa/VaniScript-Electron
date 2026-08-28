@@ -29,7 +29,11 @@ const crypto = require('node:crypto');
 
 const settingsStore = require('./settingsStore.js');
 const vault = require('./vault.js');
-
+const {
+  migrateLegacyUsage,
+  normalizeUsageLedger,
+} = require('../../../shared/contracts/settings-runtime.js');
+const { safeIpcError } = require('../observability.js');
 // Secret-like key names. Bare `key` is only treated as a secret inside a
 // provider context (otherwise it is far too likely to be a false positive).
 const SECRET_KEY_RE = /^(api[_-]?key|access[_-]?token|token|secret|client[_-]?secret|password|bearer)$/i;
@@ -154,9 +158,12 @@ function handleMigrateLegacy(payload, opts) {
   }
   if (legacyUsage && typeof legacyUsage === 'object') {
     legacySettings.api = legacySettings.api && typeof legacySettings.api === 'object' ? legacySettings.api : {};
-    legacySettings.api.lastUsage = legacyUsage;
-  }
+    const isLedger = Object.prototype.hasOwnProperty.call(legacyUsage, 'providers')
+      || Object.prototype.hasOwnProperty.call(legacyUsage, 'daily')
+      || Object.prototype.hasOwnProperty.call(legacyUsage, 'schemaVersion');
+    legacySettings.api.lastUsage = isLedger ? normalizeUsageLedger(legacyUsage) : migrateLegacyUsage(legacyUsage);
 
+  }
   // Extract secrets → vault, replace with opaque refs in the settings object.
   const secretEntries = [];
   extractSecrets(legacySettings, 'settings', secretEntries, false);
@@ -221,7 +228,7 @@ function handleMigrateLegacy(payload, opts) {
     const errorCode = err && err.code === 'ENOENT' ? 'CORRUPT_DATA' : 'INTERNAL';
     return {
       ok: false,
-      error: err && err.message ? String(err.message) : String(err),
+      error: safeIpcError(err, errorCode).message,
       errorCode,
     };
   } finally {

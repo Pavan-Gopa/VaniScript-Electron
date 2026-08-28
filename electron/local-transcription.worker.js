@@ -236,7 +236,7 @@ function loadAddon() {
 try {
   loadAddon();
 } catch (error) {
-  process.send?.({ type: 'log', level: 'error', message: `Failed to load whisper addon: ${error.message}`, args: [] });
+  process.send?.({ type: 'log', level: 'error', code: 'MODEL_UNAVAILABLE', message: 'Local transcription worker unavailable.', args: [] });
 }
 
 process.on('message', async (msg) => {
@@ -261,6 +261,6 @@ process.on('message', async (msg) => {
         return;
     }
   } catch (error) {
-    process.send?.({ type: 'transcription_error', id: msg?.id, error: error?.message || String(error) });
+    process.send?.({ type: 'transcription_error', id: msg?.id, code: 'PROVIDER_ERROR', error: 'Local transcription failed.' });
   }
 });
