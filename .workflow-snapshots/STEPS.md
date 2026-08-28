@@ -183,7 +183,7 @@
 - [x] [P4.D1] Help/onboarding catalog: EN/RU search/context/tours
 - [x] [P4.D2] Usage/logging/diagnostics: redacted observability
 - [x] [P4.D3] Large-project optimization: budgets/virtualization
-- [ ] [P4.D4] Cross-edition fixture suite: shared parity gate
+- [x] [P4.D4] Cross-edition fixture suite: shared parity gate
 - [ ] [P4.D5] Cross-platform E2E/packaging: release qualification
 
 ### Objective gates

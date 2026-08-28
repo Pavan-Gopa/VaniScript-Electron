@@ -5,11 +5,13 @@ onboarding:
   model_pairs_confirmed: true
   completed_at: 2026-08-21T00:00:00Z
 current_step: P4
-current_work_item_id: P4.D4
-current_work_item: P4.D4 cross-edition fixture suite — shared parity gate discovery.
+current_work_item_id: P4.D5
+current_work_item: P4.D5 cross-platform E2E/packaging — release qualification; P4.D4 CLOSED and pushed.
 step_description: >-
-  P0-P3E complete; P4.D1-D3 closed incl. O1/J1/J2. Active pointer P4.D4 shared
-  parity fixtures; P4.O2 remains open.
+  P0-P3E complete. P4.D1-D4 closed (D4 parity gate full cycle: 4 slices,
+  fix round, hardening; both editions green). P4.O2 3-OS report half open
+  with P4.D5 cross-platform E2E/packaging; P5 release follows per standing
+  order.
 completed_steps:
   - P0
   - P1
@@ -19,25 +21,34 @@ completed_steps:
   - P3C
   - P3D
   - P3E
+  - P4
 skipped_steps: []
 parked_steps: []
 implementation:
-  status: discovery_pending
+  status: pending
   attempts: 0
   note: >-
-    P4.D3 closed after final Tester confirmation. Advancing transactionally to
-    P4.D4 discovery; closure push follows.
-  target_files: []
+    P4.D4 CLOSED 2026-08-29: full cycle complete — 4 slices + fix round
+    (Reviewer1 rejected -> Fix1 -> Reviewer2 approved) + Tester qa_green
+    (0 bugs, 3 coverage gaps) + hardening Fix2 (Reviewer3 approved after
+    runtime-crash revival). Final state: Electron npm 836/836, Swift parity
+    12 tests/6 suites, full swift 1133/135 with 12 known baseline issues,
+    smoke unified PASS, gate catches all drift classes incl. unlisted files
+    on both editions. Closure commit: test/fixtures/parity/ + test/parity/
+    + package.json pretest + migration plan §6.5 + workflow-memory mirror
+    pushed to VaniScript-Electron. P4 card D-items all closed; P4.O2 3-OS
+    report half moves with P4.D5. Next: P4.D5 discovery (cross-platform
+    E2E/packaging release qualification), then standard cycle.
 retry_guard:
   omp:
-    last_result_artifact: history://P4D3Tester2
+    last_result_artifact: history://P4D4Reviewer3
     active_agent: null
     active_role: null
-    status: idle
-  role: scout
-  primary_agent: scout
-  evidence: history://P4D3Tester2
-  omp_status_note: p4_d3_closed_p4_d4_discovery_pending
+    status: p4d4_closed
+  role: none
+  primary_agent: none
+  evidence: history://P4D4Reviewer3
+  omp_status_note: p4_d4_closed_pushed_next_p4d5
 standing_order:
     «продолжать в том же духе до победного конца — полностью все шаги».
     Main runs the full remaining plan continuously: P3B.D1..D6, P3C.D1..D5,
@@ -71,12 +82,18 @@ review:
   status: approved
   last_feedback_file: AI_Workflow_Kit/docs/AI/FEEDBACK.md
   verdict: approved
-  note: P3ED4Reviewer2 approved after the seed-gating fix round.
+  note: >-
+    P4.D4 card: Reviewer1 rejected (2 blocking, 2 major, 1 minor) -> Fix1 ->
+    Reviewer2 approved (all resolved, no new defects) -> Tester qa_green ->
+    hardening Fix2 -> Reviewer3 approved (revival after runtime crash).
 qa:
-  suite: "P3E lane closure aggregate 756/756 (+2 D5 tester tests); compile and Vite build green"
+  suite: "P4.D4 closure: Electron npm 836/836 (incl. 25 parity tests + pretest gate); Swift parity 12 tests/6 suites; full swift 1133/135 with 12 known baseline issues; q_parity_smoke unified PASS"
   bugs_open: 0
-  note: D4 Tester qa_green verified by independent Main re-run; O2-SHT-10/J2 deferred to D5 per binding §8.
-next_actor: scout
+  note: >-
+    Tester adversarial drift simulations all per binding; 3 coverage gaps
+    closed by hardening round; gate now catches unlisted files on both
+    editions.
+next_actor: coder
 pipeline:
   profile: standard
   tester_enabled: true

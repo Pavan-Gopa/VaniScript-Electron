@@ -1,0 +1,127 @@
+{
+  "fixtureVersion": 1,
+  "name": "p4d4-shorts-render-contract-parity",
+  "contract": "vaniscript-shorts-render-parity-v1",
+  "activeLanguage": "russian",
+  "plans": [
+    {
+      "stableID": "fixture-plan-01",
+      "start": "00:02",
+      "end": "00:10",
+      "clipRange": { "startSec": 2, "endSec": 10 },
+      "languageMode": "bilingual",
+      "title": "Fixture Plan One Title",
+      "summary": "Fixture plan one summary text.",
+      "hook": "Fixture plan one hook text.",
+      "category": "Fixture Category One",
+      "sourceTitle": "Fixture Plan One Source Title",
+      "sourceSummary": "Fixture plan one source summary text.",
+      "sourceHook": "Fixture plan one source hook text.",
+      "sourceCategory": "Fixture Category One",
+      "captionText": "Fixture plan one caption text.",
+      "sourceCaptionText": "Fixture plan one source caption text.",
+      "translationsByLanguage": {
+        "russian": {
+          "language": "Russian",
+          "title": "Fixture Plan One Russian Title",
+          "summary": "Fixture plan one russian summary text.",
+          "hook": "Fixture plan one russian hook text.",
+          "category": "Fixture Category One",
+          "captionText": "Fixture plan one caption text."
+        }
+      },
+      "timelineCuts": [
+        { "stableID": "fixture-cut-01", "startSec": 4, "endSec": 5.5 }
+      ]
+    },
+    {
+      "stableID": "fixture-plan-02",
+      "start": "00:12",
+      "end": "00:18",
+      "clipRange": { "startSec": 12, "endSec": 18 },
+      "languageMode": "target",
+      "title": "Fixture Plan Two Title",
+      "summary": "Fixture plan two summary text.",
+      "hook": "Fixture plan two hook text.",
+      "captionText": "Fixture plan two caption text."
+    },
+    {
+      "stableID": "fixture-plan-03",
+      "start": "00:20",
+      "end": "00:28",
+      "clipRange": { "startSec": 20, "endSec": 28 },
+      "languageMode": "target",
+      "title": "Fixture Plan Three Title",
+      "summary": "Fixture plan three summary text.",
+      "hook": "Fixture plan three hook text.",
+      "captionText": "Fixture plan three caption text.",
+      "targetCaptionText": "Fixture plan three target caption text.",
+      "translationsByLanguage": {
+        "russian": {
+          "language": "Russian",
+          "title": "Fixture Plan Three Russian Title",
+          "summary": "Fixture plan three russian summary text.",
+          "hook": "Fixture plan three russian hook text."
+        }
+      },
+      "timelineCuts": [
+        { "startSec": 22, "endSec": 23 }
+      ]
+    }
+  ],
+  "canonicalProjection": {
+    "description": "Electron strict active-language projection: translationsByLanguage[activeLanguageKey] only, empty when absent (shared/shorts-state.js activeShortsPlanProjection).",
+    "plans": [
+      {
+        "stableID": "fixture-plan-01",
+        "available": true,
+        "languageKey": "russian",
+        "title": "Fixture Plan One Russian Title",
+        "summary": "Fixture plan one russian summary text.",
+        "hook": "Fixture plan one russian hook text.",
+        "category": "Fixture Category One",
+        "captionText": "Fixture plan one caption text."
+      },
+      {
+        "stableID": "fixture-plan-02",
+        "available": false,
+        "languageKey": "russian",
+        "title": "",
+        "summary": "",
+        "hook": "",
+        "category": "",
+        "captionText": ""
+      },
+      {
+        "stableID": "fixture-plan-03",
+        "available": true,
+        "languageKey": "russian",
+        "title": "Fixture Plan Three Russian Title",
+        "summary": "Fixture plan three russian summary text.",
+        "hook": "Fixture plan three russian hook text.",
+        "category": "",
+        "captionText": ""
+      }
+    ]
+  },
+  "fallbackProjection": {
+    "description": "Native target-language fallback chain: title = targetTitle ?? translationsByLanguage.values.first?.title ?? title; subtitle text = targetAlignment ?? targetCaptionText ?? captionText (ShortsNativeRenderPlan.swift:362-368; ShortsVisualEditorState.swift:529-537).",
+    "plans": [
+      {
+        "stableID": "fixture-plan-01",
+        "title": "Fixture Plan One Russian Title",
+        "captionText": "Fixture plan one caption text."
+      },
+      {
+        "stableID": "fixture-plan-02",
+        "title": "Fixture Plan Two Title",
+        "captionText": "Fixture plan two caption text."
+      },
+      {
+        "stableID": "fixture-plan-03",
+        "title": "Fixture Plan Three Russian Title",
+        "captionText": "Fixture plan three target caption text."
+      }
+    ]
+  }
+}

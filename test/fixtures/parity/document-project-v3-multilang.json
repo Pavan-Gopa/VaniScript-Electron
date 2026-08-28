@@ -1,0 +1,140 @@
+{
+  "fixtureVersion": 1,
+  "format": "vaniscript-project-v2",
+  "schemaVersion": 3,
+  "exportedAt": "2026-01-01T00:00:00.000Z",
+  "project": {
+    "id": "fixture-project-multilang-01",
+    "name": "Fixture Multilanguage Project",
+    "createdAt": "2025-12-31T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z",
+    "session": {
+      "projectId": "fixture-project-multilang-01",
+      "sourceKind": "media",
+      "sourceFile": "<fixture-assets>/fixture-source.m4a",
+      "sourceFileName": "fixture-source.m4a",
+      "sourceMediaKind": "audio",
+      "sourceMediaInfo": {
+        "kind": "audio",
+        "fileName": "fixture-source.m4a",
+        "filePath": "<fixture-assets>/fixture-source.m4a",
+        "durationSec": 30,
+        "fileSizeBytes": 480000,
+        "container": "m4a"
+      },
+      "metadata": {
+        "date": "2025-12-31",
+        "location": "Fixture Location",
+        "lecturer": "Fixture Speaker",
+        "participants": ""
+      },
+      "config": {
+        "date": "2025-12-31",
+        "location": "Fixture Location",
+        "lecturer": "Fixture Speaker",
+        "participants": "",
+        "targetLang": "Russian",
+        "formats": ["TXT", "SRT"],
+        "transcriptionProvider": "fixture-transcription-provider",
+        "translationProvider": "fixture-translation-provider"
+      },
+      "sourceLang": "auto",
+      "targetLang": "Russian",
+      "activeTranslationLanguage": "Russian",
+      "availableTranslationLanguages": ["Russian", "German"],
+      "transcriptionProvider": "fixture-transcription-provider",
+      "translationProvider": "fixture-translation-provider",
+      "outputFormats": ["TXT", "SRT"],
+      "durationSec": 30,
+      "currentIndex": 1,
+      "currentChunkIndex": 1,
+      "approvalMode": "manual",
+      "chunks": [
+        {
+          "index": 0,
+          "filePath": "<fixture-assets>/fixture-chunk-00.m4a",
+          "durationSec": 15,
+          "startSec": 0,
+          "endSec": 15,
+          "original": "Fixture source sentence one for the parity suite.",
+          "translated": "Fixture translated sentence one for the parity suite.",
+          "originalCues": [
+            { "startSec": 0, "endSec": 7.5, "text": "Fixture cue one text." },
+            { "startSec": 7.5, "endSec": 15, "text": "Fixture cue two text." }
+          ],
+          "translationsByLanguage": {
+            "russian": {
+              "language": "Russian",
+              "text": "Fixture translated sentence one for the parity suite.",
+              "provider": "fixture-translation-provider",
+              "updatedAt": "2026-01-01T00:00:00.000Z"
+            },
+            "german": {
+              "language": "German",
+              "text": "Fixture german sentence one for the parity suite.",
+              "provider": "fixture-translation-provider",
+              "updatedAt": "2026-01-01T00:00:00.000Z"
+            }
+          },
+          "status": "done",
+          "approved": true
+        },
+        {
+          "index": 1,
+          "filePath": "<fixture-assets>/fixture-chunk-01.m4a",
+          "durationSec": 15,
+          "startSec": 15,
+          "endSec": 30,
+          "original": "Fixture source sentence two for the parity suite.",
+          "translated": "",
+          "originalCues": [
+            { "startSec": 0, "endSec": 15, "text": "Fixture cue three text." }
+          ],
+          "translationsByLanguage": {
+            "german": {
+              "language": "German",
+              "text": "Fixture german sentence two for the parity suite.",
+              "provider": "fixture-translation-provider",
+              "updatedAt": "2026-01-01T00:00:00.000Z"
+            }
+          },
+          "status": "pending",
+          "approved": false
+        }
+      ]
+    }
+  },
+  "assetMeta": [
+    { "key": "sourceFile", "name": "fixture-source.m4a", "size": 480000 },
+    { "key": "chunk:0", "name": "fixture-chunk-00.m4a", "size": 240000 },
+    { "key": "chunk:1", "name": "fixture-chunk-01.m4a", "size": 240000 }
+  ],
+  "assetManifest": {
+    "entries": [
+      {
+        "key": "sourceFile",
+        "role": "originalSource",
+        "format": "m4a",
+        "originalFileName": "fixture-source.m4a",
+        "sha256": "3a3004c3e4d9237517f430d4a74a7f2704f62ac08a9cdcf27e15a6da154247bf",
+        "size": 480000
+      },
+      {
+        "key": "chunk:0",
+        "role": "mediaChunk",
+        "format": "m4a",
+        "originalFileName": "fixture-chunk-00.m4a",
+        "sha256": "6718cd29dc17aded1bdb20101b9460b56ab25841783cfba1c6e26f98f83f831d",
+        "size": 240000
+      },
+      {
+        "key": "chunk:1",
+        "role": "mediaChunk",
+        "format": "m4a",
+        "originalFileName": "fixture-chunk-01.m4a",
+        "sha256": "47d36993fb46572c04987a2a65fb5ac59d853232fea12026d74c248282955ad0",
+        "size": 240000
+      }
+    ]
+  }
+}

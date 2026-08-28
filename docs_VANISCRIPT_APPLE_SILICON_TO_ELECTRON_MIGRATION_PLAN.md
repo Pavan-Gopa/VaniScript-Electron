@@ -349,17 +349,24 @@ app.getPath('userData')/
 
 ### 6.5. Cross-repo contract fixtures
 
-Создать каталог `shared/test-fixtures/parity/` с обезличенными fixtures:
+Каталог `shared/test-fixtures/parity/` создан и содержит обезличенные
+fixtures для активного cross-edition parity gate (P4.D4):
 
-- settings legacy/current;
-- media project v1/v2/v3;
-- document project v3 с несколькими языками;
-- project archive manifest;
-- batch job/checkpoint;
-- MCP tool request/result;
-- update descriptor/receipt.
+- `settings-current.json`;
+- `document-project-v3-multilang.json`;
+- `archive-manifest-v3.json`;
+- `shorts-render-contract.json`;
+- `shorts-export-selection.json`.
 
-Обе кодовые базы должны прогонять fixtures. Это основной механизм предотвращения дальнейшего расхождения.
+Каталог включает `.manifest.json` с SHA-256 для всех пяти семейств. Parity gate
+активен: Electron запускает свой parity harness через `npm test`/`pretest`, а
+AppleSilicon — parity harness в `VaniScriptCoreTests` с теми же fixtures.
+Обе кодовые базы должны прогонять fixtures. Это основной механизм
+предотвращения дальнейшего расхождения.
+
+Остальные семейства из исходного плана (settings legacy, media v1/v2,
+batch job/checkpoint, MCP tool request/result и update descriptor/receipt)
+остаются отложенными до появления соответствующих общих контрактов.
 
 ---
 

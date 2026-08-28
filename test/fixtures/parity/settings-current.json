@@ -1,0 +1,37 @@
+{
+  "fixtureVersion": 1,
+  "schemaVersion": 2,
+  "agents": {
+    "localMcpEnabled": true,
+    "preferredAgent": "codex",
+    "permissions": {
+      "mutate": true,
+      "processing": true,
+      "file": false,
+      "network": false,
+      "destructive": false
+    }
+  },
+  "api": {
+    "favoriteModels": [
+      "fixture-model-alpha",
+      "fixture-model-beta"
+    ]
+  },
+  "appearance": {
+    "theme": "dark"
+  },
+  "chunking": {
+    "media": {
+      "targetDurationMinutes": 10,
+      "sliceMode": "silence"
+    }
+  },
+  "transcription": {
+    "defaultSourceLanguage": "auto",
+    "defaultTranscriptionProvider": "fixture-transcription-provider",
+    "defaultTranslationProvider": "fixture-translation-provider",
+    "defaultTargetLanguage": "Russian",
+    "documentApprovalMode": "manual"
+  }
+}

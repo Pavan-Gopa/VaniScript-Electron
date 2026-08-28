@@ -1,0 +1,41 @@
+{
+  "fixtureVersion": 1,
+  "format": "vaniscript-project-v2",
+  "schemaVersion": 3,
+  "exportedAt": "2026-01-01T00:00:00.000Z",
+  "assetMeta": [
+    { "key": "sourceFile", "name": "fixture-source.m4a", "size": 480000 },
+    { "key": "originalVideoPath", "name": "fixture-original.mp4", "size": 1048576 },
+    { "key": "chunk:0", "name": "fixture-chunk-00.m4a", "size": 240000 },
+    { "key": "chunk:1", "name": "fixture-chunk-01.m4a", "size": 240000 }
+  ],
+  "assetManifest": {
+    "entries": [
+      {
+        "key": "sourceFile",
+        "role": "originalSource",
+        "format": "m4a",
+        "originalFileName": "fixture-source.m4a",
+        "sha256": "3a3004c3e4d9237517f430d4a74a7f2704f62ac08a9cdcf27e15a6da154247bf",
+        "size": 480000
+      },
+      {
+        "key": "originalVideoPath",
+        "role": "auxiliary",
+        "format": "mp4",
+        "originalFileName": "fixture-original.mp4",
+        "sha256": "d6dd85ece4b9a86155ef2db0810b4dc77969c4b4ba6547b731f69332a0a6cd9b",
+        "size": 1048576
+      },
+      {
+        "key": "chunk:0",
+        "role": "mediaChunk",
+        "format": "m4a",
+        "originalFileName": "fixture-chunk-00.m4a",
+        "sha256": "6718cd29dc17aded1bdb20101b9460b56ab25841783cfba1c6e26f98f83f831d",
+        "size": 240000,
+        "aliases": ["chunk:1"]
+      }
+    ]
+  }
+}

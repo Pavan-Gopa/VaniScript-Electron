@@ -1,0 +1,18 @@
+{
+  "fixtureVersion": 1,
+  "name": "p4d4-shorts-export-selection-parity",
+  "contract": "vaniscript-shorts-export-selection-parity-v1",
+  "selectionIdentityMap": [
+    { "index": 0, "stableID": "fixture-plan-01" },
+    { "index": 1, "stableID": "fixture-plan-02" },
+    { "index": 2, "stableID": "fixture-plan-03" }
+  ],
+  "selections": [
+    { "planIndex": 0, "stableID": "fixture-plan-01", "languageKey": "source", "isSelected": true },
+    { "planIndex": 0, "stableID": "fixture-plan-01", "languageKey": "target", "isSelected": true },
+    { "planIndex": 1, "stableID": "fixture-plan-02", "languageKey": "source", "isSelected": false },
+    { "planIndex": 1, "stableID": "fixture-plan-02", "languageKey": "target", "isSelected": true },
+    { "planIndex": 2, "stableID": "fixture-plan-03", "languageKey": "source", "isSelected": true },
+    { "planIndex": 2, "stableID": "fixture-plan-03", "languageKey": "target", "isSelected": false }
+  ]
+}
