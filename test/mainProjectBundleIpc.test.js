@@ -23,6 +23,11 @@ const MAIN_SOURCE = fs.readFileSync(
   'utf8',
 );
 
+
+const APP_SOURCE = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'App.tsx'),
+  'utf8',
+);
 /** Extracts the balanced-brace body of one `ipcMain.handle(channel, ...)`
  * handler, or returns null when the channel is not registered. */
 function extractHandlerBody(source, channel) {
@@ -281,4 +286,32 @@ test('obsolete private streaming implementations are fully removed from main', (
     MAIN_SOURCE.includes('normalizeImportedProjectSession'),
     'canonical normalizer import retained',
   );
+});
+
+test('project:list preserves legacy no-arg response and adds bounded page routing', () => {
+  const body = extractHandlerBody(MAIN_SOURCE, 'project:list');
+  assert.ok(body.includes('options !== undefined && options !== null'));
+  assert.ok(body.includes('projectListService.listPage(options)'));
+  assert.ok(body.includes('projects: listProjects()'));
+});
+
+test('preview file buffers enforce the byte ceiling before reading', () => {
+  const body = extractHandlerBody(MAIN_SOURCE, 'fs:readFileBuffer');
+  assert.ok(body.includes("options?.purpose === 'preview'"));
+  assert.ok(body.includes('fs.statSync(filePath)'));
+  assert.ok(body.indexOf('fs.statSync(filePath)') < body.indexOf('fs.readFileSync(filePath)'));
+  assert.ok(body.includes("'PREVIEW_TOO_LARGE'"));
+  assert.ok(MAIN_SOURCE.includes('const PREVIEW_MAX_BYTES = 64 * 1024 * 1024;'));
+});
+
+test('App discard paths flush the dirty identity before resetting session state', () => {
+  const deleteStart = APP_SOURCE.indexOf('const deleteProject = async');
+  const clearStart = APP_SOURCE.indexOf('const clearProjectArchive = async');
+  assert.ok(deleteStart >= 0 && clearStart > deleteStart);
+  const deleteBody = APP_SOURCE.slice(deleteStart, clearStart);
+  const clearBody = APP_SOURCE.slice(clearStart);
+  assert.ok(deleteBody.indexOf('flushBeforeDiscard') < deleteBody.indexOf('projectDelete'));
+  assert.ok(clearBody.indexOf('flushBeforeDiscard') < clearBody.indexOf('projectClearAll'));
+  assert.ok((APP_SOURCE.match(/discardCurrentSession/g) || []).length >= 2);
+  assert.ok(APP_SOURCE.includes('autosaveSnapshotRef.current = null'));
 });

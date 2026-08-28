@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Settings, Download, RefreshCw, Play, Pause, FolderOpen, Share2, Trash2, Upload, Archive, ChevronDown, ChevronRight, ArrowLeft, Search, HelpCircle, Film, FileAudio, Info, Sparkles } from 'lucide-react';
-import { AppSettings, ChunkData, GlossaryEntry, McpExportReadiness, ProjectSummary, SessionConfig, SourceMediaInfo, TranscriptCue, UsageStats } from './types';
+import { AppSettings, ChunkData, GlossaryEntry, McpExportReadiness, ProjectSummary, ProjectSummaryPage, SessionConfig, SourceMediaInfo, TranscriptCue, UsageStats } from './types';
 import { loadSettings, saveSettings, loadUsage, applyTheme, trackUsage } from './services/storage';
 import { transcribeChunkGemini, transcribeChunkOpenAI, fileToBase64 } from './services/transcription';
 import { prepareMediaSession, PreparedMediaSession } from './services/media-processing-coordinator';
@@ -8,12 +8,13 @@ import { MediaReviewCoordinator, ReviewOperation, ReviewSide, SelectionPayload }
 import { SettingsModal } from './components/SettingsModal';
 import { Workspace } from './components/Workspace';
 import { BatchWorkspace } from './components/BatchWorkspace';
+import { ProjectSidebar } from './components/ProjectSidebar';
 import { ConfigPanel, TARGET_LANGUAGE_OPTIONS } from './components/ConfigPanel';
-import { OnboardingTour } from './components/OnboardingTour';
 import { Logo } from './components/Logo';
-import { buildChunkPreview, buildTranscriptExport, buildTranscriptArtifact } from './lib/review-format';
-import { audioMimeTypeForPath, createObjectAudioUrl } from './lib/audio-source';
 import { TextPanel } from './components/TextPanel';
+import { OnboardingTour } from './components/OnboardingTour';
+import { buildChunkPreview, buildTranscriptExport, buildTranscriptArtifact } from './lib/review-format';
+import { audioMimeTypeForPath, createObjectAudioUrl, revokeObjectAudioUrl } from './lib/audio-source';
 import { shouldTranslateChunk, translateTextLocally } from './services/local-translation';
 import { getApiKeyForProvider, isCloudProvider, isLocalAsrProvider, isLocalTranslationProvider } from './lib/provider-runtime';
 import { translateTextWithClaude, translateTextWithGemini, translateTextWithOpenAI } from './services/cloud-translation';
@@ -28,7 +29,6 @@ import {
   canOpenSidebarChunk,
   clampChunkIndex,
   isProjectExportReady,
-  projectChunkNumbers,
 } from './lib/project-navigation';
 import { reconcileLocalModelStatesWithDisk } from './services/model-presence';
 import { ShortsReelsPanel, ShortsSettings } from './components/ShortsReelsPanel';
@@ -567,7 +567,12 @@ export default function App() {
   const [isTranslatingShortsMetadata, setIsTranslatingShortsMetadata] = useState(false);
   const [editingProvider, setEditingProvider] = useState<string>(() => loadShortsDefaults().planningProvider || settings.translationProvider);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [projectsTotal, setProjectsTotal] = useState(0);
+  const [projectsHasMore, setProjectsHasMore] = useState(false);
+  const [projectsNextOffset, setProjectsNextOffset] = useState<number | null>(null);
+  const [projectsLoading, setProjectsLoading] = useState(false);
   const navigation = useNavigationStore();
+  const isBatchRoute = String(navigation.route) === NAVIGATION_ROUTES.BATCH;
   const navigate = useNavigate();
   const batchSnapshot = useBatchStore();
   const batchBadge = getBatchBadgeState(batchSnapshot.scheduler, batchSnapshot.jobs);
@@ -580,7 +585,9 @@ export default function App() {
   const pane = usePaneStore();
   const isTranscribing = useRef(false);
   const autosaveTimerRef = useRef<number | null>(null);
-  const autosaveSnapshotRef = useRef('');
+  const autosaveSnapshotRef = useRef<{ identity: string; revision: number; screen: Screen } | null>(null);
+  const autosaveSeenRef = useRef<{ session: Session | null; revision: number }>({ session: null, revision: 0 });
+  const projectPageTokenRef = useRef(0);
   const shortsExportJobIdRef = useRef('');
   const shortsExportActiveRef = useRef(false);
   const shortsExportAcceptedRef = useRef(false);
@@ -619,6 +626,18 @@ export default function App() {
     subtitleMaxCharsPerLine,
     subtitleMaxLines,
   }), [session?.targetLang, session?.chunks, session?.config, subtitleMaxCharsPerLine, subtitleMaxLines]);
+  const activeChunk = useMemo(
+    () => session?.chunks[session.currentIndex] ?? null,
+    [session?.chunks, session?.currentIndex],
+  );
+  const approvedChunkCount = useMemo(
+    () => session?.chunks.reduce((count, item) => count + (item.approved ? 1 : 0), 0) ?? 0,
+    [session?.chunks],
+  );
+  const activePreviewProjection = useMemo(() => ({
+    original: activeChunk ? buildChunkPreview(activeChunk, 'original', outputFormat, exportOptions) : '',
+    translated: activeChunk ? buildChunkPreview(activeChunk, 'translated', outputFormat, exportOptions) : '',
+  }), [activeChunk, exportOptions, outputFormat]);
   const shortsPreviewOutputSize = useMemo(
     () => verticalResolutionForPreset(shortsSettings.resolutionPreset, shortsVideoSourceInfo ?? { width: 1920, height: 1080 }),
     [shortsSettings.resolutionPreset, shortsVideoSourceInfo]
@@ -823,11 +842,33 @@ export default function App() {
     void reconcileLocalModelsWithDisk();
   }, [showSettings, reconcileLocalModelsWithDisk]);
 
-  const refreshProjects = useCallback(async () => {
+  const refreshProjects = useCallback(async (offset = 0, append = false) => {
     if (!window.electronAPI?.projectList) return;
-    const result = await window.electronAPI.projectList();
-    if (result.ok && result.projects) setProjects(result.projects);
+    const token = ++projectPageTokenRef.current;
+    setProjectsLoading(true);
+    try {
+      const result = await window.electronAPI.projectList({ limit: 50, offset });
+      if (token !== projectPageTokenRef.current || !result?.ok) return;
+      const page = result as ProjectSummaryPage;
+      const incoming = Array.isArray(page.projects) ? page.projects : [];
+      setProjects((previous) => {
+        if (!append || offset === 0) return incoming;
+        const byId = new Map(previous.map((project) => [project.id, project]));
+        for (const project of incoming) byId.set(project.id, project);
+        return [...byId.values()];
+      });
+      setProjectsTotal(typeof page.total === 'number' ? page.total : incoming.length);
+      setProjectsHasMore(page.hasMore === true);
+      setProjectsNextOffset(typeof page.nextOffset === 'number' ? page.nextOffset : null);
+    } finally {
+      if (token === projectPageTokenRef.current) setProjectsLoading(false);
+    }
   }, []);
+
+  const loadMoreProjects = useCallback(() => {
+    if (projectsLoading || !projectsHasMore || projectsNextOffset === null) return;
+    void refreshProjects(projectsNextOffset, true);
+  }, [projectsHasMore, projectsLoading, projectsNextOffset, refreshProjects]);
 
   useEffect(() => {
     void refreshProjects();
@@ -836,33 +877,98 @@ export default function App() {
   useEffect(() => {
     if (!session || !window.electronAPI?.projectSave || (screen !== 'review' && screen !== 'export')) return;
     const canonicalSession = applyShortsRejectedLedgerPolicy(session);
-    const snapshot = JSON.stringify({ screen, session: canonicalSession });
-    if (snapshot === autosaveSnapshotRef.current) return;
-    if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current);
+    if (autosaveSeenRef.current.session !== session) {
+      autosaveSeenRef.current = {
+        session,
+        revision: autosaveSeenRef.current.revision + 1,
+      };
+    }
+    const identity = canonicalSession.projectId || canonicalSession.sourceFile || canonicalSession.sourceFileName || 'session';
+    const revision = autosaveSeenRef.current.revision;
+    const dirty = { identity, revision, screen };
+    if (
+      autosaveSnapshotRef.current?.identity === dirty.identity
+      && autosaveSnapshotRef.current.revision === dirty.revision
+      && autosaveSnapshotRef.current.screen === dirty.screen
+    ) return;
+    if (autosaveTimerRef.current !== null) window.clearTimeout(autosaveTimerRef.current);
+    const pendingSession = canonicalSession;
+    const pendingRevision = revision;
+    const pendingScreen = screen;
     autosaveTimerRef.current = window.setTimeout(async () => {
-      const currentSnapshot = JSON.stringify({ screen, session: canonicalSession });
-      autosaveSnapshotRef.current = currentSnapshot;
       const result = await window.electronAPI?.projectSave({
-        id: canonicalSession.projectId,
-        name: canonicalSession.sourceFileName.replace(/\.[^/.]+$/, '') || 'Untitled Project',
-        createdAt: canonicalSession.createdAt,
-        screen,
-        session: canonicalSession,
+        id: pendingSession.projectId,
+        name: pendingSession.sourceFileName.replace(/\.[^/.]+$/, '') || 'Untitled Project',
+        createdAt: pendingSession.createdAt,
+        screen: pendingScreen,
+        session: pendingSession,
       });
-      if (result?.ok && result.project?.session) {
-        setSession((prev) => {
-          if (!prev) return prev;
-          if (prev.projectId && prev.projectId === result.project.session.projectId) return prev;
-          return result.project.session as Session;
-        });
+      if (!result?.ok) return;
+      if (sessionRef.current === session && screen === pendingScreen) {
+        autosaveSnapshotRef.current = { identity, revision: pendingRevision, screen: pendingScreen };
         void refreshProjects();
       }
     }, 900);
     return () => {
-      if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current);
+      if (autosaveTimerRef.current !== null) window.clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
     };
   }, [refreshProjects, screen, session]);
 
+
+  const flushAutosave = useCallback(async (): Promise<boolean> => {
+    const current = sessionRef.current;
+    if (!current || !window.electronAPI?.projectSave) return false;
+    if (autosaveTimerRef.current !== null) window.clearTimeout(autosaveTimerRef.current);
+    autosaveTimerRef.current = null;
+    const canonicalSession = applyShortsRejectedLedgerPolicy(current);
+    const identity = canonicalSession.projectId || canonicalSession.sourceFile || canonicalSession.sourceFileName || 'session';
+    if (autosaveSeenRef.current.session !== current) {
+      autosaveSeenRef.current = { session: current, revision: autosaveSeenRef.current.revision + 1 };
+    }
+    const result = await window.electronAPI.projectSave({
+      id: canonicalSession.projectId,
+      name: canonicalSession.sourceFileName.replace(/\.[^/.]+$/, '') || 'Untitled Project',
+      createdAt: canonicalSession.createdAt,
+      screen,
+      session: canonicalSession,
+    });
+    if (!result?.ok) return false;
+    autosaveSnapshotRef.current = { identity, revision: autosaveSeenRef.current.revision, screen };
+    void refreshProjects();
+    return true;
+  }, [refreshProjects, screen]);
+
+  const resetSessionState = useCallback(() => {
+    review.reset();
+    autosaveSnapshotRef.current = null;
+    autosaveSeenRef.current = { session: null, revision: autosaveSeenRef.current.revision };
+    setSession(null);
+    setSourceFile('');
+    setSourceFileName('');
+    setScreen('upload');
+  }, [review]);
+
+  const flushBeforeDiscard = useCallback(async (): Promise<boolean> => {
+    if (!sessionRef.current) return true;
+    try {
+      return await flushAutosave();
+    } catch {
+      return false;
+    }
+  }, [flushAutosave]);
+
+  const discardCurrentSession = useCallback(async (): Promise<boolean> => {
+    if (!(await flushBeforeDiscard())) return false;
+    resetSessionState();
+    return true;
+  }, [flushBeforeDiscard, resetSessionState]);
+
+  useEffect(() => {
+    const flushBeforeUnload = () => { void flushAutosave(); };
+    window.addEventListener('beforeunload', flushBeforeUnload);
+    return () => window.removeEventListener('beforeunload', flushBeforeUnload);
+  }, [flushAutosave]);
   useEffect(() => {
     let revokedUrl = '';
     let cancelled = false;
@@ -896,7 +1002,7 @@ export default function App() {
         return;
       }
 
-      const result = await window.electronAPI.readFileBuffer({ filePath: currentAudioPath });
+      const result = await window.electronAPI.readFileBuffer({ filePath: currentAudioPath, purpose: 'preview', maxBytes: 64 * 1024 * 1024 });
       if (!result.success) {
         void window.electronAPI?.reportRendererEvent?.({ event: 'renderer.audio-read-failed', code: 'PROVIDER_ERROR' });
         if (!cancelled) {
@@ -915,7 +1021,7 @@ export default function App() {
         setAudioSrc(objectUrl);
         setAudioStatus('ready');
       } else {
-        URL.revokeObjectURL(objectUrl);
+        revokeObjectAudioUrl(objectUrl);
       }
     };
 
@@ -923,7 +1029,7 @@ export default function App() {
 
     return () => {
       cancelled = true;
-      if (revokedUrl) URL.revokeObjectURL(revokedUrl);
+      if (revokedUrl) revokeObjectAudioUrl(revokedUrl);
     };
   }, [currentAudioPath]);
 
@@ -957,7 +1063,7 @@ export default function App() {
         return;
       }
 
-      const result = await window.electronAPI.readFileBuffer({ filePath: fullAudioPath });
+      const result = await window.electronAPI.readFileBuffer({ filePath: fullAudioPath, purpose: 'preview', maxBytes: 64 * 1024 * 1024 });
       if (!result.success) {
         if (!cancelled) {
           setShortsAudioSrc('');
@@ -974,7 +1080,7 @@ export default function App() {
         setShortsAudioSrc(objectUrl);
         setShortsAudioStatus('ready');
       } else {
-        URL.revokeObjectURL(objectUrl);
+        revokeObjectAudioUrl(objectUrl);
       }
     };
 
@@ -982,7 +1088,7 @@ export default function App() {
 
     return () => {
       cancelled = true;
-      if (revokedUrl) URL.revokeObjectURL(revokedUrl);
+      if (revokedUrl) revokeObjectAudioUrl(revokedUrl);
     };
   }, [shortsAudioPath]);
 
@@ -1001,22 +1107,22 @@ export default function App() {
         if (!cancelled) setShortsVideoSrc(directUrl.url);
         return;
       }
-      const result = await window.electronAPI.readFileBuffer({ filePath: videoPath });
+      const result = await window.electronAPI.readFileBuffer({ filePath: videoPath, purpose: 'preview', maxBytes: 64 * 1024 * 1024 });
       if (!result.success) {
         if (!cancelled) setShortsVideoSrc('');
         return;
       }
       const bytes = new Uint8Array(result.data, result.byteOffset, result.byteLength);
-      const objectUrl = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }));
+      const objectUrl = createObjectAudioUrl(bytes, 'video/mp4');
       revokedUrl = objectUrl;
       if (!cancelled) setShortsVideoSrc(objectUrl);
-      else URL.revokeObjectURL(objectUrl);
+      else revokeObjectAudioUrl(objectUrl);
     };
 
     loadShortsVideo();
     return () => {
       cancelled = true;
-      if (revokedUrl) URL.revokeObjectURL(revokedUrl);
+      if (revokedUrl) revokeObjectAudioUrl(revokedUrl);
     };
   }, [session?.originalVideoPath]);
 
@@ -1961,6 +2067,7 @@ export default function App() {
     id: string,
     options: { chunkIndex?: number; screen?: Extract<Screen, 'review' | 'export'> } = {},
   ) => {
+    await flushAutosave();
     const result = await window.electronAPI?.projectLoad({ id });
     if (!result?.ok || !result.project?.session) {
       alert(result?.error || 'Could not open project.');
@@ -2040,18 +2147,14 @@ export default function App() {
 
   const deleteProject = async (id: string) => {
     if (!confirm('Delete this saved VaniScript project? This cannot be undone.')) return;
+    const isCurrentProject = sessionRef.current?.projectId === id;
+    if (isCurrentProject && !(await flushBeforeDiscard())) return;
     const result = await window.electronAPI?.projectDelete({ id });
     if (!result?.ok) {
       alert(result?.error || 'Could not delete project.');
       return;
     }
-    if (session?.projectId === id) {
-      review.reset();
-      setSession(null);
-      setSourceFile('');
-      setSourceFileName('');
-      setScreen('upload');
-    }
+    if (isCurrentProject) resetSessionState();
     await refreshProjects();
   };
 
@@ -2067,16 +2170,13 @@ export default function App() {
 
   const clearProjectArchive = async () => {
     if (!confirm('Delete every saved VaniScript project from the archive? This cannot be undone.')) return;
+    if (!(await flushBeforeDiscard())) return;
     const result = await window.electronAPI?.projectClearAll();
     if (!result?.ok) {
       alert(result?.error || 'Could not clear project archive.');
       return;
     }
-    review.reset();
-    setSession(null);
-    setSourceFile('');
-    setSourceFileName('');
-    setScreen('upload');
+    resetSessionState();
     await refreshProjects();
   };
 
@@ -3323,15 +3423,15 @@ export default function App() {
         )}
 
         {/* ── UPLOAD ── */}
-        {screen === 'upload' && <Workspace onFileSelected={handleFileSelected} />}
+        {!isBatchRoute && screen === 'upload' && <Workspace onFileSelected={handleFileSelected} />}
 
         {/* ── CONFIG ── */}
-        {screen === 'config' && (
+        {!isBatchRoute && screen === 'config' && (
           <ConfigPanel fileName={sourceFileName} settings={settings} onStart={handleStartEngine} onCancel={() => setScreen('upload')} />
         )}
 
         {/* ── PROCESSING ── */}
-        {screen === 'processing' && (
+        {!isBatchRoute && screen === 'processing' && (
           <div className="processing-screen">
             <div className="logo-header" style={{ marginBottom: 32 }}>
               <div className="logo-wrap"><Logo className="logo-img" /><span className="logo-name">VaniScript</span></div>
@@ -3354,16 +3454,16 @@ export default function App() {
         )}
 
         {/* ── REVIEW ── */}
-        {screen === 'review' && session && (() => {
-          const chunk = session.chunks[session.currentIndex];
+        {!isBatchRoute && screen === 'review' && session && (() => {
+          const chunk = activeChunk;
           // Canonical active language: part of the translated pane's identity
           // so a language switch remounts it and clears undo/edit/selection.
           const activeLanguage = review.activeLanguage(session);
           const total = session.chunks.length;
-          const approved = session.chunks.filter(c => c.approved).length;
+          const approved = approvedChunkCount;
           const hasTranslation = session.targetLang !== 'same' && session.targetLang !== '';
-          const originalPreview = chunk ? buildChunkPreview(chunk, 'original', outputFormat, exportOptions) : '';
-          const translatedPreview = chunk ? buildChunkPreview(chunk, 'translated', outputFormat, exportOptions) : '';
+          const originalPreview = activePreviewProjection.original;
+          const translatedPreview = activePreviewProjection.translated;
           const isEditableTextMode = outputFormat === 'TXT';
           const globalAudioTimeSec = (chunk?.startSec ?? 0) + audioCurrentSec;
           const audioStatusLabel =
@@ -3513,10 +3613,10 @@ export default function App() {
                     <FolderOpen size={14} />
                   </button>
                   <button
-                    className={`review-new-btn batch-action ${navigation.route === NAVIGATION_ROUTES.BATCH ? 'active' : ''} ${batchBadge === 'failed' ? 'is-failed' : ''}`}
+                    className={`review-new-btn batch-action ${isBatchRoute ? 'active' : ''} ${batchBadge === 'failed' ? 'is-failed' : ''}`}
                     onClick={() => navigate(NAVIGATION_ROUTES.BATCH)}
                     aria-label={`Batch workspace · ${batchBadgeLabel}`}
-                    aria-current={navigation.route === NAVIGATION_ROUTES.BATCH ? 'page' : undefined}
+                    aria-current={isBatchRoute ? 'page' : undefined}
                     title={`Batch · ${batchBadgeLabel}`}
                   >
                     <Play size={13} aria-hidden="true" />
@@ -3532,7 +3632,7 @@ export default function App() {
                   >
                     <Settings size={14} />
                   </button>
-                  <button className="review-new-btn" onClick={() => { review.reset(); setSession(null); setSourceFile(''); setSourceFileName(''); setScreen('upload'); }}>
+                  <button className="review-new-btn" onClick={() => { void discardCurrentSession(); }}>
                     + New Session
                   </button>
                 </div>
@@ -3756,7 +3856,7 @@ export default function App() {
         })()}
 
         {/* ── EXPORT ── */}
-        {screen === 'export' && session && (() => (
+        {!isBatchRoute && screen === 'export' && session && (() => (
             <div className="export-screen">
               <div className="export-card">
                 <div className="export-hero">
@@ -4008,7 +4108,7 @@ export default function App() {
                   <button className="btn-cancel" onClick={openProjectSidebar}>
                     <FolderOpen size={14} /> Sessions
                   </button>
-                  <button className="btn-cancel" onClick={() => { review.reset(); setSession(null); setSourceFile(''); setSourceFileName(''); setScreen('upload'); }}>
+                  <button className="btn-cancel" onClick={() => { void discardCurrentSession(); }}>
                     New Session
                   </button>
                 </div>
@@ -4121,138 +4221,28 @@ export default function App() {
           );
         })()}
 
-        {pane.projectSidebarOpen && (
-          <div className={`project-sidebar-backdrop ${pane.projectSidebarClosing ? 'closing' : ''}`} onMouseDown={closeProjectSidebar}>
-            <aside className="project-sidebar" onMouseDown={(event) => event.stopPropagation()}>
-              <div className="project-sidebar-header">
-                <div>
-                  <div className="project-sidebar-title">Sessions</div>
-                  <div className="project-sidebar-subtitle">Autosaved in Documents/VaniScript Projects</div>
-                </div>
-                <button
-                  type="button"
-                  className="review-icon-btn"
-                  onMouseDown={(event) => event.stopPropagation()}
-                  onClick={closeProjectSidebar}
-                >
-                  ×
-                </button>
-              </div>
-              <div className="project-sidebar-actions">
-                <button className="btn-save" onClick={importProject}><Upload size={14} /> Import</button>
-                <button className="btn-ghost-sm" onClick={exportAllProjects}><Archive size={14} /> Export All</button>
-              </div>
-              <div className="project-list">
-                {projects.length === 0 ? (
-                  <div className="project-empty">No saved sessions yet.</div>
-                ) : projects.map((project) => {
-                  const isExpanded = expandedProjectId === project.id;
-                  const isActiveProject = session?.projectId === project.id;
-                  const exportReady = isProjectExportReady(project.totalChunks, project.approvedChunks);
-                  return (
-                    <div key={project.id} className={`project-item ${isActiveProject ? 'active' : ''} ${isExpanded ? 'expanded' : ''}`}>
-                      <button
-                        className="project-open"
-                        onClick={() => toggleProjectExpanded(project.id)}
-                        aria-expanded={isExpanded}
-                      >
-                        <span className="project-title-row">
-                          {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                          <span className="project-name">{project.name}</span>
-                        </span>
-                        <span className="project-meta">
-                          {project.currentIndex + 1}/{Math.max(1, project.totalChunks)} chunks · {project.approvedChunks} approved · {project.targetLang || 'Same'}
-                        </span>
-                        {project.sourceMediaInfo && (
-                          <span className="project-media-meta">
-                            {project.sourceMediaInfo.kind === 'video' ? <Film size={12} /> : <FileAudio size={12} />}
-                            {getMediaSummary(project.sourceMediaInfo)}
-                          </span>
-                        )}
-                        <span className="project-date">{new Date(project.updatedAt).toLocaleString()}</span>
-                      </button>
-                      <div className="project-item-actions">
-                        <button title="Share project" onClick={() => exportProject(project.id)}><Share2 size={13} /></button>
-                        <button title="Delete project" onClick={() => deleteProject(project.id)}><Trash2 size={13} /></button>
-                      </div>
-                      {isExpanded && (
-                        <div className="project-expanded-body">
-                          {project.sourceMediaInfo && (
-                            <div className="project-media-card">
-                              <div className="project-media-main">
-                                <div className="project-media-icon" aria-hidden="true">
-                                  {project.sourceMediaInfo.kind === 'video' ? <Film size={16} /> : <FileAudio size={16} />}
-                                </div>
-                                <div className="project-media-copy">
-                                  <span className="project-media-name" title={project.sourceMediaInfo.fileName}>
-                                    {project.sourceMediaInfo.fileName}
-                                  </span>
-                                  <span className="project-media-summary">
-                                    {getMediaSummary(project.sourceMediaInfo)}
-                                  </span>
-                                </div>
-                              </div>
-                              <div className="project-media-path" title={project.sourceMediaInfo.filePath}>
-                                {project.sourceMediaInfo.filePath}
-                              </div>
-                              <div className="project-media-actions">
-                                <button type="button" className="project-media-action" onClick={(e) => { e.stopPropagation(); setActiveMediaInfo(project.sourceMediaInfo!); }}>
-                                  <Info size={11} /> Info
-                                </button>
-                                <button type="button" className="project-media-action" onClick={(e) => {
-                                  e.stopPropagation();
-                                  if (project.sourceMediaInfo?.filePath) window.electronAPI?.openPath?.(project.sourceMediaInfo.filePath);
-                                }}>
-                                  <Play size={11} /> Open
-                                </button>
-                                <button type="button" className="project-media-action" onClick={(e) => {
-                                  e.stopPropagation();
-                                  if (project.sourceMediaInfo?.filePath) window.electronAPI?.showItemInFolder?.(project.sourceMediaInfo.filePath);
-                                }}>
-                                  <FolderOpen size={11} /> Reveal
-                                </button>
-                              </div>
-                            </div>
-                          )}
-                          <div className="project-chunk-grid">
-                            {projectChunkNumbers(project.totalChunks).map((chunkNumber) => {
-                              const chunkIndex = chunkNumber - 1;
-                              const isCurrentChunk = isActiveProject && session?.currentIndex === chunkIndex;
-                              const canOpenChunk = canOpenSidebarChunk(chunkIndex, project.currentIndex, project.totalChunks);
-                              return (
-                                <button
-                                  key={chunkNumber}
-                                  className={`project-chunk-btn ${isCurrentChunk ? 'active' : ''} ${canOpenChunk ? '' : 'locked'}`}
-                                  disabled={!canOpenChunk}
-                                  onClick={() => openProjectChunk(project, chunkIndex)}
-                                >
-                                  <span>Chunk {chunkNumber}</span>
-                                  {chunkIndex === project.currentIndex && <span className="project-chunk-pill">last</span>}
-                                </button>
-                              );
-                            })}
-                            {exportReady && (
-                              <button
-                                type="button"
-                                className="project-export-btn"
-                                onClick={() => openProjectExport(project)}
-                              >
-                                <Download size={13} />
-                                Export
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="project-sidebar-footer">
-                <button className="btn-danger-sm" onClick={clearProjectArchive}>Clear Archive</button>
-              </div>
-            </aside>
-          </div>
+        {!isBatchRoute && pane.projectSidebarOpen && (
+          <ProjectSidebar
+            projects={projects}
+            expandedProjectId={expandedProjectId}
+            activeProjectId={session?.projectId}
+            loading={projectsLoading}
+            hasMore={projectsHasMore}
+            total={projectsTotal}
+            onClose={closeProjectSidebar}
+            onImport={importProject}
+            onExportAll={exportAllProjects}
+            onToggleProject={toggleProjectExpanded}
+            onDeleteProject={deleteProject}
+            onExportProject={exportProject}
+            onOpenProjectChunk={openProjectChunk}
+            onOpenProjectExport={openProjectExport}
+            onClearArchive={clearProjectArchive}
+            onOpenMediaInfo={setActiveMediaInfo}
+            onOpenPath={(filePath) => { void window.electronAPI?.openPath?.(filePath); }}
+            onRevealPath={(filePath) => { void window.electronAPI?.showItemInFolder?.(filePath); }}
+            onLoadMore={loadMoreProjects}
+          />
         )}
 
         {glossaryDraft && (() => {

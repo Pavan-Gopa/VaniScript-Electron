@@ -17,6 +17,15 @@ export const MCP_CONFIRM_CHALLENGE_CHANNEL = 'mcp:confirmChallenge' as const;
 export const MAX_SELECTION_CHARS = 4000;
 export const MAX_SELECTION_PREVIEW = 280;
 
+export const MAX_ASSISTANT_MESSAGES = 100;
+
+export function appendAssistantMessage(
+  messages: readonly AssistantMessage[],
+  message: AssistantMessage,
+): AssistantMessage[] {
+  return [...messages, message].slice(-MAX_ASSISTANT_MESSAGES);
+}
+
 export const DICTATION_DEFERRED =
   'Dictation backend seam is deferred: mic capture must stay in Main and call local ASR without returning filesystem paths or inventing a transcript.';
 
@@ -347,8 +356,8 @@ const INITIAL_STATE: AssistantStoreSnapshot = {
   dictationMessage: null,
   attachmentSeam: 'ready',
   lastUserInput: null,
-};
 
+};
 export function createAssistantStore(providedBridge?: AssistantBridge): AssistantStore {
   const bridge = providedBridge ?? windowBridge();
   let state: AssistantStoreSnapshot = { ...INITIAL_STATE, profiles: asProfiles(undefined) };
@@ -356,6 +365,8 @@ export function createAssistantStore(providedBridge?: AssistantBridge): Assistan
   let runId = 0;
   let seq = 0;
   let activeStream: AgentStreamLike | null = null;
+  let cancelActiveFlush: () => void = () => {};
+  let detachActiveStream: () => void = () => {};
 
   const emit = () => {
     for (const listener of [...listeners]) listener();
@@ -404,8 +415,59 @@ export function createAssistantStore(providedBridge?: AssistantBridge): Assistan
       streamingText: '',
       lastUserInput: trimmed,
       draft: '',
-      messages: [...state.messages, userMessage],
+      messages: appendAssistantMessage(state.messages, userMessage),
     });
+
+    let streamText = '';
+    let fragmentCount = 0;
+    let scheduled = false;
+    let animationHandle: number | null = null;
+    let timerHandle: ReturnType<typeof setTimeout> | null = null;
+    const cleanups: Array<() => void> = [];
+    const cancelFlush = () => {
+      if (animationHandle !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(animationHandle);
+      if (timerHandle !== null) clearTimeout(timerHandle);
+      animationHandle = null;
+      timerHandle = null;
+      scheduled = false;
+    };
+    const detach = () => {
+      cancelFlush();
+      for (const cleanup of cleanups.splice(0)) cleanup();
+    };
+    const flush = () => {
+      scheduled = false;
+      animationHandle = null;
+      timerHandle = null;
+      if (id !== runId) return;
+      update({ phase: 'streaming', streamingText: streamText });
+    };
+    const scheduleFlush = () => {
+      if (scheduled || id !== runId) return;
+      scheduled = true;
+      if (typeof requestAnimationFrame === 'function') {
+        animationHandle = requestAnimationFrame(flush);
+      } else {
+        timerHandle = setTimeout(flush, 16);
+      }
+    };
+    cancelActiveFlush = cancelFlush;
+    detachActiveStream = detach;
+    const finalize = (patch: Partial<AssistantStoreSnapshot>) => {
+      detachActiveStream();
+      cancelActiveFlush = () => {};
+      detachActiveStream = () => {};
+      if (id !== runId) return;
+      const message = streamText
+        ? { id: nextId('assistant'), role: 'assistant' as const, text: streamText }
+        : null;
+      update({
+        ...patch,
+        messages: message ? appendAssistantMessage(state.messages, message) : state.messages,
+        streamingText: '',
+      });
+    };
+
     try {
       const stream = bridge.start(state.profileId, {
         input: trimmed,
@@ -423,27 +485,27 @@ export function createAssistantStore(providedBridge?: AssistantBridge): Assistan
         phase: mapStreamPhase(stream.status?.().state || stream.status?.().status) || 'starting',
       });
       const onToken = (token: string) => {
-        if (id !== runId) return;
-        update({
-          phase: 'streaming',
-          streamingText: `${state.streamingText}${token}`,
-        });
+        if (id !== runId || typeof token !== 'string') return;
+        streamText += token;
+        fragmentCount += 1;
+        if (fragmentCount <= 4) {
+          update({ phase: 'streaming', streamingText: streamText });
+        } else {
+          scheduleFlush();
+        }
       };
       const onDone = (value: unknown) => {
         if (id !== runId) return;
-        activeStream = null;
         const record = asRecord(value);
-        const text = state.streamingText || (typeof record?.output === 'string' ? record.output : '');
-        update({
+        const output = typeof record?.output === 'string' ? record.output : '';
+        if (!streamText && output) streamText = output;
+        activeStream = null;
+        finalize({
           phase: 'done',
           canCancel: false,
           streamId: null,
-          streamingText: '',
           runningTool: null,
           lastRedactions: redactionsFromPayload(record?.redactions),
-          messages: text
-            ? [...state.messages, { id: nextId('assistant'), role: 'assistant', text }]
-            : state.messages,
         });
       };
       const onError = (error: unknown) => {
@@ -451,7 +513,7 @@ export function createAssistantStore(providedBridge?: AssistantBridge): Assistan
         activeStream = null;
         const challenge = challengeFromUnknown(error);
         const cancelled = errorCode(error) === 'CANCELLED';
-        update({
+        finalize({
           phase: cancelled ? 'cancelled' : 'error',
           canCancel: false,
           streamId: null,
@@ -460,25 +522,24 @@ export function createAssistantStore(providedBridge?: AssistantBridge): Assistan
           challenges: challenge
             ? [...state.challenges.filter((item) => item.challengeId !== challenge.challengeId), challenge]
             : state.challenges,
-          messages: state.streamingText
-            ? [...state.messages, { id: nextId('assistant'), role: 'assistant', text: state.streamingText }]
-            : state.messages,
-          streamingText: '',
         });
       };
-      stream.onToken?.(onToken);
-      stream.onDone?.(onDone);
-      stream.onError?.(onError);
+      const tokenCleanup = stream.onToken?.(onToken);
+      const doneCleanup = stream.onDone?.(onDone);
+      const errorCleanup = stream.onError?.(onError);
+      for (const candidate of [tokenCleanup, doneCleanup, errorCleanup]) {
+        if (typeof candidate === 'function') cleanups.push(candidate as () => void);
+      }
     } catch (error) {
-      if (id !== runId) return;
       activeStream = null;
-      update({
+      finalize({
         phase: 'error',
         canCancel: false,
         streamId: null,
         lastError: errorText(error),
       });
     }
+
   };
 
   return {
@@ -501,11 +562,16 @@ export function createAssistantStore(providedBridge?: AssistantBridge): Assistan
       const stream = activeStream;
       runId += 1;
       activeStream = null;
+      cancelActiveFlush();
+      detachActiveStream();
+      cancelActiveFlush = () => {};
+      detachActiveStream = () => {};
       update({
         phase: 'cancelled',
         canCancel: false,
         streamId: null,
         runningTool: null,
+        streamingText: '',
       });
       if (stream && typeof stream.cancel === 'function') await stream.cancel();
     },

@@ -81,8 +81,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('local-model:download-progress', handler);
   },
 
-  // ─── Projects ────────────────────────────────────────────────────────────
-  projectList: () => ipcRenderer.invoke('project:list'),
+  // No arguments preserve the legacy full project list; the optional page
+  // shape is used only by the virtualized sidebar.
+  projectList: (opts) => ipcRenderer.invoke('project:list', opts),
   projectSave: (project) => ipcRenderer.invoke('project:save', project),
   projectLoad: (opts) => ipcRenderer.invoke('project:load', opts),
   projectDelete: (opts) => ipcRenderer.invoke('project:delete', opts),

@@ -572,6 +572,56 @@ function validateOffset(value) {
   return value;
 }
 
+function validateJobQuery(value) {
+  if (value === undefined || value === null) return '';
+  if (typeof value !== 'string') {
+    throw createAppError('VALIDATION_FAILED', 'query must be a string.');
+  }
+  const query = value.trim();
+  if (query.length > 256) {
+    throw createAppError('VALIDATION_FAILED', 'query must be at most 256 characters.');
+  }
+  return query;
+}
+
+function escapeLike(value) {
+  return value.replace(/[\\%_]/g, '\\$&').toLowerCase();
+}
+
+function buildJobCriteria(options = {}) {
+  if (!isPlainObject(options)) {
+    throw createAppError('VALIDATION_FAILED', 'job list options must be an object.');
+  }
+  const clauses = [];
+  const values = [];
+  if (options.state !== undefined && !BATCH_JOB_STATES.includes(options.state)) {
+    throw createAppError('VALIDATION_FAILED', 'state filter is not supported.');
+  }
+  if (options.profileId !== undefined) requireId(options.profileId, 'profileId');
+  if (options.state !== undefined) {
+    clauses.push('state = ?');
+    values.push(options.state);
+  }
+  if (options.profileId !== undefined) {
+    clauses.push('profile_id = ?');
+    values.push(options.profileId);
+  }
+  const query = validateJobQuery(options.query);
+  if (query) {
+    const pattern = `%${escapeLike(query)}%`;
+    clauses.push(`(
+      LOWER(job_id) LIKE ? ESCAPE '\\'
+      OR LOWER(source_path) LIKE ? ESCAPE '\\'
+      OR LOWER(COALESCE(output_path, '')) LIKE ? ESCAPE '\\'
+      OR LOWER(state) LIKE ? ESCAPE '\\'
+      OR LOWER(phase) LIKE ? ESCAPE '\\'
+      OR LOWER(COALESCE(last_error, '')) LIKE ? ESCAPE '\\'
+    )`);
+    values.push(pattern, pattern, pattern, pattern, pattern, pattern);
+  }
+  return { clauses, values };
+}
+
 class BatchDomain {
   constructor(options = {}) {
     if (!isPlainObject(options)) options = {};
@@ -918,30 +968,24 @@ class BatchDomain {
   }
 
   listJobs(options = {}) {
-    if (!isPlainObject(options)) throw createAppError('VALIDATION_FAILED', 'job list options must be an object.');
     const limit = validateLimit(options.limit, 1000);
     const offset = validateOffset(options.offset);
-    if (options.state !== undefined && !BATCH_JOB_STATES.includes(options.state)) {
-      throw createAppError('VALIDATION_FAILED', 'state filter is not supported.');
-    }
-    if (options.profileId !== undefined) requireId(options.profileId, 'profileId');
     this._assertOpen();
-    const clauses = [];
-    const values = [];
-    if (options.state !== undefined) {
-      clauses.push('state = ?');
-      values.push(options.state);
-    }
-    if (options.profileId !== undefined) {
-      clauses.push('profile_id = ?');
-      values.push(options.profileId);
-    }
-    values.push(limit, offset);
-    const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+    const criteria = buildJobCriteria(options);
+    const values = [...criteria.values, limit, offset];
+    const where = criteria.clauses.length > 0 ? `WHERE ${criteria.clauses.join(' AND ')}` : '';
     const rows = this._db
       .prepare(`SELECT * FROM batch_jobs ${where} ORDER BY created_at ASC, job_id ASC LIMIT ? OFFSET ?`)
       .all(...values);
     return rows.map(jobFromRow);
+  }
+
+  countJobs(options = {}) {
+    this._assertOpen();
+    const criteria = buildJobCriteria(options);
+    const where = criteria.clauses.length > 0 ? `WHERE ${criteria.clauses.join(' AND ')}` : '';
+    const row = this._db.prepare(`SELECT COUNT(*) AS count FROM batch_jobs ${where}`).get(...criteria.values);
+    return Number(row?.count || 0);
   }
 
   /**

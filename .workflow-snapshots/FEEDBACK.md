@@ -1379,3 +1379,10 @@
 - **Gates**: `[x] P4.D2`; `[x] P4.J1`. P4.O1 remains open pending D3 performance evidence; P4.O2 and P4.J2 remain open.
 - **Closure**: product closure push follows this transaction with `.workflow-snapshots/{STATE.yaml,STEPS.md,FEEDBACK.md}`; outer canonical workflow root remains local-only.
 - **Next Step**: P4.D3 large-project optimization — performance budgets and virtualization discovery.
+
+## P4.D3 — Performance Budgets/Virtualization CLOSED
+- **Implementation**: performance contract harness with hard invariants and p95/ceiling budgets; sidecar-backed optional paged project:list preserving legacy no-argument listing; ProjectSidebar/chunk-grid virtualization with O(1) variable-window math and roving keyboard focus; batch incremental pagination with polling that preserves loaded pages; autosave identity/flush safeguards; assistant stream buffering and newest-100 bound; preview 64MiB stat-before-read cap; CI perf step with always-uploaded artifact.
+- **Review**: first round found five issues (chunk-grid positioning/off-window focus, polling wipe, tautological discriminators, missing close-path autosave flush, full-list allocation); CoderFix1 closed all five; delta Reviewer approved zero findings. Tester then found one deterministic a11y blocker (roving tab stop stranded on a locked chunk after End); CoderFix2 clamped navigation/focus/scroll/render to the last openable chunk with a DOM regression test.
+- **QA**: `P4D3Tester1` full gates green (focused 45/45, full suite 810/810, perf:ci 12 checks) with one a11y bug; `P4D3Tester2` confirmed the fix — focused 46/46, adversarial 36/36, original repro now exit-0. Main final: full suite **811/811**, compile clean, perf:ci **pass** (8 metrics, 12 checks, real negative discriminators, artifact with limitations metadata).
+- **Gates**: `[x] P4.D3`; `[x] P4.O1`; `[x] P4.J2`. P4.O2 remains open for D4/D5.
+- **Next Step**: P4.D4 cross-edition fixture suite — shared parity gate discovery.

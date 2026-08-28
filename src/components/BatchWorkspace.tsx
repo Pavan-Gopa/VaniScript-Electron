@@ -200,10 +200,16 @@ export function BatchQueueTable({
   jobs,
   selectedJobId,
   onSelect,
+  total = jobs.length,
+  hasMore = false,
+  onLoadMore,
 }: {
   jobs: readonly BatchJob[];
   selectedJobId: string | null;
   onSelect: (jobId: string) => void;
+  total?: number;
+  hasMore?: boolean;
+  onLoadMore?: () => void;
 }): React.ReactElement {
   const [scrollTop, setScrollTop] = useState(0);
   const virtual = getVirtualRows(jobs, scrollTop, VIEWPORT_HEIGHT, ROW_HEIGHT, 8);
@@ -224,7 +230,11 @@ export function BatchQueueTable({
       </div>
       <div
         data-testid="batch-queue-viewport"
-        onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+        onScroll={(event) => {
+          const node = event.currentTarget;
+          setScrollTop(node.scrollTop);
+          if (hasMore && onLoadMore && node.scrollTop + node.clientHeight >= node.scrollHeight - ROW_HEIGHT * 2) onLoadMore();
+        }}
         style={{ height: VIEWPORT_HEIGHT, overflowY: 'auto', border: '1px solid var(--bg-card-border)', borderRadius: 9, background: 'rgba(0,0,0,0.1)' }}
       >
         <div style={{ position: 'relative', height: virtual.totalHeight, minHeight: 56 }}>
@@ -240,7 +250,7 @@ export function BatchQueueTable({
           {jobs.length === 0 && <div style={{ padding: 28, color: 'var(--text-2)', textAlign: 'center', fontSize: 12 }}>No jobs match this view.</div>}
         </div>
       </div>
-      <span style={{ ...mutedStyle, paddingTop: 6 }}>{jobs.length.toLocaleString()} jobs · virtual window {virtual.start + 1}–{virtual.end}</span>
+      <span style={{ ...mutedStyle, paddingTop: 6 }}>{total.toLocaleString()} total · {jobs.length.toLocaleString()} loaded · virtual window {jobs.length > 0 ? `${virtual.start + 1}–${virtual.end}` : '—'}{hasMore ? ' · scroll to load more' : ''}</span>
     </div>
   );
 }
@@ -406,7 +416,14 @@ export function BatchWorkspace({ store = batchStore, onBack }: BatchWorkspacePro
         </aside>
 
         <main style={{ minWidth: 0, minHeight: 0, display: 'grid', alignContent: 'start' }}>
-          <BatchQueueTable jobs={visibleJobs} selectedJobId={state.selectedJobId} onSelect={(jobId) => void store.selectJob(jobId)} />
+          <BatchQueueTable
+            jobs={visibleJobs}
+            selectedJobId={state.selectedJobId}
+            onSelect={(jobId) => void store.selectJob(jobId)}
+            total={state.jobsTotal}
+            hasMore={state.jobsHasMore}
+            onLoadMore={() => void store.loadMoreJobs()}
+          />
         </main>
 
         <aside style={{ minWidth: 0, minHeight: 0, padding: 13, borderRadius: 10, border: '1px solid var(--bg-card-border)', background: 'rgba(255,255,255,0.035)' }}>

@@ -10,6 +10,7 @@
     "dev": "vite --port=3000 --host=0.0.0.0",
     "vite-build": "vite build",
     "compile": "tsc --noEmit",
+    "perf:ci": "node --expose-gc --import tsx scripts/run-p4d3-perf.mjs",
     "test": "node scripts/run-electron-tests.mjs",
     "electron": "npm run vite-build && npm run prepare-dev-branding && node_modules/electron/dist/Electron.app/Contents/MacOS/Electron .",
     "start": "npm run electron",

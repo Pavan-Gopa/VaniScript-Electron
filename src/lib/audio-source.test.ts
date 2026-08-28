@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { audioMimeTypeForPath, createObjectAudioUrl } from './audio-source';
+import { audioMimeTypeForPath, createObjectAudioUrl, revokeObjectAudioUrl } from './audio-source';
 
 test('audioMimeTypeForPath detects supported audio formats', () => {
   assert.equal(audioMimeTypeForPath('/tmp/example.wav'), 'audio/wav');
@@ -19,4 +19,10 @@ test('createObjectAudioUrl returns a blob URL instead of a file URL', () => {
   } finally {
     URL.revokeObjectURL(url);
   }
+});
+
+test('revokeObjectAudioUrl only releases blob preview URLs', () => {
+  const url = createObjectAudioUrl(new Uint8Array([1]), 'audio/wav');
+  assert.doesNotThrow(() => revokeObjectAudioUrl(url));
+  assert.doesNotThrow(() => revokeObjectAudioUrl('file:///tmp/recording.wav'));
 });

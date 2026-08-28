@@ -182,17 +182,17 @@
 **Do:**
 - [x] [P4.D1] Help/onboarding catalog: EN/RU search/context/tours
 - [x] [P4.D2] Usage/logging/diagnostics: redacted observability
-- [ ] [P4.D3] Large-project optimization: budgets/virtualization
+- [x] [P4.D3] Large-project optimization: budgets/virtualization
 - [ ] [P4.D4] Cross-edition fixture suite: shared parity gate
 - [ ] [P4.D5] Cross-platform E2E/packaging: release qualification
 
 ### Objective gates
-- [ ] [P4.O1] Secret/text leak tests pass; performance regression report within budgets
+- [x] [P4.O1] Secret/text leak tests pass; performance regression report within budgets
 - [ ] [P4.O2] Both editions pass shared fixtures; 3-OS release qualification report produced
 
 ### Judgment gates
 - [x] [P4.J1] Observability redacts secrets by default, not by opt-in
-- [ ] [P4.J2] Performance budgets are enforced, not only measured
+- [x] [P4.J2] Performance budgets are enforced, not only measured
 
 ## P5 — Release
 

@@ -35,8 +35,9 @@ const {
 } = require('./project-session');
 const { normalizeShortsSessionState } = require('../shared/shorts-state');
 const {
-  createStreamingBundleService,
-} = require('./main/projects/streamingBundle');
+  createProjectListService,
+} = require('./main/projects/projectList');
+const { createStreamingBundleService } = require('./main/projects/streamingBundle');
 const windowManager = require('./main/windows/window-manager');
 const { handleMigrateLegacy } = require('./main/storage/migrationHandler');
 const vault = require('./main/storage/vault.js');
@@ -81,6 +82,8 @@ windowManager.setLogger(safeLogger);
 vault.setLogger(safeLogger);
 safeLogger.info({ category: 'runtime', event: 'runtime.startup' });
 const safeErrorText = (error, code = 'INTERNAL') => safeIpcError(error, code).message;
+
+const PREVIEW_MAX_BYTES = 64 * 1024 * 1024;
 
 const recordingSessions = new Map();
 const linkImportJobs = new Map();
@@ -538,6 +541,14 @@ function listProjects() {
     .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 }
 
+const projectListService = createProjectListService({
+  projectsRootDir,
+  projectJsonPath: (id) => path.join(projectsRootDir(), safeName(id), 'project.json'),
+  projectSummaryPath: (id) => path.join(projectsRootDir(), safeName(id), 'project-summary.json'),
+  readProject,
+  projectSummary,
+});
+
 function saveProjectRecord(input) {
   const now = new Date().toISOString();
   const id = input.id || input.session?.projectId || newProjectId();
@@ -556,7 +567,16 @@ function saveProjectRecord(input) {
     screen: input.screen || 'review',
     session,
   };
-  fs.writeFileSync(projectJsonPath(id), JSON.stringify(project, null, 2), 'utf8');
+  const filePath = projectJsonPath(id);
+  const temporary = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  try {
+    fs.writeFileSync(temporary, JSON.stringify(project, null, 2), 'utf8');
+    fs.renameSync(temporary, filePath);
+  } catch (error) {
+    try { fs.rmSync(temporary, { force: true }); } catch { /* preserve original failure */ }
+    throw error;
+  }
+  projectListService.writeSummaryFile(project);
   return project;
 }
 
@@ -2127,11 +2147,28 @@ async function getSourceMediaInfoHelper(inputPath, originalURL, title, durationS
     return null;
   }
 }
-
-// ─── IPC: Read file as buffer (for Whisper) ───────────────────────────────────
-ipcMain.handle('fs:readFileBuffer', async (_, { filePath }) => {
+// ─── IPC: Read file as buffer (for Whisper and bounded previews) ────────────
+ipcMain.handle('fs:readFileBuffer', async (_, options = {}) => {
   try {
+    const filePath = options?.filePath;
+    const isPreview = options?.purpose === 'preview';
+    const requestedMax = options?.maxBytes;
+    const maxBytes = isPreview && Number.isSafeInteger(requestedMax) && requestedMax > 0
+      ? Math.min(PREVIEW_MAX_BYTES, requestedMax)
+      : PREVIEW_MAX_BYTES;
+    if (isPreview) {
+      const stat = fs.statSync(filePath);
+      if (!stat.isFile()) {
+        return { success: false, errorCode: 'NOT_FOUND', error: 'File is not a regular file.' };
+      }
+      if (stat.size > maxBytes) {
+        return { success: false, errorCode: 'PREVIEW_TOO_LARGE', error: 'Preview exceeds the 64 MiB limit.' };
+      }
+    }
     const buf = fs.readFileSync(filePath);
+    if (isPreview && buf.byteLength > maxBytes) {
+      return { success: false, errorCode: 'PREVIEW_TOO_LARGE', error: 'Preview exceeds the 64 MiB limit.' };
+    }
     const data = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
     return { success: true, data, byteOffset: 0, byteLength: buf.byteLength };
   } catch (e) {
@@ -2176,8 +2213,11 @@ ipcMain.handle('system:getMemoryInfo', () => ({
 }));
 
 // ─── IPC: Projects ─────────────────────────────────────────────────────────
-ipcMain.handle('project:list', async () => {
+ipcMain.handle('project:list', async (_event, options) => {
   try {
+    if (options !== undefined && options !== null) {
+      return { ok: true, ...projectListService.listPage(options) };
+    }
     return { ok: true, projects: listProjects() };
   } catch (error) {
     return { ok: false, error: safeErrorText(error) };
@@ -2293,6 +2333,9 @@ ipcMain.handle('project:import', async () => {
 
     // One hardened service call routes all four supported formats by content.
     const importedProjects = await streamingBundleService.importBundle(filePath);
+    for (const imported of importedProjects) {
+      if (imported?.id) projectListService.writeSummaryFile(imported);
+    }
     if (importedProjects[0]?.session) {
       importedProjects[0].session = normalizeShortsSessionState(importedProjects[0].session);
     }

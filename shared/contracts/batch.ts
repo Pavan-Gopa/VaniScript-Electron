@@ -43,6 +43,17 @@ export interface BatchJobsQuery {
   offset?: number;
   state?: BatchJobState;
   profileId?: string;
+  /** Bounded case-insensitive substring over job id, paths, state, phase, or last error. */
+  query?: string;
+}
+
+export interface BatchJobsPage {
+  jobs: BatchJob[];
+  limit: number;
+  offset: number;
+  total: number;
+  hasMore: boolean;
+  nextOffset: number | null;
 }
 
 export interface BatchJobDetails {

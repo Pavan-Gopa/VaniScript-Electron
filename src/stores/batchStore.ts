@@ -10,6 +10,17 @@ import {
   type BatchProfileInput,
   type BatchQueueSnapshot,
 } from '../../shared/contracts/batch.ts';
+import * as virtualWindowModule from '../lib/virtual-window.ts';
+import type { VirtualRows, VirtualWindow } from '../lib/virtual-window.ts';
+
+type VirtualWindowExports = {
+  getVirtualRows<T>(items: readonly T[], scrollTop: number, viewportHeight: number, rowHeight?: number, overscan?: number): VirtualRows<T>;
+  getVirtualWindow(itemCount: number, scrollTop: number, viewportHeight: number, rowHeight?: number, overscan?: number): VirtualWindow;
+};
+const moduleValue: unknown = 'default' in virtualWindowModule ? virtualWindowModule.default : virtualWindowModule;
+const virtualWindowExports = moduleValue as VirtualWindowExports;
+export const getVirtualRows = virtualWindowExports.getVirtualRows;
+export const getVirtualWindow = virtualWindowExports.getVirtualWindow;
 
 export interface BatchBridge {
   invoke<R = unknown>(method: string, args?: unknown): Promise<R>;
@@ -35,21 +46,21 @@ export interface BatchControlState {
   canResume: boolean;
   canDrain: boolean;
 }
-
-export interface VirtualWindow {
-  start: number;
-  end: number;
-  offsetTop: number;
-  totalHeight: number;
-}
-
-export interface VirtualRows<T> extends VirtualWindow {
-  rows: readonly T[];
+export interface BatchJobsPage {
+  jobs: readonly BatchJob[];
+  limit: number;
+  offset: number;
+  total: number;
+  hasMore: boolean;
+  nextOffset: number | null;
 }
 
 export interface BatchStoreSnapshot {
   profiles: readonly BatchProfile[];
   jobs: readonly BatchJob[];
+  jobsTotal: number;
+  jobsHasMore: boolean;
+  jobsNextOffset: number | null;
   issues: readonly BatchIssue[];
   selectedJobId: string | null;
   selectedDetails: BatchJobDetails | null;
@@ -66,6 +77,7 @@ export interface BatchStore {
   getState(): BatchStoreSnapshot;
   subscribe(listener: () => void): () => void;
   refresh(): Promise<void>;
+  loadMoreJobs(): Promise<void>;
   setFilter(filter: BatchFilter): void;
   setQuery(query: string): void;
   selectJob(jobId: string | null): Promise<void>;
@@ -81,6 +93,50 @@ export interface BatchStore {
   startPolling(intervalMs?: number): () => void;
 }
 
+const JOB_PAGE_LIMIT = 250;
+
+function filterState(filter: BatchFilter): BatchJob['state'] | undefined {
+  if (filter === 'pending' || filter === 'running' || filter === 'failed' || filter === 'cancelled') return filter;
+  if (filter === 'completed') return 'done';
+  if (filter === 'collision') return 'blockedOutputCollision';
+  return undefined;
+}
+
+function normalizePage(value: unknown): BatchJobsPage {
+  const record = asRecord(value);
+  const jobs = asJobs(value);
+  const limit = typeof record?.limit === 'number' && Number.isInteger(record.limit) && record.limit > 0
+    ? record.limit
+    : jobs.length;
+  const offset = typeof record?.offset === 'number' && Number.isInteger(record.offset) && record.offset >= 0
+    ? record.offset
+    : 0;
+  const total = typeof record?.total === 'number' && Number.isInteger(record.total) && record.total >= 0
+    ? record.total
+    : offset + jobs.length;
+  const nextOffset = typeof record?.nextOffset === 'number' && Number.isInteger(record.nextOffset) && record.nextOffset > offset
+    ? record.nextOffset
+    : null;
+  return {
+    jobs,
+    limit,
+    offset,
+    total,
+    hasMore: record?.hasMore === true || nextOffset !== null,
+    nextOffset,
+  };
+}
+
+function mergeHeadJobs(previous: readonly BatchJob[], page: BatchJobsPage): BatchJob[] {
+  const headCount = Math.max(page.limit, page.jobs.length);
+  const headIds = new Set(page.jobs.map((job) => job.jobId));
+  const retainedTail = previous
+    .slice(Math.min(headCount, previous.length))
+    .filter((job) => !headIds.has(job.jobId));
+  return [...page.jobs, ...retainedTail];
+}
+
+
 const EMPTY_SCHEDULER: BatchQueueSnapshot = {
   mode: 'stopped',
   activeJobId: null,
@@ -91,6 +147,9 @@ const EMPTY_SCHEDULER: BatchQueueSnapshot = {
 const INITIAL_STATE: BatchStoreSnapshot = {
   profiles: [],
   jobs: [],
+  jobsTotal: 0,
+  jobsHasMore: false,
+  jobsNextOffset: null,
   issues: [],
   selectedJobId: null,
   selectedDetails: null,
@@ -199,47 +258,17 @@ export function getBatchBadgeState(
   return scheduler.badge;
 }
 
-export function getVirtualWindow(
-  itemCount: number,
-  scrollTop: number,
-  viewportHeight: number,
-  rowHeight = 58,
-  overscan = 6,
-): VirtualWindow {
-  const count = Math.max(0, Math.floor(itemCount));
-  const height = Math.max(1, rowHeight);
-  const viewport = Math.max(1, viewportHeight);
-  const top = Math.max(0, Number.isFinite(scrollTop) ? scrollTop : 0);
-  const first = Math.min(count, Math.floor(top / height));
-  const visible = Math.ceil(viewport / height);
-  const start = Math.max(0, first - Math.max(0, Math.floor(overscan)));
-  const end = Math.min(count, first + visible + Math.max(0, Math.floor(overscan)));
-  return {
-    start,
-    end: Math.max(start, end),
-    offsetTop: start * height,
-    totalHeight: count * height,
-  };
-}
-
-export function getVirtualRows<T>(
-  items: readonly T[],
-  scrollTop: number,
-  viewportHeight: number,
-  rowHeight = 58,
-  overscan = 6,
-): VirtualRows<T> {
-  const window = getVirtualWindow(items.length, scrollTop, viewportHeight, rowHeight, overscan);
-  return { ...window, rows: items.slice(window.start, window.end) };
-}
 
 export function createBatchStore(providedBridge?: BatchBridge): BatchStore {
   const bridge = providedBridge ?? bridgeFromWindow();
   let state = INITIAL_STATE;
   const listeners = new Set<() => void>();
   let refreshToken = 0;
+  let jobsRequestToken = 0;
   let pollingTimer: ReturnType<typeof setInterval> | null = null;
   let pollingInFlight = false;
+  let loadingMore = false;
+  let queryTimer: ReturnType<typeof setTimeout> | null = null;
 
   const emit = () => {
     for (const listener of [...listeners]) listener();
@@ -252,29 +281,93 @@ export function createBatchStore(providedBridge?: BatchBridge): BatchStore {
     if (!bridge) throw new Error('Batch IPC bridge is unavailable.');
     return bridge.invoke<T>(method, args);
   };
+  const jobsArgs = (offset: number) => ({
+    limit: JOB_PAGE_LIMIT,
+    offset,
+    ...(filterState(state.filter) ? { state: filterState(state.filter) } : {}),
+    ...(state.query.trim() ? { query: state.query.trim() } : {}),
+  });
 
-  const refresh = async (): Promise<void> => {
+  const refresh = async ({ preserveLoadedJobs = false }: { preserveLoadedJobs?: boolean } = {}): Promise<void> => {
     const token = ++refreshToken;
-    update({ loading: true, error: null });
+    const requestToken = preserveLoadedJobs ? jobsRequestToken : ++jobsRequestToken;
+    if (!preserveLoadedJobs) {
+      loadingMore = false;
+      update({
+        loading: true,
+        error: null,
+        jobs: [],
+        jobsTotal: 0,
+        jobsHasMore: false,
+        jobsNextOffset: null,
+      });
+    } else {
+      update({ error: null });
+    }
     try {
       const [profilesResult, jobsResult, schedulerResult, issuesResult] = await Promise.all([
         invoke(BATCH_COMMANDS.listProfiles, { limit: 1000, offset: 0 }),
-        invoke(BATCH_COMMANDS.listJobs, { limit: 10000, offset: 0 }),
+        invoke(BATCH_COMMANDS.listJobs, jobsArgs(0)),
         invoke(BATCH_COMMANDS.getState),
         invoke(BATCH_COMMANDS.listIssues),
       ]);
-      if (token !== refreshToken) return;
-      update({
-        profiles: asProfiles(profilesResult),
-        jobs: asJobs(jobsResult),
-        scheduler: asScheduler(schedulerResult),
-        issues: asIssues(issuesResult),
-        loading: false,
-        lastUpdatedAt: new Date().toISOString(),
-      });
+      if (token !== refreshToken || requestToken !== jobsRequestToken) return;
+      const page = normalizePage(jobsResult);
+      if (preserveLoadedJobs) {
+        const previousJobs = state.jobs;
+        const headCount = Math.max(page.limit, page.jobs.length);
+        const hasLoadedTail = previousJobs.length > headCount;
+        update({
+          profiles: asProfiles(profilesResult),
+          jobs: mergeHeadJobs(previousJobs, page),
+          jobsTotal: page.total,
+          jobsHasMore: hasLoadedTail ? state.jobsHasMore : page.hasMore,
+          jobsNextOffset: hasLoadedTail ? state.jobsNextOffset : page.nextOffset,
+          scheduler: asScheduler(schedulerResult),
+          issues: asIssues(issuesResult),
+          loading: false,
+          lastUpdatedAt: new Date().toISOString(),
+        });
+      } else {
+        update({
+          profiles: asProfiles(profilesResult),
+          jobs: [...page.jobs],
+          jobsTotal: page.total,
+          jobsHasMore: page.hasMore,
+          jobsNextOffset: page.nextOffset,
+          scheduler: asScheduler(schedulerResult),
+          issues: asIssues(issuesResult),
+          loading: false,
+          lastUpdatedAt: new Date().toISOString(),
+        });
+      }
     } catch (error) {
       if (token !== refreshToken) return;
       update({ loading: false, error: errorText(error) });
+    }
+  };
+
+  const loadMoreJobs = async (): Promise<void> => {
+    if (loadingMore || !state.jobsHasMore || state.jobsNextOffset === null) return;
+    const offset = state.jobsNextOffset;
+    const requestToken = jobsRequestToken;
+    loadingMore = true;
+    try {
+      const page = normalizePage(await invoke(BATCH_COMMANDS.listJobs, jobsArgs(offset)));
+      if (requestToken !== jobsRequestToken || state.jobsNextOffset !== offset || page.offset !== offset) return;
+      const byId = new Map(state.jobs.map((job) => [job.jobId, job]));
+      for (const job of page.jobs) byId.set(job.jobId, job);
+      update({
+        jobs: [...byId.values()],
+        jobsTotal: page.total,
+        jobsHasMore: page.hasMore,
+        jobsNextOffset: page.nextOffset,
+        lastUpdatedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      if (requestToken === jobsRequestToken) update({ error: errorText(error) });
+    } finally {
+      loadingMore = false;
     }
   };
 
@@ -335,7 +428,7 @@ export function createBatchStore(providedBridge?: BatchBridge): BatchStore {
     const tick = () => {
       if (pollingInFlight) return;
       pollingInFlight = true;
-      void refresh().finally(() => { pollingInFlight = false; });
+      void refresh({ preserveLoadedJobs: true }).finally(() => { pollingInFlight = false; });
     };
     pollingTimer = setInterval(tick, Math.max(250, intervalMs));
     return () => {
@@ -351,8 +444,19 @@ export function createBatchStore(providedBridge?: BatchBridge): BatchStore {
       return () => listeners.delete(listener);
     },
     refresh,
-    setFilter: (filter) => update({ filter }),
-    setQuery: (query) => update({ query }),
+    loadMoreJobs,
+    setFilter: (filter) => {
+      update({ filter, jobs: [], jobsTotal: 0, jobsHasMore: false, jobsNextOffset: null });
+      void refresh();
+    },
+    setQuery: (query) => {
+      update({ query, jobs: [], jobsTotal: 0, jobsHasMore: false, jobsNextOffset: null });
+      if (queryTimer) clearTimeout(queryTimer);
+      queryTimer = setTimeout(() => {
+        queryTimer = null;
+        void refresh();
+      }, 150);
+    },
     selectJob,
     createProfile,
     pickFolder,

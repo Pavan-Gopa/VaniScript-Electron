@@ -7,6 +7,7 @@ import { activeWordIndex as getActiveWordIndex, cuesToKaraokeLines, hasInlineTim
 import { replaceSelectedText } from '../lib/text-revision';
 import { assistantStore } from '../stores/assistantStore';
 import { paneStore } from '../stores/paneStore';
+import { recordPerformance } from '../lib/performance';
 
 interface TextPanelProps {
   content: string;
@@ -205,16 +206,21 @@ export function TextPanel({
   };
 
   const saveEdit = () => {
+    const startedAt = typeof globalThis.performance?.now === 'function' ? globalThis.performance.now() : Date.now();
     const result = replaceSelectedText(content, {
       selectedText,
       replacementText: editValue,
       contextText: selectedContextText,
     });
-    if (result.changed) {
-      applyContentUpdate(result.text);
-    } else {
-      alert('Could not apply the edit. Try selecting a slightly larger phrase.');
-    }
+    const finishedAt = typeof globalThis.performance?.now === 'function' ? globalThis.performance.now() : Date.now();
+    recordPerformance({
+      name: 'text-panel.active-edit-commit',
+      durationMs: Math.max(0, finishedAt - startedAt),
+      status: result.changed ? 'pass' : 'fail',
+    });
+    if (!result.changed) return;
+    setUndoStack((stack) => [...stack.slice(-24), content]);
+    onUpdateContent(result.text);
     setIsEditing(false);
   };
 

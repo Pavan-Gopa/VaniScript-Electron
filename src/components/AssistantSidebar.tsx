@@ -198,7 +198,7 @@ export function AssistantSidebar({
           </div>
         ))}
 
-        <div className="chat-sidebar-messages">
+        <div className="chat-sidebar-messages" aria-busy={live || undefined} aria-live="polite">
           {state.messages.map((message) => (
             <div key={message.id} className={`chat-message-row ${message.role === 'assistant' ? 'assistant' : message.role}`}>
               <div className="chat-message-bubble">

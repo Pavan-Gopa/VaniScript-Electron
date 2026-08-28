@@ -58,6 +58,7 @@ import { IPC_DISPATCH_CHANNEL, type Command } from '../main/ipc/index.mts';
 import {
   BATCH_COMMANDS,
   type BatchJob,
+  type BatchJobsPage,
   type BatchJobsQuery,
   type BatchProfile,
   type BatchProfileInput,
@@ -203,7 +204,7 @@ export interface ElectronApi {
   getBatchState(): Promise<BatchQueueSnapshot>;
   listBatchProfiles(args?: { limit?: number; offset?: number; enabled?: boolean }): Promise<{ profiles: BatchProfile[] }>;
   createBatchProfile(args: BatchProfileInput): Promise<{ profile: BatchProfile }>;
-  listBatchJobs(args?: BatchJobsQuery): Promise<{ jobs: BatchJob[]; limit: number; offset: number; hasMore: boolean; nextOffset: number | null }>;
+  listBatchJobs(args?: BatchJobsQuery): Promise<BatchJobsPage>;
   getBatchJobDetails(args: { jobId: string }): Promise<BatchJobDetails>;
   scanBatch(): Promise<unknown>;
   startBatch(): Promise<BatchQueueSnapshot>;
@@ -341,7 +342,7 @@ export function createTypedIpcBridge(
     createBatchProfile: (args) =>
       invoke<{ profile: BatchProfile }>(BATCH_COMMANDS.createProfile, args),
     listBatchJobs: (args) =>
-      invoke<{ jobs: BatchJob[]; limit: number; offset: number; hasMore: boolean; nextOffset: number | null }>(
+      invoke<BatchJobsPage>(
         BATCH_COMMANDS.listJobs,
         args,
       ),

@@ -1230,15 +1230,34 @@ Route монтирует только нужный feature tree. Нельзя д
 
 ### 16.3. Performance gates
 
-Тестовые наборы:
+Deterministic fixtures and hard limits:
 
-- 500 media chunks;
-- document 100 000+ words/10 000 blocks;
-- 10 000 batch jobs;
-- 100 projects;
-- long-running assistant stream.
+| Probe | Fixture | p95 target | Absolute ceiling |
+|---|---:|---:|---:|
+| Project first-page projection/renderer commit | 100 projects | 100 ms | 200 ms |
+| Route feature-tree switch | project ↔ batch | 200 ms | 400 ms |
+| Initial document block-window projection | 10,000 blocks / 100,000 words | 250 ms | 500 ms |
+| Active TextPanel edit commit | one active chunk | 16.7 ms | 50 ms |
+| Virtual-list scroll update/commit | project/chunk/batch | 16.7 ms | 50 ms |
+| Opening/cloning a media project | 500 chunks | 128 MiB heap delta | 192 MiB |
+| Assistant stream UI flush | 20,000 deterministic fragments | 16.7 ms | 50 ms |
 
-Зафиксировать budgets для route switch, typing latency, scroll, initial projection и memory. Конкретные цифры утверждаются после baseline profiling, но regression threshold должен стать CI artifact.
+The fixture suite also covers 10,000 batch jobs and 100 projects. Each paged
+project response is at most 50 summaries and 262,144 UTF-8 bytes; each Batch
+page is at most 250 jobs and 1,048,576 UTF-8 bytes. The project sidebar has at
+most 32 outer item roots and 56 expanded chunk buttons; Batch queue rendering
+stays below 40 rows; document projections stay at 80 block rows; preview
+fallbacks refuse files above 64 MiB; assistant UI history retains 100 messages.
+All page responses expose `total`, `offset`, `hasMore`, and `nextOffset`.
+
+`npm run perf:ci` runs two warmups and nine measured samples, writes the
+machine-readable `artifacts/p4d3-performance.json`, and fails CI on missing
+metrics/artifact, any hard-limit violation, p95 target breach, or absolute
+ceiling breach. The artifact contains only counts, byte sizes, durations,
+statuses, and versions—never fixture text, paths, secrets, prompts, or full
+state. It runs with `node --expose-gc`; inability to collect the heap metric is
+a failure rather than a silent pass. Node/jsdom timings are renderer
+projection/commit proxies, not GPU compositor measurements.
 
 ### 16.4. Accessibility
 

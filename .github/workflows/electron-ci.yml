@@ -31,9 +31,19 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Run P4D3 performance budgets
+        run: npm run perf:ci
+
+      - name: Upload P4D3 performance artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p4d3-performance-${{ matrix.os }}
+          path: artifacts/p4d3-performance.json
+          if-no-files-found: error
+
       - name: Run tests
         run: npm test
-
       - name: Build (package, no signing)
         # CSC_IDENTITY_AUTO_DISCOVERY=false disables macOS code signing so the
         # dir-target build stays unsigned and reproducible in CI.

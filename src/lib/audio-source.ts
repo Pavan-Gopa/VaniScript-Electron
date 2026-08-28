@@ -27,3 +27,7 @@ export function audioMimeTypeForPath(filePath: string): string {
 export function createObjectAudioUrl(bytes: Uint8Array, mimeType: string): string {
   return URL.createObjectURL(new Blob([bytes], { type: mimeType }));
 }
+
+export function revokeObjectAudioUrl(url: string): void {
+  if (typeof url === 'string' && url.startsWith('blob:')) URL.revokeObjectURL(url);
+}

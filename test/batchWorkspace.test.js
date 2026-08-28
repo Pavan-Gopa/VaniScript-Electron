@@ -98,8 +98,53 @@ test('Batch store uses IPC projections and does not persist queue state locally'
   assert.equal(store.getState().selectedDetails.job.jobId, 'job-1');
   store.setFilter('running');
   assert.equal(store.getState().filter, 'running');
-  assert.equal(Object.keys(globalThis).some((key) => key.toLowerCase().includes('localstorage')), false);
-  assert.ok(calls.some(({ method }) => method === BATCH_COMMANDS.listJobs));
+  const listJobCalls = calls.filter(({ method }) => method === BATCH_COMMANDS.listJobs);
+  assert.ok(listJobCalls.some(({ args }) => args.limit === 250 && args.offset === 0));
+  assert.equal(listJobCalls.some(({ args }) => args.limit === 10_000), false);
+});
+
+test('polling replaces the head page without dropping loaded jobs or failure badge', async () => {
+  const { BATCH_COMMANDS } = await import(BATCH);
+  const { createBatchStore, getBatchBadgeState } = await import(STORE);
+  const firstPage = Array.from({ length: 250 }, (_, index) => job({ jobId: `head-${index}` }));
+  const appendedPage = Array.from({ length: 250 }, (_, index) => job({
+    jobId: `tail-${index}`,
+    state: index === 50 ? 'failed' : 'pending',
+    lastError: index === 50 ? 'fixture failure' : null,
+  }));
+  let polledHead = firstPage;
+  const listJobsCalls = [];
+  const api = {
+    invoke: async (method, args) => {
+      if (method === BATCH_COMMANDS.listProfiles) return { profiles: [] };
+      if (method === BATCH_COMMANDS.listJobs) {
+        listJobsCalls.push(args);
+        if (args.offset === 0) return { jobs: polledHead, limit: 250, offset: 0, total: 750, hasMore: true, nextOffset: 250 };
+        return { jobs: appendedPage, limit: 250, offset: 250, total: 750, hasMore: true, nextOffset: 500 };
+      }
+      if (method === BATCH_COMMANDS.getState) return { mode: 'stopped', activeJobId: null, badge: 'idle', updatedAt: 'now' };
+      if (method === BATCH_COMMANDS.listIssues) return { issues: [] };
+      return { ok: true };
+    },
+  };
+  const store = createBatchStore(api);
+  await store.refresh();
+  await store.loadMoreJobs();
+  assert.equal(store.getState().jobs.length, 500);
+  assert.equal(store.getState().jobsNextOffset, 500);
+
+  polledHead = firstPage.map((item, index) => index === 0 ? job({ jobId: item.jobId, state: 'running' }) : item);
+  const stopPolling = store.startPolling(250);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  stopPolling();
+
+  const state = store.getState();
+  assert.ok(listJobsCalls.some((args) => args.offset === 0 && listJobsCalls.indexOf(args) >= 2));
+  assert.equal(state.jobs.length, 500);
+  assert.equal(state.jobsNextOffset, 500);
+  assert.equal(state.jobs.find((item) => item.jobId === 'head-0').state, 'running');
+  assert.equal(state.jobs.find((item) => item.jobId === 'tail-50').state, 'failed');
+  assert.equal(getBatchBadgeState(state.scheduler, state.jobs), 'failed');
 });
 
 test('10k-row projection renders a bounded virtual DOM window in jsdom', async () => {

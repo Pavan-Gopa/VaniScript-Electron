@@ -232,6 +232,17 @@ export interface ProjectSummary {
   sourceMediaInfo?: SourceMediaInfo;
 }
 
+export interface ProjectSummaryPage {
+  ok: boolean;
+  projects?: ProjectSummary[];
+  limit?: number;
+  offset?: number;
+  total?: number;
+  hasMore?: boolean;
+  nextOffset?: number | null;
+  error?: string;
+}
+
 // Window extension for Electron API
 declare global {
   interface Window {
@@ -247,7 +258,18 @@ declare global {
       writeTempTextFile: (opts: { fileName: string; content: string }) => Promise<{ success: boolean; filePath?: string; error?: string }>;
       createTempPath: (opts: { fileName: string }) => Promise<{ success: boolean; filePath?: string; error?: string }>;
       readTextFile: (opts: { filePath: string }) => Promise<{ success: boolean; content?: string; error?: string }>;
-      readFileBuffer: (opts: { filePath: string }) => Promise<any>;
+      readFileBuffer: (opts: {
+        filePath: string;
+        purpose?: 'preview';
+        maxBytes?: number;
+      }) => Promise<{
+        success: boolean;
+        data: ArrayBuffer;
+        byteOffset: number;
+        byteLength: number;
+        error?: string;
+        errorCode?: string;
+      }>;
       pathToFileUrl: (opts: { filePath: string }) => Promise<{ success: boolean; url?: string; error?: string }>;
       recordingStart: (opts: { mimeType?: string; fileBaseName?: string }) => Promise<{ success: boolean; sessionId?: string; error?: string }>;
       recordingAppendChunk: (opts: { sessionId: string; chunk: ArrayBuffer }) => Promise<{ success: boolean; bytes?: number; error?: string }>;
@@ -389,7 +411,7 @@ declare global {
           fileName?: string | null;
         }) => void
       ) => () => void;
-      projectList: () => Promise<{ ok: boolean; projects?: ProjectSummary[]; error?: string }>;
+      projectList: (opts?: { limit?: number; offset?: number }) => Promise<ProjectSummaryPage>;
       projectSave: (project: any) => Promise<{ ok: boolean; project?: any; error?: string }>;
       projectLoad: (opts: { id: string }) => Promise<{ ok: boolean; project?: any; error?: string }>;
       projectDelete: (opts: { id: string }) => Promise<{ ok: boolean; error?: string }>;

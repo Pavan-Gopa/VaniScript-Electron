@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const projectPath = (...parts: string[]) => path.join(process.cwd(), ...parts);
-const appSource = () => fs.readFileSync(projectPath('src', 'App.tsx'), 'utf8');
-const cssSource = () => fs.readFileSync(projectPath('src', 'index.css'), 'utf8');
+const componentPath = (...parts: string[]) => path.join(process.cwd(), ...parts);
+const sidebarSource = () => fs.readFileSync(componentPath('src', 'components', 'ProjectSidebar.tsx'), 'utf8');
+const cssSource = () => fs.readFileSync(componentPath('src', 'index.css'), 'utf8');
 
 function cssRule(selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -13,7 +13,7 @@ function cssRule(selector: string): string {
 }
 
 test('project source media card renders above the chunk grid in the expanded sidebar item', () => {
-  const source = appSource();
+  const source = sidebarSource();
 
   assert.match(source, /className="project-expanded-body"/);
   assert.match(source, /className="project-media-card"/);

@@ -1,3 +1,9 @@
+export {
+  getChunkRowWindow,
+  getVariableVirtualWindow,
+  includeIndexInVirtualWindow,
+} from './virtual-window';
+
 export function projectChunkNumbers(totalChunks: number): number[] {
   const count = Math.max(0, Math.floor(totalChunks));
   return Array.from({ length: count }, (_, index) => index + 1);

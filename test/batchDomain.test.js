@@ -195,6 +195,19 @@ test('profile CRUD validates edges and refuses deletion with queued jobs', (t) =
   assert.throws(() => domain.createProfile({ name: '', sourcePath: '/tmp/x' }), (error) => error.code === 'VALIDATION_FAILED');
 });
 
+test('paged jobs search escaped substrings across every filter field', (t) => {
+  const { dbPath } = makeTempStore(t);
+  const domain = openDomain(t, dbPath);
+  domain.createProfile(profileInput());
+  domain.enqueueJob(jobInput('profile-main', { jobId: 'job-alpha', sourcePath: '/Volumes/Media/Lectures/lecture.m4a' }));
+  domain.enqueueJob(jobInput('profile-main', { jobId: 'job-beta', sourcePath: '/Volumes/Media/Other/100%_literal.m4a', outputPath: '/Volumes/Media/Other/100%_literal.txt' }));
+  const page = domain.listJobs({ limit: 1, offset: 0, query: 'lecture' });
+  assert.equal(page.length, 1);
+  assert.equal(page[0].jobId, 'job-alpha');
+  assert.equal(domain.countJobs({ query: 'lecture' }), 1);
+  assert.equal(domain.listJobs({ query: '%' }).length, 1);
+});
+
 test('enqueue transaction rolls back a forced mid-write failure', (t) => {
   const { dbPath } = makeTempStore(t);
   const domain = openDomain(t, dbPath);

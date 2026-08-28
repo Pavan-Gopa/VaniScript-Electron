@@ -1,0 +1,215 @@
+{
+  "schemaVersion": 1,
+  "status": "pass",
+  "fixtures": {
+    "projects": 100,
+    "chunks": 500,
+    "batchJobs": 10000,
+    "documentWords": 100000,
+    "assistantFragments": 20000
+  },
+  "budgets": {
+    "projectSummaryPageLimit": 50,
+    "projectSummaryPageBytes": 262144,
+    "projectOuterDomNodes": 32,
+    "expandedChunkDomNodes": 56,
+    "batchRequestLimit": 250,
+    "batchQueueDomRows": 40,
+    "p95BatchPageMs": 160,
+    "batchPageBytes": 1048576,
+    "documentProjectionRows": 80,
+    "previewMaxBytes": 67108864,
+    "assistantMessageLimit": 100,
+    "assistantFlushWindowMs": 16.7,
+    "autosaveDebounceMs": 900,
+    "p95ProjectFirstPageMs": 100,
+    "p95RouteSwitchMs": 200,
+    "p95DocumentProjectionMs": 250,
+    "p95ActiveEditCommitMs": 16.7,
+    "p95VirtualScrollMs": 16.7,
+    "p95AssistantFlushMs": 16.7,
+    "mediaCloneHeapBytes": 134217728
+  },
+  "metrics": [
+    {
+      "name": "project-first-page",
+      "fixtureScale": 100,
+      "samples": 9,
+      "p95Ms": 1.12,
+      "ceilingMs": 1.12,
+      "targetMs": 100,
+      "absoluteCeilingMs": 200,
+      "status": "pass"
+    },
+    {
+      "name": "project-route-switch",
+      "fixtureScale": 100,
+      "samples": 9,
+      "p95Ms": 0.012,
+      "ceilingMs": 0.012,
+      "targetMs": 200,
+      "absoluteCeilingMs": 400,
+      "status": "pass"
+    },
+    {
+      "name": "batch-page-250",
+      "fixtureScale": 10000,
+      "samples": 9,
+      "p95Ms": 0.007,
+      "ceilingMs": 0.007,
+      "targetMs": 160,
+      "absoluteCeilingMs": 320,
+      "status": "pass"
+    },
+    {
+      "name": "document-projection",
+      "fixtureScale": 100000,
+      "samples": 9,
+      "p95Ms": 0.001,
+      "ceilingMs": 0.001,
+      "targetMs": 250,
+      "absoluteCeilingMs": 500,
+      "status": "pass"
+    },
+    {
+      "name": "active-edit-commit",
+      "fixtureScale": 500,
+      "samples": 9,
+      "p95Ms": 0.097,
+      "ceilingMs": 0.097,
+      "targetMs": 16.7,
+      "absoluteCeilingMs": 50,
+      "status": "pass"
+    },
+    {
+      "name": "virtual-scroll",
+      "fixtureScale": 500,
+      "samples": 9,
+      "p95Ms": 0.001,
+      "ceilingMs": 0.001,
+      "targetMs": 16.7,
+      "absoluteCeilingMs": 50,
+      "status": "pass"
+    },
+    {
+      "name": "assistant-flush",
+      "fixtureScale": 20000,
+      "samples": 9,
+      "p95Ms": 2.149,
+      "ceilingMs": 2.149,
+      "targetMs": 16.7,
+      "absoluteCeilingMs": 50,
+      "status": "pass"
+    },
+    {
+      "name": "media-project-heap-delta",
+      "fixtureScale": 500,
+      "samples": 1,
+      "heapDeltaBytes": 59304,
+      "targetBytes": 134217728,
+      "absoluteCeilingBytes": 201326592,
+      "status": "pass"
+    }
+  ],
+  "checks": [
+    {
+      "name": "heap-metric-available",
+      "status": "pass"
+    },
+    {
+      "name": "heap-delta-500-chunks",
+      "status": "pass",
+      "fixtureScale": 500,
+      "heapDeltaBytes": 59304,
+      "targetBytes": 134217728,
+      "ceilingBytes": 201326592
+    },
+    {
+      "name": "bounded-dom-and-page-invariants",
+      "status": "pass",
+      "projectDomNodes": 8,
+      "chunkDomNodes": 22,
+      "batchRequestLimit": 250,
+      "batchDomRows": 16,
+      "documentRows": 80,
+      "assistantMessages": 100,
+      "previewBytes": 67108864
+    },
+    {
+      "name": "project-page-count",
+      "status": "pass",
+      "count": 50,
+      "limit": 50
+    },
+    {
+      "name": "project-page-bytes",
+      "status": "pass",
+      "bytes": 20801,
+      "ceilingBytes": 262144
+    },
+    {
+      "name": "batch-page-bytes",
+      "status": "pass",
+      "bytes": 37496,
+      "ceilingBytes": 1048576
+    },
+    {
+      "name": "required-fixture-scales",
+      "status": "pass",
+      "projects": 100,
+      "chunks": 500,
+      "batchJobs": 10000,
+      "documentWords": 100000,
+      "assistantFragments": 20000
+    },
+    {
+      "name": "required-metrics",
+      "status": "pass"
+    },
+    {
+      "name": "negative-legacy-unbounded-project-map",
+      "status": "pass",
+      "observedCount": 100,
+      "gatePassed": false
+    },
+    {
+      "name": "negative-legacy-unbounded-chunk-map",
+      "status": "pass",
+      "observedCount": 500,
+      "gatePassed": false
+    },
+    {
+      "name": "negative-legacy-batch-limit-10000",
+      "status": "pass",
+      "observedLimit": 10000,
+      "gatePassed": false
+    },
+    {
+      "name": "artifact-redaction",
+      "status": "pass"
+    }
+  ],
+  "negativeDiscriminators": [
+    {
+      "name": "legacy-unbounded-project-map",
+      "observedCount": 100,
+      "gatePassed": false,
+      "detected": true
+    },
+    {
+      "name": "legacy-unbounded-chunk-map",
+      "observedCount": 500,
+      "gatePassed": false,
+      "detected": true
+    },
+    {
+      "name": "legacy-batch-limit-10000",
+      "observedLimit": 10000,
+      "gatePassed": false,
+      "detected": true
+    }
+  ],
+  "limitations": {
+    "proxy": "Node perf_hooks and deterministic projection probes; not GPU compositor timing or packaged Electron process memory."
+  }
+}

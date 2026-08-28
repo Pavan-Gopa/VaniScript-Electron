@@ -148,6 +148,39 @@ test('store FSM records provider errors without leaving an active stream', async
   assert.equal(store.getState().canCancel, false);
 });
 
+test('buffered long streams flush joined fragments and retain newest 100 messages', async () => {
+  const { createAssistantStore, MAX_ASSISTANT_MESSAGES } = await loadStore();
+  let stream = createMockStream();
+  const store = createAssistantStore({ start: () => { stream = createMockStream(); return stream; } });
+  store.setDraft('long stream');
+  await store.send();
+  const fragments = Array.from({ length: 20 }, (_, index) => `fragment-${index} `);
+  for (const fragment of fragments) stream.emit('token', fragment);
+  await sleep(25);
+  stream.emit('done', {});
+  assert.equal(store.getState().messages.at(-1).text, fragments.join(''));
+
+  store.setDraft('cancel buffered');
+  await store.send();
+  stream.emit('token', 'one');
+  stream.emit('token', 'two');
+  stream.emit('token', 'three');
+  stream.emit('token', 'four');
+  stream.emit('token', 'five');
+  await store.cancel();
+  await sleep(25);
+  assert.equal(store.getState().phase, 'cancelled');
+  assert.equal(store.getState().streamingText, '');
+
+  for (let index = 0; index < 55; index += 1) {
+    store.setDraft(`message-${index}`);
+    await store.send();
+    stream.emit('done', { output: `reply-${index}` });
+  }
+  assert.ok(store.getState().messages.length <= MAX_ASSISTANT_MESSAGES);
+  assert.equal(store.getState().messages.at(-1).text, 'reply-54');
+});
+
 test('J2 cancel path reaches AgentStream.cancel and leaves no orphaned stream', async (t) => {
   const { createAssistantStore } = await loadStore();
   let firstChunkSent = false;

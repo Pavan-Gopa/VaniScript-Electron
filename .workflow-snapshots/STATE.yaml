@@ -5,11 +5,11 @@ onboarding:
   model_pairs_confirmed: true
   completed_at: 2026-08-21T00:00:00Z
 current_step: P4
-current_work_item_id: P4.D3
-current_work_item: P4.D3 large-project optimization — performance budgets and virtualization discovery.
+current_work_item_id: P4.D4
+current_work_item: P4.D4 cross-edition fixture suite — shared parity gate discovery.
 step_description: >-
-  P0-P3E complete; P4.D1 and P4.D2 closed. Active pointer P4.D3 large-project
-  performance budgets/virtualization; P4.O1/O2/J2 remain open.
+  P0-P3E complete; P4.D1-D3 closed incl. O1/J1/J2. Active pointer P4.D4 shared
+  parity fixtures; P4.O2 remains open.
 completed_steps:
   - P0
   - P1
@@ -25,19 +25,19 @@ implementation:
   status: discovery_pending
   attempts: 0
   note: >-
-    P4.D2 closed after final Reviewer approval, Tester qa_green, and Main
-    independent 797/797 verification. Advancing transactionally to P4.D3.
+    P4.D3 closed after final Tester confirmation. Advancing transactionally to
+    P4.D4 discovery; closure push follows.
   target_files: []
 retry_guard:
   omp:
-    last_result_artifact: history://P4D2Tester1
+    last_result_artifact: history://P4D3Tester2
     active_agent: null
     active_role: null
     status: idle
   role: scout
   primary_agent: scout
-  evidence: history://P4D2Tester1
-  omp_status_note: p4_d2_closed_p4_d3_discovery_pending
+  evidence: history://P4D3Tester2
+  omp_status_note: p4_d3_closed_p4_d4_discovery_pending
 standing_order:
     «продолжать в том же духе до победного конца — полностью все шаги».
     Main runs the full remaining plan continuously: P3B.D1..D6, P3C.D1..D5,

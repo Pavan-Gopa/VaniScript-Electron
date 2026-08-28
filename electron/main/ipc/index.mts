@@ -52,7 +52,7 @@ import {
   type BatchIssue,
   type BatchJob,
   type BatchJobDetails,
-  type BatchJobsQuery,
+  type BatchJobsPage,
   type BatchProfile,
   type BatchProfileInput,
   type BatchQueueSnapshot,
@@ -380,6 +380,7 @@ export interface BatchDomainAdapter {
   listProfiles(options?: Record<string, unknown>): BatchProfile[];
   createProfile(input: BatchProfileInput): BatchProfile;
   listJobs(options?: BatchJobsQuery): BatchJob[];
+  countJobs?(options?: BatchJobsQuery): number;
   getJob(jobId: string): BatchJob;
   listCheckpoints(jobId: string): unknown[];
   listEvents(jobId: string, options?: Record<string, unknown>): unknown[];
@@ -445,6 +446,12 @@ function batchOffset(value: unknown): number {
     throw createAppError('VALIDATION_FAILED', 'offset must be a non-negative integer.');
   }
   return value;
+}
+
+const BATCH_PAGE_MAX_BYTES = 1024 * 1024;
+
+function batchPageByteLength(page: BatchJobsPage): number {
+  return new TextEncoder().encode(JSON.stringify(page)).byteLength;
 }
 
 function schedulerMode(scheduler: BatchSchedulerAdapter): BatchSchedulerMode {
@@ -525,19 +532,38 @@ export function createBatchHandlers(options: BatchHandlerOptions = {}): IpcHandl
       if (input.state !== undefined && !BATCH_JOB_STATES.includes(input.state as BatchJob['state'])) {
         throw createAppError('VALIDATION_FAILED', 'state filter is not supported.');
       }
-      const jobs = domain.listJobs({
+      if (input.query !== undefined && (typeof input.query !== 'string' || input.query.length > 256)) {
+        throw createAppError('VALIDATION_FAILED', 'query must be a string of at most 256 characters.');
+      }
+      const query = typeof input.query === 'string' ? input.query.trim() : undefined;
+      const criteria: BatchJobsQuery = {
         limit,
         offset,
         ...(input.profileId === undefined ? {} : { profileId: input.profileId as string }),
         ...(input.state === undefined ? {} : { state: input.state as BatchJob['state'] }),
-      });
-      return {
-        jobs,
-        limit,
-        offset,
-        hasMore: jobs.length === limit,
-        nextOffset: jobs.length === limit ? offset + jobs.length : null,
+        ...(query ? { query } : {}),
       };
+      const loaded = domain.listJobs(criteria);
+      const total = typeof domain.countJobs === 'function'
+        ? domain.countJobs(criteria)
+        : offset + loaded.length + (loaded.length === limit ? 1 : 0);
+      let jobs = loaded.slice(0, limit);
+      const buildPage = (items: BatchJob[]): BatchJobsPage => {
+        const hasMore = offset + items.length < total;
+        return {
+          jobs: items,
+          limit,
+          offset,
+          total,
+          hasMore,
+          nextOffset: hasMore ? offset + items.length : null,
+        };
+      };
+      while (jobs.length > 0 && batchPageByteLength(buildPage(jobs)) > BATCH_PAGE_MAX_BYTES) jobs = jobs.slice(0, -1);
+      if (loaded.length > 0 && jobs.length === 0) {
+        throw createAppError('PAYLOAD_TOO_LARGE', 'Batch page exceeds the 1 MiB payload limit.');
+      }
+      return buildPage(jobs);
     },
     [BATCH_COMMANDS.getJobDetails]: (args) => {
       const jobId = batchJobId(args);
