@@ -35,13 +35,11 @@ export function resolvePackagedExecutable(platform = process.platform): string {
 
   if (platform === 'linux') {
     const root = path.join(release, 'linux-unpacked');
-    const executable = firstEntry(root, (entry) => entry.isFile() && entry.name === 'VaniScript-Electron')
-      ?? firstEntry(root, (entry) => (
-        entry.isFile()
-        && !entry.name.endsWith('.pak')
-        && !entry.name.includes('chrome-sandbox')
-        && (fs.statSync(path.join(root, entry.name)).mode & 0o111) !== 0
-      ));
+    const executable = firstEntry(root, (entry) => (
+      entry.isFile()
+      && ['vaniscript', 'VaniScript-Electron'].includes(entry.name)
+      && (fs.statSync(path.join(root, entry.name)).mode & 0o111) !== 0
+    ));
     if (!executable) throw new Error(`No Linux packaged executable found under ${root}; run npm run pack first.`);
     return path.join(root, executable);
   }

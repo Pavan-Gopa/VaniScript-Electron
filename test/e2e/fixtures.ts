@@ -1,4 +1,4 @@
-import type { ChildProcess } from 'node:child_process';
+import { spawnSync, type ChildProcess } from 'node:child_process';
 import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -49,10 +49,22 @@ const promiseWithResolvers = <T>(): PromiseWithResolvers<T> => (
 
 const waitForDuration = (durationMs: number): Promise<void> => {
   const { promise, resolve } = promiseWithResolvers<void>();
-  const timer = setTimeout(resolve, durationMs);
-  timer.unref?.();
+  setTimeout(resolve, durationMs);
   return promise;
 };
+
+export function killElectronProcess(child: ChildProcess): void {
+  if (process.platform === 'win32') {
+    if (child.pid === undefined) return;
+    try {
+      spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+    } catch {
+      child.kill('SIGKILL');
+    }
+    return;
+  }
+  child.kill('SIGKILL');
+}
 
 async function waitForProcessExit(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
@@ -73,7 +85,6 @@ async function waitForProcessExit(child: ChildProcess): Promise<void> {
     () => settle(new Error(`Timed out waiting for Electron process exit after ${WINDOWS_EXIT_TIMEOUT_MS}ms`)),
     WINDOWS_EXIT_TIMEOUT_MS,
   );
-  timeout.unref?.();
 
   child.once('exit', onExit);
   if (child.exitCode !== null || child.signalCode !== null) settle();
@@ -157,7 +168,6 @@ export async function closeElectron(app: ElectronApplication): Promise<void> {
     timedOut = true;
     resolveCloseTimeout('timeout');
   }, CLOSE_TIMEOUT_MS);
-  closeTimer.unref?.();
   try {
     await Promise.race([guardedClose, closeTimeout]);
   } catch (error) {
@@ -166,9 +176,13 @@ export async function closeElectron(app: ElectronApplication): Promise<void> {
   } finally {
     clearTimeout(closeTimer);
   }
-  if (child.exitCode === null && child.signalCode === null && !child.killed) {
+  if (
+    child.exitCode === null
+    && child.signalCode === null
+    && (process.platform === 'win32' || !child.killed)
+  ) {
     try {
-      child.kill('SIGKILL');
+      killElectronProcess(child);
     } catch {
       // The process can exit between the state check and kill on teardown.
     }
@@ -316,18 +330,34 @@ export async function saveSeedProject(page: Page, session: ReviewSession, screen
 export const test = base.extend<E2EFixtures>({
   profile: async ({}, use) => {
     const profile = await createProfile();
+    let testFailed = false;
     try {
       await use(profile);
+    } catch (error) {
+      testFailed = true;
+      throw error;
     } finally {
-      removeProfile(profile);
+      try {
+        removeProfile(profile);
+      } catch (cleanupError) {
+        if (!testFailed) throw cleanupError;
+      }
     }
   },
   electronApp: async ({ profile }, use) => {
     const app = await launchForProfile(profile);
+    let testFailed = false;
     try {
       await use(app);
+    } catch (error) {
+      testFailed = true;
+      throw error;
     } finally {
-      await closeElectron(app);
+      try {
+        await closeElectron(app);
+      } catch (cleanupError) {
+        if (!testFailed) throw cleanupError;
+      }
     }
   },
   page: async ({ electronApp }, use) => {

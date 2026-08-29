@@ -2,6 +2,7 @@ import {
   closeElectron,
   expect,
   firstWindow,
+  killElectronProcess,
   launchForProfile,
   makeReviewSession,
   saveSeedProject,
@@ -37,10 +38,10 @@ test('abrupt main-process exit leaves the last project checkpoint recoverable', 
   const editor = page.getByRole('textbox');
   await expect(editor).toBeVisible();
   await editor.fill('Revision interrupted by crash.');
-  electronApp.process().kill('SIGKILL');
+  killElectronProcess(electronApp.process());
   await waitForElectronExit(electronApp);
-
   const recoveredApp = await launchForProfile(profile);
+  let testFailed = false;
   try {
     const recoveredPage = await firstWindow(recoveredApp);
     await skipOnboarding(recoveredPage);
@@ -55,7 +56,14 @@ test('abrupt main-process exit leaves the last project checkpoint recoverable', 
     // presented as if it had been durably saved.
     await expect(recoveredPage.getByText('A synthetic review sentence.', { exact: true })).toBeVisible();
     await expect(recoveredPage.getByText('Revision interrupted by crash.', { exact: true })).toHaveCount(0);
+  } catch (error) {
+    testFailed = true;
+    throw error;
   } finally {
-    await closeElectron(recoveredApp);
+    try {
+      await closeElectron(recoveredApp);
+    } catch (cleanupError) {
+      if (!testFailed) throw cleanupError;
+    }
   }
 });
