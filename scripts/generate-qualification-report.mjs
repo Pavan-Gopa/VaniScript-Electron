@@ -20,12 +20,6 @@ const FINDING_SEVERITIES = new Set(['info', 'warning', 'error']);
 const FINDING_OWNERS = new Set(['D5', 'P5.D1', 'P5.D2', 'follow-up product UI lane']);
 const MANDATORY_FINDINGS = [
   {
-    id: 'updater-artifact-type-mismatch',
-    severity: 'warning',
-    message: 'Updater artifact-type mismatch — expected nsis-web/zip/appimage (test/updatePlatformAdapters.test.js:21-25) vs build nsis + implicit mac defaults (package.json build.win.target/mac).',
-    owner: 'P5.D1',
-  },
-  {
     id: 'document-project-editor-flow-not-e2e-covered',
     severity: 'warning',
     message: 'Document-project editor flow is not E2E-covered: the document UI surface is absent from the Electron edition (App.tsx mounts upload/config/processing/review/export only; document engine main-side).',

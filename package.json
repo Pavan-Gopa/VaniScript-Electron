@@ -22,6 +22,7 @@
     "build:linux": "npm run vite-build && electron-builder --linux",
     "build:ci": "npm run vite-build && electron-builder --dir --c.mac.identity=null",
     "build:release:unsigned": "npm run vite-build && node scripts/fetch-vendor-binaries.mjs && electron-builder --c.mac.identity=null --publish never",
+    "build:release:signed": "npm run vite-build && node scripts/fetch-vendor-binaries.mjs && if [ \"${CSC_IDENTITY_AUTO_DISCOVERY:-}\" = \"false\" ]; then electron-builder --mac --arm64 --publish never --c.mac.identity=null; else electron-builder --mac --arm64 --publish never; fi",
     "pack": "npm run vite-build && electron-builder --dir",
     "pack:unsigned": "npm run vite-build && electron-builder --dir --c.mac.identity=null",
     "rebuild": "electron-rebuild",
@@ -68,7 +69,8 @@
       "hardenedRuntime": true,
       "entitlements": "scripts/entitlements.mac.plist",
       "entitlementsInherit": "scripts/entitlements.mac.plist",
-      "gatekeeperAssess": false
+      "gatekeeperAssess": false,
+      "notarize": false
     },
     "win": {
       "target": "nsis-web",
@@ -104,7 +106,8 @@
           "**/*"
         ]
       }
-    ]
+    ],
+    "afterSign": "scripts/notarize.mjs"
   },
   "dependencies": {
     "@fontsource/cuprum": "^5.2.8",
@@ -126,6 +129,7 @@
     "react-markdown": "^10.1.0"
   },
   "devDependencies": {
+    "@electron/notarize": "^2.2.1",
     "@playwright/test": "^1.62.1",
     "@types/jsdom": "^30.0.0",
     "@types/node": "^22.14.0",

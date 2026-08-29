@@ -1,0 +1,190 @@
+name: Electron Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: electron-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Signed macOS release
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      # Tag pushes always use the signed path and fail if the required secrets are absent.
+      # Local unsigned validation uses CSC_IDENTITY_AUTO_DISCOVERY=false.
+      CSC_IDENTITY_AUTO_DISCOVERY: 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Validate release tag
+        if: ${{ github.event_name == 'push' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release tag: $GITHUB_REF_NAME (expected vMAJOR.MINOR.PATCH[-prerelease])" >&2
+            exit 1
+          fi
+          echo "Validated release tag $GITHUB_REF_NAME"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate release credentials
+        if: ${{ env.CSC_IDENTITY_AUTO_DISCOVERY != 'false' }}
+        env:
+          DEVELOPER_ID_P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          RELEASE_KEYCHAIN_PASSWORD: ${{ secrets.RELEASE_KEYCHAIN_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          GH_RELEASE_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${DEVELOPER_ID_P12_BASE64:?Missing DEVELOPER_ID_P12_BASE64 secret}"
+          : "${DEVELOPER_ID_P12_PASSWORD:?Missing DEVELOPER_ID_P12_PASSWORD secret}"
+          : "${RELEASE_KEYCHAIN_PASSWORD:?Missing RELEASE_KEYCHAIN_PASSWORD secret}"
+          : "${APPLE_ID:?Missing APPLE_ID secret}"
+          : "${APPLE_APP_SPECIFIC_PASSWORD:?Missing APPLE_APP_SPECIFIC_PASSWORD secret}"
+          : "${APPLE_TEAM_ID:?Missing APPLE_TEAM_ID secret}"
+          : "${GH_RELEASE_TOKEN:?Missing GH_RELEASE_TOKEN secret}"
+          echo 'Release signing, notarization, and publication credentials are present.'
+
+      - name: Import Developer ID certificate into ephemeral keychain
+        if: ${{ env.CSC_IDENTITY_AUTO_DISCOVERY != 'false' }}
+        env:
+          DEVELOPER_ID_P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          RELEASE_KEYCHAIN_PASSWORD: ${{ secrets.RELEASE_KEYCHAIN_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          certificate_path="$RUNNER_TEMP/vaniscript-developer-id.p12"
+          keychain_path="$RUNNER_TEMP/vaniscript-release.keychain-db"
+          printf '%s' "$DEVELOPER_ID_P12_BASE64" | base64 --decode > "$certificate_path"
+          security create-keychain -p "$RELEASE_KEYCHAIN_PASSWORD" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$RELEASE_KEYCHAIN_PASSWORD" "$keychain_path"
+          security import "$certificate_path" \
+            -k "$keychain_path" \
+            -P "$DEVELOPER_ID_P12_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          rm -f "$certificate_path"
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s \
+            -k "$RELEASE_KEYCHAIN_PASSWORD" \
+            "$keychain_path"
+          security list-keychains -d user -s "$keychain_path" login.keychain-db
+          echo 'Developer ID certificate imported into the ephemeral keychain.'
+
+      - name: Build macOS release
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npm run build:release:signed
+
+      # These signed-lane checks intentionally run again after packaging. The
+      # release is not uploaded when either content or boot verification fails.
+      - name: Check release content
+        if: ${{ success() }}
+        run: >-
+          node scripts/check-release-content.mjs
+          --release-dir release
+          --output artifacts/p4d5-qualification-darwin.json
+          --os darwin
+          --arch arm64
+          --build-target dmg+zip
+
+      - name: Boot smoke
+        if: ${{ success() }}
+        run: >-
+          node scripts/boot-smoke.mjs
+          --release-dir release
+          --output artifacts/p4d5-qualification-darwin.json
+          --os darwin
+          --arch arm64
+          --timeout-ms 30000
+
+      # GH_RELEASE_TOKEN is deliberately consumed only by the Slice-4 release
+      # publication path. Slice 2 scaffolds this draft-then-publish ordering;
+      # the token must be provisioned in repository settings before a tag run.
+      - name: Create draft GitHub release (Slice 4)
+        if: ${{ env.CSC_IDENTITY_AUTO_DISCOVERY != 'false' && success() }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${GH_TOKEN:?Missing GH_RELEASE_TOKEN secret; provision it before Slice 4 release execution}"
+          gh release create "$GITHUB_REF_NAME" \
+            --draft \
+            --verify-tag \
+            --title "VaniScript $GITHUB_REF_NAME" \
+            --notes "Signed and notarized macOS release."
+
+      - name: Upload release artifacts
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: vaniscript-macos-release-${{ github.ref_name }}
+          path: |
+            release/*.dmg
+            release/*.zip
+            artifacts/p4d5-qualification-darwin.json
+          if-no-files-found: error
+          retention-days: 14
+
+      # Keep publication after both signed-lane gates and draft asset upload.
+      - name: Upload assets to draft GitHub release (Slice 4)
+        if: ${{ env.CSC_IDENTITY_AUTO_DISCOVERY != 'false' && success() }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${GH_TOKEN:?Missing GH_RELEASE_TOKEN secret; provision it before Slice 4 release execution}"
+          shopt -s nullglob
+          release_assets=(release/*.dmg release/*.zip)
+          if (( ${#release_assets[@]} == 0 )); then
+            echo 'No DMG or ZIP release artifacts were produced.' >&2
+            exit 1
+          fi
+          gh release upload "$GITHUB_REF_NAME" "${release_assets[@]}" --clobber
+
+      - name: Publish GitHub release (Slice 4)
+        if: ${{ env.CSC_IDENTITY_AUTO_DISCOVERY != 'false' && success() }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false
+
+      - name: Cleanup ephemeral signing keychain
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set +e
+          keychain_path="$RUNNER_TEMP/vaniscript-release.keychain-db"
+          security delete-keychain "$keychain_path" >/dev/null 2>&1 || true
+          rm -f "$RUNNER_TEMP/vaniscript-developer-id.p12"
+          echo 'Ephemeral signing keychain and certificate file cleaned up.'
