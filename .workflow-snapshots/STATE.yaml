@@ -4,13 +4,16 @@ onboarding:
   status: complete
   model_pairs_confirmed: true
   completed_at: 2026-08-21T00:00:00Z
-current_step: P4
-current_work_item_id: P4.D5
-current_work_item: P4.D5 release qualification — micro-hardening verified by Main (e2e count enforcement + boot schema strict; npm 836/836); final delta review then closure.
+current_step: P5
+current_work_item_id: P5.D1
+current_work_item: P5.D1 Slice 4 (merge→main, tag v1.0.0-alpha.1, signed run, draft release) — BLOCKED on Human provisioning 7 secrets in Pavan-Gopa/VaniScript-Electron settings (binding §6: DEVELOPER_ID_P12_BASE64, DEVELOPER_ID_P12_PASSWORD, RELEASE_KEYCHAIN_PASSWORD, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID, GH_RELEASE_TOKEN). Slices 1-3 + S4 staple-posture prep CLOSED (green CI runs 33235767957/33237703945/33239248397 + 570e807 pending). P5.D2 discovery proceeding in parallel.
 step_description: >-
-  P0-P3E complete. P4.D1-D4 closed (D4 parity gate full cycle: 4 slices,
-  fix round, hardening; both editions green). P4.O2 3-OS report half open
-  with P4.D5 cross-platform E2E/packaging; P5 release follows per standing
+  P0-P4 COMPLETE (P4.O2 closed: first-ever green 3-OS CI run 33234489196
+  on 02597b2 — build-and-test 3/3, release qualification 3/3 PASS,
+  aggregate PASS; qualification summary artifact verified by Main).
+  Windows/linux CI converged across 6 runs (checkout, CRLF parity
+  fixtures, 44 unit-test portability fixes, deb maintainer, e2e harness
+  lifecycle/tree-kill/linux-resolver). P5 release starts per standing
   order.
 completed_steps:
   - P0
@@ -107,13 +110,15 @@ review:
     P4.D4 card: Reviewer1 rejected (2 blocking, 2 major, 1 minor) -> Fix1 ->
     Reviewer2 approved (all resolved, no new defects) -> Tester qa_green ->
     hardening Fix2 -> Reviewer3 approved (revival after runtime crash).
-qa:
-  suite: "P4.D4 closure: Electron npm 836/836 (incl. 25 parity tests + pretest gate); Swift parity 12 tests/6 suites; full swift 1133/135 with 12 known baseline issues; q_parity_smoke unified PASS"
-  bugs_open: 0
+  last_commit: 0be09d3
   note: >-
-    Tester adversarial drift simulations all per binding; 3 coverage gaps
-    closed by hardening round; gate now catches unlisted files on both
-    editions.
+    P4.D5 closure commit 0be09d3 (21 files +3075-50: vendor pipeline,
+    icon.ico, checker/boot-smoke/generator scripts, playwright harness +
+    4 e2e specs, CI release-qualification + summary jobs, QA wiring,
+    local qualification artifacts) pushed to origin/codex/v2-swift-import-compat.
+    Previous closure ff2d59b (P4.D4). First real 3-OS CI run of the new
+    jobs triggered by this push — P4.O2 second half (3-OS report produced)
+    is checked only after CI green. Outer canonical state local-only.
 next_actor: coder
 pipeline:
   profile: standard

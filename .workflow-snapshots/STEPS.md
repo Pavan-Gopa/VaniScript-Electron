@@ -188,7 +188,7 @@
 
 ### Objective gates
 - [x] [P4.O1] Secret/text leak tests pass; performance regression report within budgets
-- [ ] [P4.O2] Both editions pass shared fixtures; 3-OS release qualification report produced
+- [x] [P4.O2] Both editions pass shared fixtures; 3-OS release qualification report produced
 
 ### Judgment gates
 - [x] [P4.J1] Observability redacts secrets by default, not by opt-in
