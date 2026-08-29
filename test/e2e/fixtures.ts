@@ -1,3 +1,5 @@
+import type { ChildProcess } from 'node:child_process';
+import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -28,6 +30,80 @@ const launchArgs = (profile: E2EProfile): string[] => [
   `--user-data-dir=${profile.userData}`,
   ...(process.platform === 'linux' ? ['--no-sandbox', '--disable-gpu'] : []),
 ];
+
+const CLOSE_TIMEOUT_MS = 2_000;
+const WINDOWS_EXIT_TIMEOUT_MS = 10_000;
+const WINDOWS_SINGLETON_SETTLE_DELAY_MS = 200;
+
+type PromiseWithResolvers<T> = {
+  promise: Promise<T>;
+  resolve: (value?: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+};
+
+const promiseWithResolvers = <T>(): PromiseWithResolvers<T> => (
+  (Promise as PromiseConstructor & {
+    withResolvers<U>(): PromiseWithResolvers<U>;
+  }).withResolvers<T>()
+);
+
+const waitForDuration = (durationMs: number): Promise<void> => {
+  const { promise, resolve } = promiseWithResolvers<void>();
+  const timer = setTimeout(resolve, durationMs);
+  timer.unref?.();
+  return promise;
+};
+
+async function waitForProcessExit(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+
+  const { promise, resolve, reject } = promiseWithResolvers<void>();
+  let settled = false;
+  let timeout: ReturnType<typeof setTimeout>;
+  const settle = (error?: Error): void => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timeout);
+    child.removeListener('exit', onExit);
+    if (error) reject(error);
+    else resolve();
+  };
+  const onExit = (): void => settle();
+  timeout = setTimeout(
+    () => settle(new Error(`Timed out waiting for Electron process exit after ${WINDOWS_EXIT_TIMEOUT_MS}ms`)),
+    WINDOWS_EXIT_TIMEOUT_MS,
+  );
+  timeout.unref?.();
+
+  child.once('exit', onExit);
+  if (child.exitCode !== null || child.signalCode !== null) settle();
+  await promise;
+}
+
+async function waitForWindowsExit(child: ChildProcess): Promise<void> {
+  if (process.platform !== 'win32') return;
+  await waitForProcessExit(child);
+  await waitForDuration(WINDOWS_SINGLETON_SETTLE_DELAY_MS);
+}
+
+export async function waitForElectronExit(app: ElectronApplication): Promise<void> {
+  if (process.platform !== 'win32') return;
+  let child: ChildProcess;
+  try {
+    child = app.process();
+  } catch {
+    return;
+  }
+  await waitForWindowsExit(child);
+}
+
+function removeProfile(profile: E2EProfile): void {
+  fsSync.rmSync(profile.root, {
+    recursive: true,
+    force: true,
+    ...(process.platform === 'win32' ? { maxRetries: 10, retryDelay: 100 } : {}),
+  });
+}
 
 export interface ReviewSession {
   projectId: string;
@@ -65,17 +141,53 @@ export async function launchForProfile(profile: E2EProfile): Promise<ElectronApp
   });
 }
 export async function closeElectron(app: ElectronApplication): Promise<void> {
-  let child: ReturnType<ElectronApplication['process']> | undefined;
+  let child: ChildProcess;
   try {
     child = app.process();
   } catch {
     return;
   }
-  await Promise.race([
-    Promise.resolve().then(() => app.close()).catch(() => undefined),
-    new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
-  ]);
-  if (child.exitCode === null && !child.killed) child.kill('SIGKILL');
+  const close = Promise.resolve().then(() => app.close());
+  const guardedClose = process.platform === 'win32' ? close.catch(() => undefined) : close;
+  let timedOut = false;
+  let closeRejected = false;
+  let closeError: unknown;
+  const { promise: closeTimeout, resolve: resolveCloseTimeout } = promiseWithResolvers<'timeout'>();
+  const closeTimer = setTimeout(() => {
+    timedOut = true;
+    resolveCloseTimeout('timeout');
+  }, CLOSE_TIMEOUT_MS);
+  closeTimer.unref?.();
+  try {
+    await Promise.race([guardedClose, closeTimeout]);
+  } catch (error) {
+    closeRejected = true;
+    closeError = error;
+  } finally {
+    clearTimeout(closeTimer);
+  }
+  if (child.exitCode === null && child.signalCode === null && !child.killed) {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      // The process can exit between the state check and kill on teardown.
+    }
+  }
+  await waitForWindowsExit(child);
+  if (process.platform !== 'win32' && timedOut && !closeRejected) {
+    const { promise: closeSettleTimeout, resolve: resolveCloseSettleTimeout } = promiseWithResolvers<void>();
+    const closeSettleTimer = setTimeout(resolveCloseSettleTimeout, CLOSE_TIMEOUT_MS);
+    closeSettleTimer.unref?.();
+    try {
+      await Promise.race([close, closeSettleTimeout]);
+    } catch (error) {
+      closeRejected = true;
+      closeError = error;
+    } finally {
+      clearTimeout(closeSettleTimer);
+    }
+  }
+  if (closeRejected) throw closeError;
 }
 
 export async function firstWindow(app: ElectronApplication): Promise<Page> {
@@ -204,13 +316,19 @@ export async function saveSeedProject(page: Page, session: ReviewSession, screen
 export const test = base.extend<E2EFixtures>({
   profile: async ({}, use) => {
     const profile = await createProfile();
-    await use(profile);
-    await fs.rm(profile.root, { recursive: true, force: true });
+    try {
+      await use(profile);
+    } finally {
+      removeProfile(profile);
+    }
   },
   electronApp: async ({ profile }, use) => {
     const app = await launchForProfile(profile);
-    await use(app);
-    await closeElectron(app);
+    try {
+      await use(app);
+    } finally {
+      await closeElectron(app);
+    }
   },
   page: async ({ electronApp }, use) => {
     await use(await firstWindow(electronApp));

@@ -8,6 +8,7 @@ import {
   skipOnboarding,
   test,
   waitForApp,
+  waitForElectronExit,
   writeSilentWav,
 } from './fixtures';
 
@@ -37,6 +38,7 @@ test('abrupt main-process exit leaves the last project checkpoint recoverable', 
   await expect(editor).toBeVisible();
   await editor.fill('Revision interrupted by crash.');
   electronApp.process().kill('SIGKILL');
+  await waitForElectronExit(electronApp);
 
   const recoveredApp = await launchForProfile(profile);
   try {
