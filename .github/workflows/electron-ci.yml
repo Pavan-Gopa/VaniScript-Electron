@@ -6,7 +6,7 @@ name: Electron CI
 # there are no `Electron/**` path filters and no subdirectory working-directory.
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, codex/v2-swift-import-compat]
   pull_request:
 
 jobs:
