@@ -6,7 +6,7 @@ onboarding:
   completed_at: 2026-08-21T00:00:00Z
 current_step: P5
 current_work_item_id: P5.D1
-current_work_item: P5.D1 Slice 4 (merge→main, tag v1.0.0-alpha.1, signed run, draft release) — BLOCKED on Human provisioning 7 secrets in Pavan-Gopa/VaniScript-Electron settings (binding §6: DEVELOPER_ID_P12_BASE64, DEVELOPER_ID_P12_PASSWORD, RELEASE_KEYCHAIN_PASSWORD, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID, GH_RELEASE_TOKEN). Slices 1-3 + S4 staple-posture prep CLOSED (green CI runs 33235767957/33237703945/33239248397 + 570e807 pending). P5.D2 discovery proceeding in parallel.
+current_work_item: P5.D1 Slice 4 AWAITING HUMAN (6 Apple secrets) + P5.D2 Architect PAUSED (provider quota 429, backup needs Human authorization). All P5.D1 code work complete and CI-green through 9d5f05c (5 consecutive all-green runs).
 step_description: >-
   P0-P4 COMPLETE (P4.O2 closed: first-ever green 3-OS CI run 33234489196
   on 02597b2 — build-and-test 3/3, release qualification 3/3 PASS,
