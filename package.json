@@ -70,7 +70,8 @@
         "AppImage",
         "deb"
       ],
-      "icon": "assets/icon.png"
+      "icon": "assets/icon.png",
+      "maintainer": "Stichting Kadamba Foundation <Pavan-Gopa@users.noreply.github.com>"
     },
     "extraResources": [
       {
