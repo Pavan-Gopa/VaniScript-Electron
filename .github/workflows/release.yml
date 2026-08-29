@@ -126,6 +126,9 @@ jobs:
           --os darwin
           --arch arm64
           --timeout-ms 30000
+      - name: Verify release artifacts
+        if: ${{ success() }}
+        run: npm run verify:release -- --release-dir release
 
       # GH_RELEASE_TOKEN is deliberately consumed only by the Slice-4 release
       # publication path. Slice 2 scaffolds this draft-then-publish ordering;
@@ -152,11 +155,11 @@ jobs:
           path: |
             release/*.dmg
             release/*.zip
+            release/checksums.txt
+            release/VaniScript-Electron.manifest.json
             artifacts/p4d5-qualification-darwin.json
           if-no-files-found: error
           retention-days: 14
-
-      # Keep publication after both signed-lane gates and draft asset upload.
       - name: Upload assets to draft GitHub release (Slice 4)
         if: ${{ env.CSC_IDENTITY_AUTO_DISCOVERY != 'false' && success() }}
         env:
@@ -166,7 +169,7 @@ jobs:
           set -euo pipefail
           : "${GH_TOKEN:?Missing GH_RELEASE_TOKEN secret; provision it before Slice 4 release execution}"
           shopt -s nullglob
-          release_assets=(release/*.dmg release/*.zip)
+          release_assets=(release/*.dmg release/*.zip release/checksums.txt release/VaniScript-Electron.manifest.json)
           if (( ${#release_assets[@]} == 0 )); then
             echo 'No DMG or ZIP release artifacts were produced.' >&2
             exit 1

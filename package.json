@@ -23,6 +23,7 @@
     "build:ci": "npm run vite-build && electron-builder --dir --c.mac.identity=null",
     "build:release:unsigned": "npm run vite-build && node scripts/fetch-vendor-binaries.mjs && electron-builder --c.mac.identity=null --publish never",
     "build:release:signed": "npm run vite-build && node scripts/fetch-vendor-binaries.mjs && if [ \"${CSC_IDENTITY_AUTO_DISCOVERY:-}\" = \"false\" ]; then electron-builder --mac --arm64 --publish never --c.mac.identity=null; else electron-builder --mac --arm64 --publish never; fi",
+    "verify:release": "node scripts/verify-release-artifacts.mjs",
     "pack": "npm run vite-build && electron-builder --dir",
     "pack:unsigned": "npm run vite-build && electron-builder --dir --c.mac.identity=null",
     "rebuild": "electron-rebuild",
