@@ -6,6 +6,7 @@
   <true/>
   <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
   <true/>
+  <!-- disable-library-validation is required for unpacked whisper/ffmpeg native payloads in extraResources. -->
   <key>com.apple.security.cs.disable-library-validation</key>
   <true/>
   <key>com.apple.security.device.audio-input</key>

@@ -17,7 +17,7 @@
     "qualify:release": "npm run build:release:unsigned && node scripts/check-release-content.mjs && node scripts/boot-smoke.mjs && npm run test:e2e && node scripts/generate-qualification-report.mjs",
     "electron": "npm run vite-build && npm run prepare-dev-branding && node_modules/electron/dist/Electron.app/Contents/MacOS/Electron .",
     "start": "npm run electron",
-    "build": "npm run vite-build && electron-builder --mac && node scripts/sign-mac-dmg.mjs",
+    "build": "npm run vite-build && electron-builder --mac",
     "build:win": "npm run vite-build && electron-builder --win",
     "build:linux": "npm run vite-build && electron-builder --linux",
     "build:ci": "npm run vite-build && electron-builder --dir --c.mac.identity=null",
@@ -32,6 +32,11 @@
   "build": {
     "appId": "com.gaudiya.vaniscript",
     "productName": "VaniScript-Electron",
+    "publish": {
+      "provider": "github",
+      "owner": "Pavan-Gopa",
+      "repo": "VaniScript-Electron"
+    },
     "directories": {
       "output": "release"
     },
@@ -52,6 +57,10 @@
       "**/node_modules/@kutalia/whisper-node-addon/**"
     ],
     "mac": {
+      "target": [
+        "zip",
+        "dmg"
+      ],
       "artifactName": "VaniScript-Electron.${ext}",
       "category": "public.app-category.utilities",
       "icon": "assets/icon.icns",
@@ -62,7 +71,7 @@
       "gatekeeperAssess": false
     },
     "win": {
-      "target": "nsis",
+      "target": "nsis-web",
       "icon": "assets/icon.ico"
     },
     "linux": {

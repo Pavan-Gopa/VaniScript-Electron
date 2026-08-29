@@ -1731,7 +1731,6 @@ flowchart TD
 - `shared/localModelsRoot.js`
 - `shared/scanLocalModels.js`
 - `scripts/install-llamacpp-runtime.mjs`
-- `scripts/sign-mac-dmg.mjs`
 - `scripts/verify-release-identity.mjs`
 - `test/packaging.test.js`
 
