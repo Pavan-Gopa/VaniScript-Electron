@@ -4,9 +4,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import https from 'node:https';
-import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { execFileSync, spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
-const projectRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const vendorRoot = path.join(projectRoot, 'vendor', 'llamacpp');
 
 function runtimeKeyFor(platform = process.platform, arch = process.arch) {
@@ -97,16 +99,94 @@ function run(command, args, options = {}) {
     });
   });
 }
+async function hashFile(filePath) {
+  const hash = createHash('sha256');
+  for await (const chunk of fs.createReadStream(filePath)) hash.update(chunk);
+  return hash.digest('hex');
+}
+
+function expectedDigestFor(asset) {
+  if (asset.digest === undefined || asset.digest === null || asset.digest === '') return null;
+  if (typeof asset.digest !== 'string' || !/^sha256:[0-9a-f]{64}$/i.test(asset.digest)) {
+    throw new Error(`Unsupported or malformed GitHub asset digest for ${asset.name}: ${asset.digest}`);
+  }
+  return asset.digest.slice('sha256:'.length).toLowerCase();
+}
+
+async function verifyArchiveDigest(archivePath, expectedDigest) {
+  const actualDigest = await hashFile(archivePath);
+  if (!expectedDigest) {
+    console.log(`SHA-256 ${archivePath}: ${actualDigest}`);
+    return actualDigest;
+  }
+  if (actualDigest !== expectedDigest) {
+    throw new Error(`SHA-256 mismatch for ${archivePath}: expected ${expectedDigest}, got ${actualDigest}`);
+  }
+  console.log(`Verified SHA-256 ${archivePath}: ${actualDigest}`);
+  return actualDigest;
+}
+
+function listArchiveMembers(archivePath) {
+  const lowerPath = archivePath.toLowerCase();
+  try {
+    if (lowerPath.endsWith('.tar.gz')) {
+      return execFileSync('tar', ['-tzf', archivePath], { encoding: 'utf8' })
+        .split(/\r?\n/)
+        .filter(Boolean);
+    }
+    if (lowerPath.endsWith('.zip')) {
+      if (process.platform === 'win32') {
+        const escapedPath = archivePath.replaceAll("'", "''");
+        const command = `Add-Type -AssemblyName System.IO.Compression.FileSystem; $archive = [System.IO.Compression.ZipFile]::OpenRead('${escapedPath}'); try { $archive.Entries | ForEach-Object { $_.FullName } } finally { $archive.Dispose() }`;
+        return execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8' })
+          .split(/\r?\n/)
+          .filter(Boolean);
+      }
+      return execFileSync('unzip', ['-Z1', archivePath], { encoding: 'utf8' })
+        .split(/\r?\n/)
+        .filter(Boolean);
+    }
+  } catch (error) {
+    throw new Error(`Unable to list archive members for ${archivePath}: ${error.message}`);
+  }
+  throw new Error(`Unsupported archive format: ${archivePath}`);
+}
+
+function isWithin(rootPath, candidatePath) {
+  const relativePath = path.relative(rootPath, candidatePath);
+  return relativePath === ''
+    || (relativePath !== '..' && !relativePath.startsWith(`..${path.sep}`) && !path.isAbsolute(relativePath));
+}
+
+function validateArchiveMembers(archivePath, extractionDir) {
+  const extractionRoot = path.resolve(extractionDir);
+  for (const rawMember of listArchiveMembers(archivePath)) {
+    const member = rawMember.replaceAll('\\', '/');
+    if (!member || member.includes('\0') || member.includes('..')
+      || path.posix.isAbsolute(member) || path.win32.isAbsolute(member)) {
+      throw new Error(`Unsafe archive member path rejected: ${rawMember}`);
+    }
+    const resolvedMember = path.resolve(extractionRoot, member);
+    if (!isWithin(extractionRoot, resolvedMember)) {
+      throw new Error(`Archive member escapes extraction root: ${rawMember}`);
+    }
+  }
+}
 
 async function extractArchive(archivePath, extractionDir) {
+  validateArchiveMembers(archivePath, extractionDir);
+  fs.rmSync(extractionDir, { recursive: true, force: true });
   fs.mkdirSync(extractionDir, { recursive: true });
-  if (archivePath.endsWith('.tar.gz')) {
+  const lowerPath = archivePath.toLowerCase();
+  if (lowerPath.endsWith('.tar.gz')) {
     await run('tar', ['-xzf', archivePath, '-C', extractionDir]);
     return;
   }
-  if (archivePath.endsWith('.zip')) {
+  if (lowerPath.endsWith('.zip')) {
     if (process.platform === 'win32') {
-      await run('powershell', ['-NoProfile', '-Command', `Expand-Archive -Path "${archivePath}" -DestinationPath "${extractionDir}" -Force`]);
+      const archive = archivePath.replaceAll("'", "''");
+      const destination = extractionDir.replaceAll("'", "''");
+      await run('powershell', ['-NoProfile', '-NonInteractive', '-Command', `Expand-Archive -LiteralPath '${archive}' -DestinationPath '${destination}' -Force`]);
       return;
     }
     await run('unzip', ['-oq', archivePath, '-d', extractionDir]);
@@ -124,27 +204,39 @@ function findSinglePayloadDirectory(extractionDir) {
   return extractionDir;
 }
 
-function copyMaterialized(sourcePath, destinationPath) {
-  const stats = fs.lstatSync(sourcePath);
+function copyMaterialized(sourcePath, destinationPath, sourceRoot, linkStack = new Set()) {
+  const extractionRoot = path.resolve(sourceRoot);
+  const resolvedSourcePath = path.resolve(sourcePath);
+  if (!isWithin(extractionRoot, resolvedSourcePath)) {
+    throw new Error(`Archive symlink escapes extraction root: ${sourcePath}`);
+  }
+
+  const stats = fs.lstatSync(resolvedSourcePath);
   if (stats.isSymbolicLink()) {
-    const linkTarget = fs.readlinkSync(sourcePath);
-    const resolvedSource = path.isAbsolute(linkTarget)
-      ? linkTarget
-      : path.resolve(path.dirname(sourcePath), linkTarget);
-    copyMaterialized(resolvedSource, destinationPath);
+    if (linkStack.has(resolvedSourcePath)) throw new Error(`Archive symlink cycle detected: ${resolvedSourcePath}`);
+    const linkTarget = fs.readlinkSync(resolvedSourcePath);
+    const normalizedTarget = linkTarget.replaceAll('\\', '/');
+    const resolvedSource = path.resolve(path.dirname(resolvedSourcePath), normalizedTarget);
+    if (path.posix.isAbsolute(normalizedTarget) || path.win32.isAbsolute(normalizedTarget)
+      || !isWithin(extractionRoot, resolvedSource)) {
+      throw new Error(`Archive symlink escapes extraction root: ${resolvedSourcePath} -> ${linkTarget}`);
+    }
+    const nextLinkStack = new Set(linkStack);
+    nextLinkStack.add(resolvedSourcePath);
+    copyMaterialized(resolvedSource, destinationPath, extractionRoot, nextLinkStack);
     return;
   }
 
   if (stats.isDirectory()) {
     fs.mkdirSync(destinationPath, { recursive: true });
-    for (const entry of fs.readdirSync(sourcePath)) {
-      copyMaterialized(path.join(sourcePath, entry), path.join(destinationPath, entry));
+    for (const entry of fs.readdirSync(resolvedSourcePath)) {
+      copyMaterialized(path.join(resolvedSourcePath, entry), path.join(destinationPath, entry), extractionRoot, linkStack);
     }
     return;
   }
 
   fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
-  fs.copyFileSync(sourcePath, destinationPath);
+  fs.copyFileSync(resolvedSourcePath, destinationPath);
 }
 
 async function main() {
@@ -155,13 +247,23 @@ async function main() {
     ? process.argv[process.argv.indexOf('--arch') + 1]
     : process.arch;
 
-  const release = await requestJson('https://api.github.com/repos/ggml-org/llama.cpp/releases/latest');
+  let release = await requestJson('https://api.github.com/repos/ggml-org/llama.cpp/releases/latest');
   const assetPattern = assetPatternFor(platform, arch);
-  const asset = release.assets.find((candidate) => assetPattern.test(candidate.name));
+  let asset = release.assets?.find((candidate) => assetPattern.test(candidate.name));
   if (!asset) {
-    throw new Error(`No matching llama.cpp asset found for ${platform}/${arch} in release ${release.tag_name}`);
+    const releases = await requestJson('https://api.github.com/repos/ggml-org/llama.cpp/releases');
+    const fallback = releases
+      .filter((candidate) => candidate.assets?.some((candidateAsset) => assetPattern.test(candidateAsset.name)))
+      .sort((left, right) => new Date(right.published_at) - new Date(left.published_at))[0];
+    if (fallback) {
+      release = fallback;
+      asset = release.assets.find((candidate) => assetPattern.test(candidate.name));
+    }
   }
-
+  if (!asset) {
+    throw new Error(`No matching llama.cpp asset found for ${platform}/${arch} in release ${release.tag_name} or the first page of releases`);
+  }
+  const expectedDigest = expectedDigestFor(asset);
   const runtimeKey = runtimeKeyFor(platform, arch);
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), `vaniscript-llamacpp-${runtimeKey}-`));
   const archivePath = path.join(tempRoot, asset.name);
@@ -170,12 +272,13 @@ async function main() {
 
   console.log(`Downloading ${asset.name} from ${release.tag_name}...`);
   await downloadFile(asset.browser_download_url, archivePath);
+  await verifyArchiveDigest(archivePath, expectedDigest);
   await extractArchive(archivePath, extractionDir);
 
   const payloadDir = findSinglePayloadDirectory(extractionDir);
   fs.rmSync(destinationDir, { recursive: true, force: true });
   fs.mkdirSync(path.dirname(destinationDir), { recursive: true });
-  copyMaterialized(payloadDir, destinationDir);
+  copyMaterialized(payloadDir, destinationDir, extractionDir);
 
   console.log(`Installed llama.cpp runtime to ${destinationDir}`);
 }

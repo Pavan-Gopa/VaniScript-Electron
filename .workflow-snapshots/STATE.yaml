@@ -6,7 +6,7 @@ onboarding:
   completed_at: 2026-08-21T00:00:00Z
 current_step: P4
 current_work_item_id: P4.D5
-current_work_item: P4.D5 cross-platform E2E/packaging — release qualification; P4.D4 CLOSED and pushed.
+current_work_item: P4.D5 release qualification — micro-hardening verified by Main (e2e count enforcement + boot schema strict; npm 836/836); final delta review then closure.
 step_description: >-
   P0-P3E complete. P4.D1-D4 closed (D4 parity gate full cycle: 4 slices,
   fix round, hardening; both editions green). P4.O2 3-OS report half open
@@ -28,29 +28,50 @@ implementation:
   status: pending
   attempts: 0
   note: >-
-    P4.D4 CLOSED 2026-08-29: full cycle complete — 4 slices + fix round
-    (Reviewer1 rejected -> Fix1 -> Reviewer2 approved) + Tester qa_green
-    (0 bugs, 3 coverage gaps) + hardening Fix2 (Reviewer3 approved after
-    runtime-crash revival). Final state: Electron npm 836/836, Swift parity
-    12 tests/6 suites, full swift 1133/135 with 12 known baseline issues,
-    smoke unified PASS, gate catches all drift classes incl. unlisted files
-    on both editions. Closure commit: test/fixtures/parity/ + test/parity/
-    + package.json pretest + migration plan §6.5 + workflow-memory mirror
-    pushed to VaniScript-Electron. P4 card D-items all closed; P4.O2 3-OS
-    report half moves with P4.D5. Next: P4.D5 discovery (cross-platform
-    E2E/packaging release qualification), then standard cycle.
-retry_guard:
-  omp:
-    last_result_artifact: history://P4D4Reviewer3
-    active_agent: null
-    active_role: null
-    status: p4d4_closed
-  role: none
-  primary_agent: none
-  evidence: history://P4D4Reviewer3
-  omp_status_note: p4_d4_closed_pushed_next_p4d5
-standing_order:
-    «продолжать в том же духе до победного конца — полностью все шаги».
+    Slice 3 FULLY VERIFIED by Main 2026-08-29: playwright config per-OS
+    executable resolution (retries 2, trace/video on failure, no browser
+    download), four specs all driving REAL surfaces (onboarding + legacy
+    localStorage migration via real renderer-main hook; media upload ->
+    offline gating -> seed via real electronAPI.projectSave bridge ->
+    reopen/edit/export download; document txt upload surface + gating with
+    documented absent-editor warning; crash SIGKILL pre-debounce ->
+    committed checkpoint recovered, interrupted revision absent);
+    Main runs: fresh pack:unsigned EXIT=0, test:e2e 4/4 in 22.1s, npm test
+    836/836 (after documented ABI rebuild noise), unit isolation proven
+    (836 in runner, specs not picked up). CI yml E2E steps per contract
+    (per-OS split, xvfb linux, fixed report path, upload if-no-files-found
+    error). pack:unsigned added per ruling (pack untouched). Known Rollup
+    warning batchStore/virtual-window default import — pre-existing,
+    non-fatal, flagged to Reviewer. Slice 4 dispatched: generator merging
+    e2eScenarios + per-OS JSONs + updater/document findings + summary.md,
+    qualify:release script, QA q_release_qualification.sh + run_all
+    catch-up incl. q_parity_smoke. Slice 4 FULLY VERIFIED by Main: generator
+    happy path PASS exit 0 (real darwin: 13/13 + boot + merged e2e 3334ms +
+    both mandatory findings); failed-input discriminator caught live on
+    Main's incomplete input; missing-OS real exit 1; QA wiring; npm test
+    836/836. Card Reviewer P4D5Reviewer1 REJECTED (1 blocking + 4 major +
+    1 minor, all Main-verified in source — see FEEDBACK.md P4.D5 review
+    section): B1 qualify:release unwinnable locally (generator defaults
+    3-OS); M2 electron-script regression; M3 traces not uploaded; M4
+    installer-artifact dirBuild hole; M5 extract hardening; m1 flaky.
+    Fix round P4D5CoderFix1 dispatched; Objective Gate = full local
+    qualify:release green end-to-end on darwin. FIX ROUND COMPLETE:
+    coder full gate exit 0 (74.58s, real DMG/ZIP, boot 1917ms, e2e 4,
+    generator host aggregation; walker leaf-fix 4/4 scenarios), all six
+    negatives proven (strict-checker exit 1 naming installers, --dir exit
+    0, digest mismatch abort, ../member rejected, escaping symlink
+    rejected, yt absent-digest log+install), electron script equal:true,
+    npm test 836/836. Main verified all six diffs in source; independent
+    end-to-end gate in flight; then delta Reviewer.
+    last_result_artifact: history://P4D5Reviewer2
+    last_result_artifact: history://P4D5Tester1
+    active_agent: P4D5Reviewer3
+    active_role: reviewer
+    status: micro_hardening_verified_delta_review
+  role: reviewer
+  primary_agent: workflow-reviewer
+  evidence: history://P4D5Tester1
+  omp_status_note: p4_d5_micro_hardening_verified_reviewer3_dispatched
     Main runs the full remaining plan continuously: P3B.D1..D6, P3C.D1..D5,
     P3D.D1..D3, P3E.D1..D5, P4.D1..D5, P5.D1..D2 — each via full Coder ->
     Reviewer -> Tester cycle, Main verification between every role, backup
@@ -104,11 +125,13 @@ security_audit:
 checkpoint:
   last_pre_tag: null
   last_post_tag: null
-  last_commit: 8686689
+  last_commit: ff2d59b
   note: >-
-    P3E lane-closure product commit plus workflow-memory mirror pushed as
-    8686689 on codex/v2-swift-import-compat. Outer canonical state remains
-    local-only; next closure mirror will carry this hash.
+    P4.D4 closure commit ff2d59b (18 files: test/fixtures/parity/ + test/
+    parity/ + package.json pretest + migration plan §6.5 + workflow-memory
+    mirror) pushed to origin/codex/v2-swift-import-compat. Previous P3E
+    closure was 8686689. Outer canonical state remains local-only; next
+    closure mirror carries ff2d59b.
 notes: |
   2026-08-21 canonical state repair: STEPS.md rewritten as Step Cards (P0..P5) with
   stable IDs <step>.D/O/J; current_step restored; completed_steps limited to

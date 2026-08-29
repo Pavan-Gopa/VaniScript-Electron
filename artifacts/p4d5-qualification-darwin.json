@@ -1,0 +1,126 @@
+{
+  "schemaVersion": 1,
+  "os": "darwin",
+  "arch": "arm64",
+  "timestamp": "2026-08-29T01:15:49.447Z",
+  "gitSha": "ff2d59bb13ccca729ebff57bb305a6e8baff2fb0",
+  "buildTarget": "dmg+zip",
+  "installerArtifact": {
+    "exists": true,
+    "sizeBytes": 241959268,
+    "sha256": "dd8feeac277a9b73a01c8af5f713b2b099de565d1de4e5b8a5656e82fd658b28"
+  },
+  "contentChecks": [
+    {
+      "name": "asar-archive",
+      "passed": true,
+      "detail": "Parsed app.asar with 13692 file entries."
+    },
+    {
+      "name": "extraResources-configuration",
+      "passed": true,
+      "detail": "package.json declares ffmpeg-bin, llamacpp, yt-dlp-bin."
+    },
+    {
+      "name": "extraResources/ffmpeg-bin",
+      "passed": true,
+      "detail": "ffmpeg-bin is present."
+    },
+    {
+      "name": "extraResources/llamacpp",
+      "passed": true,
+      "detail": "llamacpp is present."
+    },
+    {
+      "name": "extraResources/yt-dlp-bin",
+      "passed": true,
+      "detail": "yt-dlp-bin is present."
+    },
+    {
+      "name": "vendor-binary/ffmpeg",
+      "passed": true,
+      "detail": "ffmpeg-bin/ffmpeg is non-empty (45568216 bytes)."
+    },
+    {
+      "name": "vendor-binary/llama.cpp",
+      "passed": true,
+      "detail": "llamacpp/darwin-arm64/llama-cli is non-empty (1520328 bytes)."
+    },
+    {
+      "name": "vendor-binary/yt-dlp",
+      "passed": true,
+      "detail": "yt-dlp-bin/darwin/yt-dlp is non-empty (36762752 bytes)."
+    },
+    {
+      "name": "asarUnpack/ffmpeg-static",
+      "passed": true,
+      "detail": "app.asar.unpacked/node_modules/ffmpeg-static contains 1 non-empty target payload file(s)."
+    },
+    {
+      "name": "asarUnpack/@kutalia/whisper-node-addon",
+      "passed": true,
+      "detail": "app.asar.unpacked/node_modules/@kutalia/whisper-node-addon contains 1 non-empty target payload file(s)."
+    },
+    {
+      "name": "native-node-architecture",
+      "passed": true,
+      "detail": "3 target native addon file(s) match arm64: /Users/pavan/Documents/AI Projects/VaniScript/Electron/release/mac-arm64/VaniScript-Electron.app/Contents/Resources/app.asar.unpacked/node_modules/@kutalia/whisper-node-addon/dist/mac-arm64/whisper.node=arm64, app.asar:node_modules/@kutalia/whisper-node-addon/dist/mac-arm64/whisper.node=arm64, app.asar:node_modules/better-sqlite3/build/Release/better_sqlite3.node=arm64"
+    },
+    {
+      "name": "icon-embedded",
+      "passed": true,
+      "detail": "Embedded darwin icon payload: Contents/Resources/icon.icns"
+    },
+    {
+      "name": "installer-artifact",
+      "passed": true,
+      "detail": "Installer artifact(s) present for dmg+zip: VaniScript-Electron.dmg (241959268 bytes), VaniScript-Electron.zip (256749515 bytes)"
+    }
+  ],
+  "bootSmoke": {
+    "passed": true,
+    "durationMs": 1908,
+    "detail": "Observed existing renderer.loaded readiness marker after 1908ms; process exited after SIGTERM (SIGKILL)."
+  },
+  "e2eScenarios": [
+    {
+      "name": "abrupt main-process exit leaves the last project checkpoint recoverable",
+      "passed": true,
+      "durationMs": 7420,
+      "tracePath": ""
+    },
+    {
+      "name": "document project uses the available text-upload surface and reports offline translation gating",
+      "passed": true,
+      "durationMs": 2854,
+      "tracePath": ""
+    },
+    {
+      "name": "first launch presents onboarding and skip returns to the upload workspace",
+      "passed": true,
+      "durationMs": 2835,
+      "tracePath": ""
+    },
+    {
+      "name": "media project uploads, handles offline provider gating, reopens, edits, and exports",
+      "passed": true,
+      "durationMs": 7234,
+      "tracePath": ""
+    }
+  ],
+  "findings": [
+    {
+      "id": "updater-artifact-type-mismatch",
+      "severity": "warning",
+      "message": "Updater artifact-type mismatch — expected nsis-web/zip/appimage (test/updatePlatformAdapters.test.js:21-25) vs build nsis + implicit mac defaults (package.json build.win.target/mac).",
+      "owner": "P5.D1"
+    },
+    {
+      "id": "document-project-editor-flow-not-e2e-covered",
+      "severity": "warning",
+      "message": "Document-project editor flow is not E2E-covered: the document UI surface is absent from the Electron edition (App.tsx mounts upload/config/processing/review/export only; document engine main-side).",
+      "owner": "follow-up product UI lane"
+    }
+  ],
+  "overallStatus": "pass"
+}

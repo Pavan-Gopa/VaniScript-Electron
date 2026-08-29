@@ -50,3 +50,154 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npm run build:ci
+
+  release-qualification:
+    name: ${{ matrix.target_os }} release qualification
+    needs: build-and-test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target_os: darwin
+            arch: arm64
+            build_target: dmg+zip
+          - os: ubuntu-latest
+            target_os: linux
+            arch: x64
+            build_target: appimage
+          - os: windows-latest
+            target_os: win32
+            arch: x64
+            build_target: nsis
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build release (unsigned)
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run build:release:unsigned
+
+      - name: Check release content
+        run: >-
+          node scripts/check-release-content.mjs
+          --release-dir release
+          --output artifacts/p4d5-qualification-${{ matrix.target_os }}.json
+          --os ${{ matrix.target_os }}
+          --arch ${{ matrix.arch }}
+          --build-target ${{ matrix.build_target }}
+
+      - name: Boot smoke (macOS/Windows)
+        if: matrix.target_os != 'linux'
+        run: >-
+          node scripts/boot-smoke.mjs
+          --release-dir release
+          --output artifacts/p4d5-qualification-${{ matrix.target_os }}.json
+          --os ${{ matrix.target_os }}
+          --arch ${{ matrix.arch }}
+          --timeout-ms 30000
+
+      - name: Boot smoke (Linux under xvfb)
+        if: matrix.target_os == 'linux'
+        run: >-
+          xvfb-run --auto-servernum
+          --server-args="-screen 0 1280x720x24"
+          node scripts/boot-smoke.mjs
+          --release-dir release
+          --output artifacts/p4d5-qualification-${{ matrix.target_os }}.json
+          --os ${{ matrix.target_os }}
+          --arch ${{ matrix.arch }}
+          --timeout-ms 30000
+
+      - name: Run Playwright Electron E2E (macOS/Windows)
+        if: matrix.target_os != 'linux'
+        # Playwright's non-zero exit enforces scenario failures at this job.
+        # Slice 4 reads this fixed JSON path, merges e2eScenarios into the
+        # qualification JSON, and then aggregates the per-OS report.
+        env:
+          VANISCRIPT_E2E_REPORT_PATH: artifacts/p4d5-e2e-${{ matrix.target_os }}.json
+        run: npm run test:e2e
+
+      - name: Run Playwright Electron E2E (Linux under xvfb)
+        if: matrix.target_os == 'linux'
+        env:
+          VANISCRIPT_E2E_REPORT_PATH: artifacts/p4d5-e2e-${{ matrix.target_os }}.json
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" npm run test:e2e
+
+      - name: Upload Playwright E2E results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p4d5-e2e-${{ matrix.target_os }}
+          path: artifacts/p4d5-e2e-${{ matrix.target_os }}.json
+          if-no-files-found: error
+      - name: Upload Playwright E2E traces/videos/screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p4d5-e2e-traces-${{ matrix.target_os }}
+          path: test-results/e2e
+          if-no-files-found: ignore
+
+      - name: Upload P4D5 qualification artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p4d5-qualification-${{ matrix.target_os }}
+          path: artifacts/p4d5-qualification-${{ matrix.target_os }}.json
+          if-no-files-found: error
+
+  qualification-summary:
+    name: aggregate release qualification
+    if: ${{ always() }}
+    needs: release-qualification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Download qualification artifacts
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: p4d5-qualification-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Download Playwright E2E artifacts
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: p4d5-e2e-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate qualification summary
+        run: node scripts/generate-qualification-report.mjs --input-dir artifacts --os darwin,linux,win32
+
+      - name: Upload qualification summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p4d5-qualification-summary
+          path: artifacts/p4d5-qualification-summary.md
+          if-no-files-found: error

@@ -184,7 +184,7 @@
 - [x] [P4.D2] Usage/logging/diagnostics: redacted observability
 - [x] [P4.D3] Large-project optimization: budgets/virtualization
 - [x] [P4.D4] Cross-edition fixture suite: shared parity gate
-- [ ] [P4.D5] Cross-platform E2E/packaging: release qualification
+- [x] [P4.D5] Cross-platform E2E/packaging: release qualification
 
 ### Objective gates
 - [x] [P4.O1] Secret/text leak tests pass; performance regression report within budgets
