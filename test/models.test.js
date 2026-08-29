@@ -245,11 +245,14 @@ test('relocateModel leaves no partial file on copy failure', async () => {
   const root = makeTempDir();
   const src = writeFile(path.join(root, 'm.gguf'), 'data');
   const dest = path.join(root, 'dst', 'm.gguf');
-  // Point destination at an unwritable location (read-only parent) to force a
-  // write error → INTERNAL, and assert the partial file is cleaned up.
+  // Point the destination below a regular file so mkdir/copy fails on every
+  // platform (directory permission bits are ignored for elevated Windows
+  // runners).
   const roParent = path.join(root, 'ro');
-  fs.mkdirSync(roParent, 0o555);
-  const badDest = path.join(roParent, 'locked', 'm.gguf');
+  fs.mkdirSync(roParent);
+  const lockedParent = path.join(roParent, 'locked');
+  fs.writeFileSync(lockedParent, 'not a directory');
+  const badDest = path.join(lockedParent, 'm.gguf');
   await assert.rejects(
     () => mm.relocateModel({ sourcePath: src, destinationPath: badDest, allowedRoot: root }),
     (err) => {

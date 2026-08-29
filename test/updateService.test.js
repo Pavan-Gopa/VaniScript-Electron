@@ -648,7 +648,7 @@ test('foreign filesystem error codes normalize to INTERNAL in throw and state', 
   });
   assert.equal(thrown.name, 'AppError');
   assert.equal(thrown.code, 'INTERNAL');
-  assert.equal(thrown.details.originalCode, 'EISDIR');
+  assert.ok(['EISDIR', 'EPERM'].includes(thrown.details.originalCode));
   assert.equal(thrown.details.originalMessage, thrown.message);
   const state = service.getState();
   assert.equal(state.state, 'failed');

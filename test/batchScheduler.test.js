@@ -11,7 +11,13 @@ const { createBatchScheduler } = require('../electron/main/batch/batchScheduler.
 
 function makeTempStore(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vaniscript-scheduler-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  // Defer removal until all handles opened by the test have been closed.
+  t.after(() => t.after(() => fs.rmSync(dir, {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 100,
+  })));
   return { dir, dbPath: path.join(dir, 'batch.sqlite') };
 }
 

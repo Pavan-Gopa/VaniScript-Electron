@@ -57,7 +57,13 @@ function makeHarness(t, options = {}) {
   t.after(async () => {
     await watcher.stop();
     domain.close();
-    fs.rmSync(directory, { recursive: true, force: true });
+    // Run directory removal after later hooks that may own additional handles.
+    t.after(() => fs.rmSync(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    }));
   });
   return { directory, root, outside, domain, watcher, handles, issues, events };
 }
@@ -135,8 +141,10 @@ test('seeded adversarial tree never enqueues a candidate outside its canonical p
     let fileName;
     if (index === 1) fileName = `nfc-e\u0301-${index}.m4a`;
     else if (index === 2) fileName = `nfd-e\u0301-${index}.m4a`;
-    else if (index === 3) fileName = `control\n-${index}.m4a`;
-    else if (index === 4) fileName = `control\u0001-${index}.m4a`;
+    // Windows rejects control characters in file names before the watcher
+    // can inspect them; the symlink fixtures above still exercise confinement.
+    else if (index === 3 && process.platform !== 'win32') fileName = `control\n-${index}.m4a`;
+    else if (index === 4 && process.platform !== 'win32') fileName = `control\u0001-${index}.m4a`;
     else fileName = `${index % 2 ? 'Case' : 'case'}-${index}.m4a`;
     fs.writeFileSync(path.join(current, fileName), `payload-${index % 7}`);
   }

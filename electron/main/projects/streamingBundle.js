@@ -344,10 +344,19 @@ async function fsyncDirectory(io, dir, { strict = false } = {}) {
     handle = await io.open(dir, 'r');
     await handle.sync();
   } catch (err) {
-    if (strict) {
+    if (
+      strict &&
+      !(
+        process.platform === 'win32' &&
+        err &&
+        ['EPERM', 'EISDIR', 'ENOTSUP', 'EINVAL'].includes(err.code)
+      )
+    ) {
       throw err;
     }
-    /* best effort: directory fsync is platform-dependent */
+    // Windows does not support fsync on directory handles.  A successful
+    // close still releases the handle in finally below; file durability is
+    // provided by the file-handle syncs performed by the callers.
   } finally {
     if (handle !== null) {
       try {

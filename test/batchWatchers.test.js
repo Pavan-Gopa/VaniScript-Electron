@@ -53,7 +53,13 @@ function makeContext(t, options = {}) {
   t.after(async () => {
     await watcher.stop();
     domain.close();
-    fs.rmSync(directory, { recursive: true, force: true });
+    // Run directory removal after later hooks that may own additional handles.
+    t.after(() => fs.rmSync(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    }));
   });
   return { directory, sourcePath, domain, profile, watcher, watcherHandles, issues, events };
 }

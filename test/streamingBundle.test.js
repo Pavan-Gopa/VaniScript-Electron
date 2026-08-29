@@ -1011,7 +1011,9 @@ test('imports JSON project-v1 directly with base64 assets and no temporary bundl
   assert.equal(imported.createdAt, FIXED_NOW);
   const finalDir = path.join(storeRoot, 'vs-test-001');
   assert.ok(
-    imported.session.sourceFile.endsWith('audio/sourceFile--lecture.mp3'),
+    imported.session.sourceFile.endsWith(
+      path.join('audio', 'sourceFile--lecture.mp3'),
+    ),
   );
   assert.equal(
     imported.session.chunks[0].filePath,

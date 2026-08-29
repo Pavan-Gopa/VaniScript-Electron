@@ -14,7 +14,14 @@ const {
 
 function makeTempStore(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vaniscript-batch-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  // Register the actual removal from a teardown hook so domain handles opened
+  // after this helper are closed before Windows unlinks the SQLite sidecars.
+  t.after(() => t.after(() => fs.rmSync(dir, {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 100,
+  })));
   return { dir, dbPath: path.join(dir, 'batch.sqlite') };
 }
 

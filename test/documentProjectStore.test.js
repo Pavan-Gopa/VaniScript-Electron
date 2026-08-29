@@ -1621,19 +1621,32 @@ test('a failed residue cleanup retains the intent and heals on the next recovery
   fs.writeFileSync(path.join(stagingDir, id, DOCUMENT_FILE), '{"partial":true}');
   writeCreateIntentFile(id, { phase: 'prepared', content: '{"partial":true}' });
 
-  // ...whose staging root resists removal (chmod probe, EPERM family).
-  fs.chmodSync(stagingDir, 0o500);
+  // Inject one cleanup failure rather than relying on chmod semantics, which
+  // are advisory on Windows and can otherwise remove the tree successfully.
+  const originalRmSync = fs.rmSync;
+  let cleanupFaultInjected = false;
+  fs.rmSync = (target, options) => {
+    if (!cleanupFaultInjected && path.resolve(target) === path.resolve(stagingDir)) {
+      cleanupFaultInjected = true;
+      const error = new Error('permission revoked during cleanup');
+      error.code = 'EPERM';
+      throw error;
+    }
+    return originalRmSync(target, options);
+  };
+  let err;
   try {
-    const err = thrownError(() => store.loadDocumentProject(id));
-    assert.equal(err && err.code, 'CORRUPT_DATA');
-    assert.match(err.message, /retained/);
-    // THE ordering contract: residue AND intent survive TOGETHER — a
-    // partial cleanup may never orphan residue behind a cleared intent.
-    assert.ok(fs.existsSync(stagingDir), 'staging residue still present');
-    assert.ok(fs.existsSync(intentPath), 'intent retained alongside the residue');
+    err = thrownError(() => store.loadDocumentProject(id));
   } finally {
-    fs.chmodSync(stagingDir, 0o700);
+    fs.rmSync = originalRmSync;
   }
+  assert.equal(cleanupFaultInjected, true, 'cleanup fault was exercised');
+  assert.equal(err && err.code, 'CORRUPT_DATA');
+  assert.match(err.message, /retained/);
+  // THE ordering contract: residue AND intent survive TOGETHER — a
+  // partial cleanup may never orphan residue behind a cleared intent.
+  assert.ok(fs.existsSync(stagingDir), 'staging residue still present');
+  assert.ok(fs.existsSync(intentPath), 'intent retained alongside the residue');
 
   // The very next recovery finishes the discard, and the same-id retry
   // path is fully functional again.
@@ -1885,7 +1898,13 @@ test('a FIFO final archive node fails CORRUPT_DATA instead of hanging recovery',
   const finalProjectPath = path.join(rootDir, id, 'project.json');
   fs.writeFileSync(finalProjectPath, JSON.stringify(documentProject(id), null, 2));
   const fifoPath = path.join(rootDir, id, DOCUMENT_FILE);
-  execFileSync('mkfifo', [fifoPath]);
+  if (process.platform === 'win32') {
+    // Windows has no mkfifo primitive. A directory is still a non-regular
+    // archive node and exercises the same no-follow guard without hanging.
+    fs.mkdirSync(fifoPath);
+  } else {
+    execFileSync('mkfifo', [fifoPath]);
+  }
   writeCreateIntentFile(id, {
     phase: 'leased',
     content,
@@ -1896,8 +1915,12 @@ test('a FIFO final archive node fails CORRUPT_DATA instead of hanging recovery',
 
   const err = thrownError(() => store.loadDocumentProject(id));
   assert.equal(err && err.code, 'CORRUPT_DATA');
+  const hostileStat = fs.lstatSync(fifoPath);
+  assert.ok(
+    process.platform === 'win32' ? hostileStat.isDirectory() : hostileStat.isFIFO(),
+    'non-regular archive node untouched',
+  );
   assert.match(err.message, /not a regular file/);
-  assert.ok(fs.lstatSync(fifoPath).isFIFO(), 'FIFO untouched');
   assert.ok(fs.existsSync(intentPathFor(id)), 'intent retained');
 });
 

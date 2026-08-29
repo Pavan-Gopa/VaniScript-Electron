@@ -87,11 +87,12 @@ function extractFunctionBody(source, name) {
 }
 
 function sliceBetween(source, startMarker, endMarker) {
-  const start = source.indexOf(startMarker);
+  const normalizedSource = source.replace(/\r\n?/g, '\n');
+  const start = normalizedSource.indexOf(startMarker);
   assert.ok(start !== -1, `start marker found: ${startMarker}`);
-  const end = source.indexOf(endMarker, start);
+  const end = normalizedSource.indexOf(endMarker, start);
   assert.ok(end !== -1, `end marker found: ${endMarker}`);
-  return source.slice(start, end);
+  return normalizedSource.slice(start, end);
 }
 
 function occurrences(haystack, needle) {

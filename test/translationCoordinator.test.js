@@ -1266,10 +1266,12 @@ test('TranslationBlockStatus stays aligned with every block status the coordinat
     path.join(__dirname, '..', 'shared', 'contracts', 'documents.ts'),
     'utf8',
   );
+  const statusDeclaration = contractsSource
+    .replace(/\r\n?/g, '\n')
+    .match(/export type TranslationBlockStatus =([\s\S]*?);\n/);
+  assert.ok(statusDeclaration, 'translation status union found');
   const declared = new Set(
-    [...contractsSource.match(/export type TranslationBlockStatus =([\s\S]*?);\n/)[1].matchAll(/'([a-z][a-z-]*)'/g)].map(
-      (m) => m[1],
-    ),
+    [...statusDeclaration[1].matchAll(/'([a-z][a-z-]*)'/g)].map((m) => m[1]),
   );
   assert.ok(declared.size >= 6, 'fixture sanity: union members parsed');
 

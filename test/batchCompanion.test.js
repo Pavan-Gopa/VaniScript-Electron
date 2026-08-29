@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const realpathSync = fs.realpathSync.native || fs.realpathSync;
 
 const { createBatchDomain } = require('../electron/main/batch/batchDomain.js');
 const {
@@ -35,7 +36,14 @@ function fixture(t, options = {}) {
   domain.startJob(jobId);
   t.after(() => {
     try { domain.close(); } catch { /* already closed */ }
-    fs.rmSync(root, { recursive: true, force: true });
+    // Register removal after every other teardown hook so any additional
+    // database handles opened by a test have been closed first.
+    t.after(() => fs.rmSync(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    }));
   });
   return { root, sourcePath, outputPath, domain, profileId, jobId };
 }
@@ -58,9 +66,8 @@ function write(fixtureValue, content, options = {}) {
 test('writes a derived companion atomically and records a byte fingerprint receipt', (t) => {
   const value = fixture(t);
   const result = write(value, 'first transcript');
-
+  assert.equal(realpathSync(result.outputPath), realpathSync(value.outputPath));
   assert.equal(result.disposition, 'created');
-  assert.equal(fs.realpathSync(result.outputPath), fs.realpathSync(value.outputPath));
   assert.deepEqual(result.outputFingerprint, {
     sizeBytes: Buffer.byteLength('first transcript'),
     sha256: 'e4b3c24822484efe8844b0fd6c16777dcb0f15605918a2a73979b45659670eab',
@@ -259,7 +266,7 @@ test('derives multi-dot and NFC companions in the source parent', (t) => {
     jobId: 'job-unicode',
   });
   const result = write(value, 'unicode transcript');
-  assert.equal(fs.realpathSync(path.dirname(result.outputPath)), fs.realpathSync(path.dirname(value.sourcePath)));
+  assert.equal(realpathSync(path.dirname(result.outputPath)), realpathSync(path.dirname(value.sourcePath)));
   assert.equal(path.basename(result.outputPath).normalize('NFC'), 'Café.topic.part.txt');
   assert.equal(path.basename(result.outputPath).endsWith('.mp3'), false);
   assert.equal(fingerprintFile(result.outputPath).fingerprint.sizeBytes, Buffer.byteLength('unicode transcript'));

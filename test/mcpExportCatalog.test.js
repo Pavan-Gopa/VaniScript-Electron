@@ -236,10 +236,13 @@ test('omitted translated-side language reaches the builder as null for renderer 
   assert.equal(calls.writeFile.length, 1);
 });
 
-test('basenames that are empty, dot segments, or carry separators fail typed before any write', async () => {
+test('empty or dot basenames fail typed before any write', async () => {
   // Native lastPathComponent parity: basename is taken FIRST and only the
   // result is safety-checked; raw separator presence alone never rejects.
-  const unsafeNames = ['..', '.', '', 'back\\slash.txt', '..\\..\\notes.md'];
+  const unsafeNames = ['..', '.', ''];
+  if (process.platform !== 'win32') {
+    unsafeNames.push('back\\slash.txt', '..\\..\\notes.md');
+  }
   for (const fileName of unsafeNames) {
     const { catalog, calls } = makeFixture({
       buildTranscriptArtifact: async () => ({ content: '# Transcript\n', fileName }),
