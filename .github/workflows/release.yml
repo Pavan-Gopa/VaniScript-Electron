@@ -56,7 +56,8 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          GH_RELEASE_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+        # Publication uses the workflow's automatic GITHUB_TOKEN (permissions:
+        # contents: write); the repo is public, so no cross-repo PAT is needed.
         shell: bash
         run: |
           set -euo pipefail
@@ -66,8 +67,7 @@ jobs:
           : "${APPLE_ID:?Missing APPLE_ID secret}"
           : "${APPLE_APP_SPECIFIC_PASSWORD:?Missing APPLE_APP_SPECIFIC_PASSWORD secret}"
           : "${APPLE_TEAM_ID:?Missing APPLE_TEAM_ID secret}"
-          : "${GH_RELEASE_TOKEN:?Missing GH_RELEASE_TOKEN secret}"
-          echo 'Release signing, notarization, and publication credentials are present.'
+          echo 'Release signing and notarization credentials are present.'
 
       - name: Import Developer ID certificate into ephemeral keychain
         if: ${{ env.CSC_IDENTITY_AUTO_DISCOVERY != 'false' }}
@@ -130,17 +130,15 @@ jobs:
         if: ${{ success() }}
         run: npm run verify:release -- --release-dir release
 
-      # GH_RELEASE_TOKEN is deliberately consumed only by the Slice-4 release
-      # publication path. Slice 2 scaffolds this draft-then-publish ordering;
-      # the token must be provisioned in repository settings before a tag run.
-      - name: Create draft GitHub release (Slice 4)
+      # Publication uses the workflow's automatic GITHUB_TOKEN (repo is public;
+      # permissions: contents: write covers draft/upload/publish).
+      - name: Create draft GitHub release
         if: ${{ env.CSC_IDENTITY_AUTO_DISCOVERY != 'false' && success() }}
         env:
-          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          : "${GH_TOKEN:?Missing GH_RELEASE_TOKEN secret; provision it before Slice 4 release execution}"
           gh release create "$GITHUB_REF_NAME" \
             --draft \
             --verify-tag \
@@ -155,31 +153,33 @@ jobs:
           path: |
             release/*.dmg
             release/*.zip
+            release/*.blockmap
+            release/alpha*.yml
             release/checksums.txt
             release/VaniScript-Electron.manifest.json
             artifacts/p4d5-qualification-darwin.json
           if-no-files-found: error
           retention-days: 14
-      - name: Upload assets to draft GitHub release (Slice 4)
+
+      - name: Upload assets to draft GitHub release
         if: ${{ env.CSC_IDENTITY_AUTO_DISCOVERY != 'false' && success() }}
         env:
-          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          : "${GH_TOKEN:?Missing GH_RELEASE_TOKEN secret; provision it before Slice 4 release execution}"
           shopt -s nullglob
-          release_assets=(release/*.dmg release/*.zip release/checksums.txt release/VaniScript-Electron.manifest.json)
+          release_assets=(release/*.dmg release/*.zip release/*.blockmap release/alpha*.yml release/checksums.txt release/VaniScript-Electron.manifest.json)
           if (( ${#release_assets[@]} == 0 )); then
             echo 'No DMG or ZIP release artifacts were produced.' >&2
             exit 1
           fi
           gh release upload "$GITHUB_REF_NAME" "${release_assets[@]}" --clobber
 
-      - name: Publish GitHub release (Slice 4)
+      - name: Publish GitHub release
         if: ${{ env.CSC_IDENTITY_AUTO_DISCOVERY != 'false' && success() }}
         env:
-          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: gh release edit "$GITHUB_REF_NAME" --draft=false
 
       - name: Cleanup ephemeral signing keychain
@@ -191,3 +191,203 @@ jobs:
           security delete-keychain "$keychain_path" >/dev/null 2>&1 || true
           rm -f "$RUNNER_TEMP/vaniscript-developer-id.p12"
           echo 'Ephemeral signing keychain and certificate file cleaned up.'
+  build-windows:
+    name: Unsigned Windows release
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build release (unsigned)
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run build:release:unsigned
+
+      - name: Check release content
+        run: >-
+          node scripts/check-release-content.mjs
+          --release-dir release
+          --output artifacts/p4d5-qualification-win32.json
+          --os win32
+          --arch x64
+          --build-target nsis
+      - name: Boot smoke
+        if: ${{ success() }}
+        run: >-
+          node scripts/boot-smoke.mjs
+          --release-dir release
+          --output artifacts/p4d5-qualification-win32.json
+          --os win32
+          --arch x64
+          --timeout-ms 30000
+
+
+      - name: Generate Windows SHA-256 checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          release_assets=(release/nsis-web/*.exe release/nsis-web/*.nsis.7z release/nsis-web/alpha*.yml)
+          if (( ${#release_assets[@]} == 0 )); then
+            echo 'No Windows release assets were produced.' >&2
+            exit 1
+          fi
+          (
+            cd release
+            sha256sum "${release_assets[@]#release/}" > checksums-win32.txt
+          )
+
+      - name: Upload Windows release artifacts
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: vaniscript-windows-release-${{ github.ref_name }}
+          path: |
+            release/nsis-web/*.exe
+            release/nsis-web/*.nsis.7z
+            release/nsis-web/alpha*.yml
+            release/checksums-win32.txt
+            artifacts/p4d5-qualification-win32.json
+          if-no-files-found: error
+          retention-days: 14
+
+      # The macOS job owns draft creation. This lane stays independent of it,
+      # then waits up to 250 attempts x 10 seconds (~42 minutes) for that draft
+      # to exist, within this 60-minute job timeout.
+      - name: Upload Windows assets to draft GitHub release
+        if: ${{ success() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          release_assets=(release/nsis-web/*.exe release/nsis-web/*.nsis.7z release/nsis-web/alpha*.yml release/checksums-win32.txt)
+          if (( ${#release_assets[@]} == 0 )); then
+            echo 'No Windows release assets were produced.' >&2
+            exit 1
+          fi
+          for attempt in {1..250}; do
+            if gh release upload "$GITHUB_REF_NAME" "${release_assets[@]}" --clobber; then
+              echo "Uploaded Windows release assets on attempt ${attempt}."
+              exit 0
+            fi
+            if (( attempt < 250 )); then
+              echo "Draft release ${GITHUB_REF_NAME} is not ready (attempt ${attempt}/250); waiting 10s."
+              sleep 10
+            fi
+          done
+          echo "Timed out waiting for draft release ${GITHUB_REF_NAME} after 250 attempts." >&2
+          exit 1
+
+  build-linux:
+    name: Unsigned Linux release
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build release (unsigned)
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run build:release:unsigned
+
+      - name: Check release content
+        run: >-
+          node scripts/check-release-content.mjs
+          --release-dir release
+          --output artifacts/p4d5-qualification-linux.json
+          --os linux
+          --arch x64
+          --build-target appimage
+      - name: Boot smoke
+        if: ${{ success() }}
+        run: >-
+          node scripts/boot-smoke.mjs
+          --release-dir release
+          --output artifacts/p4d5-qualification-linux.json
+          --os linux
+          --arch x64
+          --timeout-ms 30000
+
+
+      - name: Generate Linux SHA-256 checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          release_assets=(release/*.AppImage release/*.deb release/*.blockmap release/alpha*.yml)
+          if (( ${#release_assets[@]} == 0 )); then
+            echo 'No Linux release assets were produced.' >&2
+            exit 1
+          fi
+          (
+            cd release
+            sha256sum "${release_assets[@]#release/}" > checksums-linux.txt
+          )
+
+      - name: Upload Linux release artifacts
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: vaniscript-linux-release-${{ github.ref_name }}
+          path: |
+            release/*.AppImage
+            release/*.deb
+            release/*.blockmap
+            release/alpha*.yml
+            release/checksums-linux.txt
+            artifacts/p4d5-qualification-linux.json
+          if-no-files-found: error
+          retention-days: 14
+
+      # The macOS job owns draft creation. This lane stays independent of it,
+      # then waits up to 250 attempts x 10 seconds (~42 minutes) for that draft
+      # to exist, within this 60-minute job timeout.
+      - name: Upload Linux assets to draft GitHub release
+        if: ${{ success() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          release_assets=(release/*.AppImage release/*.deb release/*.blockmap release/alpha*.yml release/checksums-linux.txt)
+          if (( ${#release_assets[@]} == 0 )); then
+            echo 'No Linux release assets were produced.' >&2
+            exit 1
+          fi
+          for attempt in {1..250}; do
+            if gh release upload "$GITHUB_REF_NAME" "${release_assets[@]}" --clobber; then
+              echo "Uploaded Linux release assets on attempt ${attempt}."
+              exit 0
+            fi
+            if (( attempt < 250 )); then
+              echo "Draft release ${GITHUB_REF_NAME} is not ready (attempt ${attempt}/250); waiting 10s."
+              sleep 10
+            fi
+          done
+          echo "Timed out waiting for draft release ${GITHUB_REF_NAME} after 250 attempts." >&2
+          exit 1

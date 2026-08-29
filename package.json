@@ -1,6 +1,6 @@
 {
   "name": "vaniscript",
-  "version": "1.0.0",
+  "version": "1.0.0-alpha.1",
   "description": "Gaudiya Vaishnava Lecture Transcription & Translation Engine",
   "author": "Stichting Kadamba Foundation",
   "private": true,
@@ -37,7 +37,8 @@
     "publish": {
       "provider": "github",
       "owner": "Pavan-Gopa",
-      "repo": "VaniScript-Electron"
+      "repo": "VaniScript-Electron",
+      "channel": "alpha"
     },
     "directories": {
       "output": "release"
