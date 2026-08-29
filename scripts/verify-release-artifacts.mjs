@@ -3,7 +3,8 @@
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { createReadStream } from 'node:fs';
-import { readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -129,6 +130,24 @@ function verifyCommand(name, command, args) {
   return true;
 }
 
+async function findAppBundle(directory) {
+  const entries = (await readdir(directory, { withFileTypes: true }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+  for (const entry of entries) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory() && entry.name.endsWith('.app')) {
+      return entryPath;
+    }
+    if (entry.isDirectory()) {
+      const nestedApp = await findAppBundle(entryPath);
+      if (nestedApp) {
+        return nestedApp;
+      }
+    }
+  }
+  return null;
+}
+
 function validateManifest(manifest, packageVersion, buildNumber, artifacts, hashes) {
   if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
     fail('manifest schema', 'manifest must be a JSON object');
@@ -229,15 +248,45 @@ async function verifyChecksums(checksumsPath, releaseDir, entries) {
 async function verifySignatures(artifacts, unsignedMode) {
   const unsignedReason = 'CSC_IDENTITY_AUTO_DISCOVERY=false; unsigned local artifacts are not applicable to signature verification';
   if (unsignedMode) {
-    skip('codesign --verify --deep', unsignedReason);
-    skip('stapler validate', unsignedReason);
-    skip('spctl --assess', unsignedReason);
+    skip('codesign --verify --deep (DMG)', unsignedReason);
+    skip('stapler validate (app)', unsignedReason);
+    skip('spctl --assess (app)', unsignedReason);
     return;
   }
 
-  verifyCommand('codesign --verify --deep', 'codesign', ['--verify', '--deep', '--strict', artifacts.dmg.path]);
-  verifyCommand('stapler validate', 'xcrun', ['stapler', 'validate', artifacts.dmg.path]);
-  verifyCommand('spctl --assess', 'spctl', ['--assess', '--type', 'open', '--context', 'context:primary-signature', '--verbose=4', artifacts.dmg.path]);
+  verifyCommand('codesign --verify --deep (DMG)', 'codesign', ['--verify', '--deep', '--strict', artifacts.dmg.path]);
+
+  let tempDir;
+  let appPath;
+  try {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'vaniscript-release-'));
+    const extracted = runCommand('ditto', ['-x', '-k', artifacts.zip.path, tempDir]);
+    if (extracted.error || extracted.status !== 0) {
+      const reason = extracted.error?.message || extracted.output || `exit status ${extracted.status}`;
+      fail('extract app from ZIP', `ditto -x -k ${artifacts.zip.name}: ${reason}`);
+    } else {
+      appPath = await findAppBundle(tempDir);
+      if (appPath) {
+        pass('extract app from ZIP', path.relative(tempDir, appPath));
+      } else {
+        fail('extract app from ZIP', `no .app bundle found in ${artifacts.zip.name}`);
+      }
+    }
+
+    if (appPath) {
+      verifyCommand('stapler validate (app)', 'xcrun', ['stapler', 'validate', appPath]);
+      verifyCommand('spctl --assess (app)', 'spctl', ['--assess', '--type', 'execute', '--verbose=4', appPath]);
+    } else {
+      fail('stapler validate (app)', 'cannot validate app staple because ZIP extraction failed');
+      fail('spctl --assess (app)', 'cannot assess app because ZIP extraction failed');
+    }
+  } catch (error) {
+    fail('ZIP app verification', error.message);
+  } finally {
+    if (tempDir) {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  }
 }
 
 function printTable() {
