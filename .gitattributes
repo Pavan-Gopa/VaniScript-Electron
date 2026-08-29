@@ -1,0 +1,6 @@
+# Parity fixtures are hash-pinned by .manifest.json (SHA-256 over exact bytes).
+# Windows runners default to core.autocrlf=true, which rewrites LF->CRLF on
+# checkout and breaks the parity pretest gate. Force exact LF for the
+# byte-exact fixture tree (first observed on the repo's first-ever windows CI
+# run 33226946483).
+test/fixtures/parity/** text eol=lf
